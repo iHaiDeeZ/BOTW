@@ -237,7 +237,7 @@ bool init() {
 
     // A busy submit reached 67 MB (uniforms padded to 4 KB, storage to 64 KB). Android: 128 MB, half, for an 8 GB
     // phone (docs/nvn/android-perf/MEMORY.md: the phone never filled it; big uploads have staging buffers, #72).
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__ORBIS__)
     make_upload_buffer(128ull << 20);
 #else
     make_upload_buffer(256ull << 20);

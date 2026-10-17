@@ -365,6 +365,7 @@ static void thread_main(void* p) {
     KThread* t = static_cast<KThread*>(p);
     t_self = t;
     t->host_tid = plat::current_thread_id();
+    plat::set_guest_core(t->host_tid, t->core);
     char name[16];
     std::snprintf(name, sizeof name, "g%llx", (unsigned long long)t->id);
     plat::set_thread_name(name);
@@ -405,6 +406,7 @@ uint32_t create_main_thread(uint64_t stack_size) {
     t->started = true;
     t_self = t.get();
     t->host_tid = plat::current_thread_id();
+    plat::set_guest_core(t->host_tid, t->core);
     return t->handle;
 }
 

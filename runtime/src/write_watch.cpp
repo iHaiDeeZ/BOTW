@@ -39,7 +39,11 @@ constexpr int kWatches = 16;
 Watch g_watches[kWatches];
 
 uint64_t page_size() {
+#if defined(__ORBIS__)
+    static const uint64_t p = 0x4000;  // the PS4's page; musl's sysconf answers 4 KiB
+#else
     static const uint64_t p = uint64_t(sysconf(_SC_PAGESIZE));
+#endif
     return p;
 }
 
@@ -56,6 +60,7 @@ bool enabled() {
 bool write_watch_add(uint64_t addr, uint64_t size) {
     if (!enabled() || !addr || !size) return false;
     uint64_t ps = page_size(), b = addr & ~(ps - 1), e = (addr + size + ps - 1) & ~(ps - 1);
+    prefault(b, e - b);  // PS4: guest memory not touched yet is not mapped, and could not be protected
     for (Watch& w : g_watches) {
         uint64_t expected = 0;
         if (!w.addr.compare_exchange_strong(expected, addr)) continue;

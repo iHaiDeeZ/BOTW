@@ -8,6 +8,7 @@
 #include <nx/runtime.h>
 
 #include "kernel.h"
+#include "platform.h"
 
 namespace nx {
 
@@ -67,6 +68,7 @@ uint32_t set_thread_core_mask(uint32_t handle, int32_t ideal, uint64_t mask) {
                 break;
             }
     if (ideal >= 0) t->core = ideal;
+    if (ideal >= 0 && t->host_tid) plat::set_guest_core(t->host_tid, t->core);
     return 0;
 }
 

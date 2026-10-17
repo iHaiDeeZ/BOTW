@@ -1,0 +1,887 @@
+// PS4 host (jailbroken, homebrew; SMW): guest memory on direct memory mapped on first touch, pthreads placed on the
+// console's cores, VideoOut + RADV for Vulkan (ps4/ps4_vk_wsi.cpp), ScePad, sceAudioOut, and main.
+//
+// Same shape as platform_linux.cpp: main() starts the game (nx::boot) on its own thread and then polls the pad.
+//
+// Memory. The guest's ranges (runtime.h: modules at 0x40_0000_0000, heap, alias, stack and kernel regions up to
+// 0x70_0000_0000) are address space reservations (sceKernelReserveVirtualRange). The PS4 has no demand-zero memory
+// to speak of: flexible memory is small and committed when mapped, direct memory is physical. The runtime commits
+// gigabytes it may never touch (svcSetHeapSize: the whole heap at once), so commit() only marks a range usable, and
+// the fault handler maps 64 KiB chunks of direct memory there on the first access (zeroed). Kernel calls that write
+// into guest memory (pread) cannot fault on our behalf, so read_at() touches its buffer first. decommit() gives the
+// chunks back to a free list. Guest threads' 64 MiB host stacks come from the same lazy space (0x78_0000_0000),
+// with their top 1 MiB mapped up front, so a thread costs what it uses.
+//
+// Cores (NX_PS4_CORES=pinned, the default): the app has cores 0-5 and the 7th (core 6) when the system grants it,
+// checked at startup. Guest threads go where their Switch core says (svcCreateThread, svcSetThreadCoreMask): guest
+// core 0 (the game's main thread) on core 0, guest cores 1 and 2 (the job workers) on cores 2 and 3. The thread that
+// replays NVN into Vulkan and presents gets core 1 (frame_stats.cpp, role 0). Everything else - guest core 3, the
+// audio renderer and output, the vsync and watchdog threads, ASTC decoding, RADV's own threads - shares cores 4, 5
+// and 6. NX_PS4_CORES=spread puts every thread on every core instead.
+//
+// Data: /data/SMW (analysis/{main,sdk}.bin, extract/romfs, spirv/, fonts/, user/), nx.log there. Settings:
+// /data/SMW/config.txt, one NX_<KEY>=<value> per line, put in the environment at startup: every NX_* switch of the
+// runtime (docs/nvn/SWITCHES.md) works there.
+#include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <cerrno>
+#include <cstdarg>
+#include <climits>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <filesystem>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
+
+#include <orbis/AudioOut.h>
+#include <orbis/Pad.h>
+#include <orbis/Sysmodule.h>
+#include <orbis/UserService.h>
+
+#include <nx/game.h>
+#include <nx/runtime.h>
+
+#include "kernel.h"
+#include "platform.h"
+#include "ps4/ps4_vk_wsi.h"
+
+// libkernel, declared by hand: several OpenOrbis prototypes are wrong or take no parameters.
+extern "C" {
+int32_t ps4_reserve_range(void** addr, size_t len, int32_t flags, size_t align) __asm__("sceKernelReserveVirtualRange");
+int32_t ps4_map_direct(void** addr, size_t len, int32_t prot, int32_t flags, off_t phys, size_t align) __asm__(
+    "sceKernelMapDirectMemory");
+int32_t ps4_allocate_direct(off_t start, off_t end, size_t len, size_t align, int32_t type, off_t* phys) __asm__(
+    "sceKernelAllocateDirectMemory");
+size_t ps4_direct_memory_size() __asm__("sceKernelGetDirectMemorySize");
+int32_t ps4_munmap(void* addr, size_t len) __asm__("sceKernelMunmap");
+void* ps4_pthread_self() __asm__("scePthreadSelf");
+int32_t ps4_set_affinity(void* thread, uint64_t mask) __asm__("scePthreadSetaffinity");
+int32_t ps4_get_affinity(void* thread, uint64_t* mask) __asm__("scePthreadGetaffinity");
+int32_t ps4_set_prio(void* thread, int prio) __asm__("scePthreadSetprio");
+int32_t ps4_rename(void* thread, const char* name) __asm__("scePthreadRename");
+int32_t ps4_thread_id() __asm__("scePthreadGetthreadid");
+
+void ps4_boot_trace(const char* line);       // port/ps4_crashlog.cpp
+void ps4_watch_thread(const char* name);     // port/ps4_sampler.cpp
+void ps4_sampler_start();                    // port/ps4_sampler.cpp
+extern uint64_t ps4_new_thread_cores;        // port/ps4_runtime.cpp: the cores pthread_create gives new threads
+}
+
+namespace nx {
+void boot();
+}
+
+namespace nx::plat {
+
+namespace {
+
+const char* const kDataRoot = "/data/SMW";
+
+constexpr int32_t kMapFixed = 0x10;  // SCE_KERNEL_MAP_FIXED
+constexpr int32_t kProtCpuRw = 0x3;
+constexpr int32_t kWbOnion = 0;      // SCE_KERNEL_WB_ONION
+
+void trace(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void trace(const char* fmt, ...) {
+    char line[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    ps4_boot_trace(line);
+}
+
+// ---- lazy guest memory --------------------------------------------------------------------------------------
+
+namespace lazy {
+
+constexpr uint64_t kBase = 0x4000000000ull;      // the guest's ranges (runtime.h) and the host stacks below
+constexpr uint64_t kEnd = 0x7C00000000ull;
+constexpr uint64_t kChunk = 0x10000;             // 64 KiB, four PS4 pages
+constexpr uint64_t kSlice = 1ull << 30;          // the state tables come per GiB that has commits in it
+constexpr uint64_t kChunksPerSlice = kSlice / kChunk;
+constexpr uint64_t kSlices = (kEnd - kBase) / kSlice;
+constexpr uint64_t kBlock = 32ull << 20;         // direct memory is allocated in blocks of this, mapped by chunk
+constexpr size_t kMaxFree = 1u << 17;            // freed chunks kept for reuse (8 GiB worth)
+
+enum : uint8_t { kUnused = 0, kCommitted = 1, kMapped = 2 };
+
+struct Slice {
+    std::atomic<uint8_t> state[kChunksPerSlice];
+    uint32_t phys[kChunksPerSlice];  // direct memory offset / kChunk, while mapped
+};
+
+std::atomic<Slice*> g_slices[kSlices];
+std::mutex g_slice_alloc;
+std::atomic_flag g_lock = ATOMIC_FLAG_INIT;  // the fault handler takes it: no mutex
+uint64_t g_block = 0, g_block_used = kBlock;  // the current block (offset), how much of it is handed out
+uint32_t g_free[kMaxFree];
+size_t g_free_count = 0;
+std::atomic<uint64_t> g_mapped{0}, g_faults{0}, g_failed{0};
+std::atomic<uint64_t> g_blocks{0};
+
+struct Lock {
+    Lock() {
+        while (g_lock.test_and_set(std::memory_order_acquire)) sched_yield();
+    }
+    ~Lock() { g_lock.clear(std::memory_order_release); }
+};
+
+bool ours(uint64_t addr) { return addr >= kBase && addr < kEnd; }
+
+Slice* slice_of(uint64_t addr) { return g_slices[(addr - kBase) / kSlice].load(std::memory_order_acquire); }
+
+Slice* make_slice(uint64_t addr) {
+    auto& slot = g_slices[(addr - kBase) / kSlice];
+    if (Slice* s = slot.load(std::memory_order_acquire)) return s;
+    std::lock_guard lk(g_slice_alloc);
+    if (Slice* s = slot.load(std::memory_order_acquire)) return s;
+    auto* s = static_cast<Slice*>(std::calloc(1, sizeof(Slice)));
+    if (!s) fatal("memory: no host memory for the state of %llx", (unsigned long long)addr);
+    slot.store(s, std::memory_order_release);
+    return s;
+}
+
+// A free chunk of direct memory (offset / kChunk), 0 when there is none. With g_lock held.
+uint32_t take_phys() {
+    if (g_free_count) return g_free[--g_free_count];
+    if (g_block_used == kBlock) {
+        off_t phys = 0;
+        if (ps4_allocate_direct(0, off_t(ps4_direct_memory_size()), kBlock, kChunk, kWbOnion, &phys) != 0) return 0;
+        g_block = uint64_t(phys);
+        g_block_used = 0;
+        g_blocks++;
+    }
+    uint64_t at = g_block + g_block_used;
+    g_block_used += kChunk;
+    return uint32_t(at / kChunk);  // never 0: offset 0 of direct memory is the system's
+}
+
+// Maps the chunk at `addr` (committed, unmapped) with zeroes. With g_lock held. False: out of direct memory.
+bool map_chunk(Slice* s, uint64_t index, uint64_t addr) {
+    uint32_t phys = take_phys();
+    if (!phys) return false;
+    ps4_munmap(reinterpret_cast<void*>(addr), kChunk);  // our reservation there: mapping over it fails
+    void* at = reinterpret_cast<void*>(addr);
+    int32_t r = ps4_map_direct(&at, kChunk, kProtCpuRw, kMapFixed, off_t(phys) * off_t(kChunk), kChunk);
+    if (r != 0 || at != reinterpret_cast<void*>(addr)) {
+        void* back = reinterpret_cast<void*>(addr);
+        ps4_reserve_range(&back, kChunk, kMapFixed, 0);
+        if (g_free_count < kMaxFree) g_free[g_free_count++] = phys;
+        return false;
+    }
+    std::memset(at, 0, kChunk);  // direct memory comes with whatever was there before
+    s->phys[index] = phys;
+    s->state[index].store(kMapped, std::memory_order_release);
+    g_mapped += kChunk;
+    return true;
+}
+
+// The fault handler's part: true when `addr` was committed memory that is mapped now (the access is retried).
+bool fault(uint64_t addr) {
+    if (!ours(addr)) return false;
+    Slice* s = slice_of(addr);
+    if (!s) return false;
+    uint64_t chunk = addr & ~(kChunk - 1), index = (chunk - kBase) % kSlice / kChunk;
+    uint8_t st = s->state[index].load(std::memory_order_acquire);
+    if (st == kMapped) return true;  // another thread mapped it meanwhile
+    if (st != kCommitted) return false;
+    Lock lk;
+    st = s->state[index].load(std::memory_order_acquire);
+    if (st == kMapped) return true;
+    if (st != kCommitted) return false;
+    g_faults++;
+    if (!map_chunk(s, index, chunk)) {
+        g_failed++;
+        return false;  // out of direct memory: the crash handler reports it
+    }
+    return true;
+}
+
+void commit(uint64_t addr, uint64_t size) {
+    uint64_t a = addr & ~(kChunk - 1), e = (addr + size + kChunk - 1) & ~(kChunk - 1);
+    for (uint64_t c = a; c < e; c += kChunk) {
+        Slice* s = make_slice(c);
+        uint64_t index = (c - kBase) % kSlice / kChunk;
+        uint8_t expected = kUnused;
+        s->state[index].compare_exchange_strong(expected, kCommitted, std::memory_order_acq_rel);
+    }
+}
+
+void decommit(uint64_t addr, uint64_t size) {
+    uint64_t lo = (addr + kChunk - 1) & ~(kChunk - 1), hi = (addr + size) & ~(kChunk - 1);
+    auto zero = [](uint64_t from, uint64_t to) {  // part of a chunk that stays: zeroes, if it is mapped at all
+        if (from >= to) return;
+        Slice* s = slice_of(from);
+        if (s && s->state[(from - kBase) % kSlice / kChunk].load() == kMapped)
+            std::memset(reinterpret_cast<void*>(from), 0, to - from);
+    };
+    if (lo >= hi) {
+        zero(addr, addr + size);
+        return;
+    }
+    zero(addr, lo);
+    zero(hi, addr + size);
+    Lock lk;
+    for (uint64_t c = lo; c < hi; c += kChunk) {
+        Slice* s = slice_of(c);
+        if (!s) continue;
+        uint64_t index = (c - kBase) % kSlice / kChunk;
+        uint8_t st = s->state[index].load(std::memory_order_acquire);
+        if (st == kMapped) {
+            ps4_munmap(reinterpret_cast<void*>(c), kChunk);
+            void* back = reinterpret_cast<void*>(c);
+            ps4_reserve_range(&back, kChunk, kMapFixed, 0);
+            if (g_free_count < kMaxFree) g_free[g_free_count++] = s->phys[index];
+            g_mapped -= kChunk;
+        }
+        s->state[index].store(kUnused, std::memory_order_release);
+    }
+}
+
+// Touches every chunk of [addr, addr + size) that is ours, so the kernel can write there.
+void prefault(uint64_t addr, uint64_t size) {
+    if (!size || addr + size <= kBase || addr >= kEnd) return;
+    uint64_t a = std::max(addr, kBase) & ~(kChunk - 1), e = std::min(addr + size, kEnd);
+    for (uint64_t c = a; c < e; c += kChunk) {
+        Slice* s = slice_of(c);
+        if (s && s->state[(c - kBase) % kSlice / kChunk].load(std::memory_order_acquire) == kCommitted)
+            (void)*reinterpret_cast<volatile uint8_t*>(std::max(c, addr));
+    }
+}
+
+}  // namespace lazy
+
+// ---- host stacks for start_thread -----------------------------------------------------------------------------
+
+constexpr uint64_t kStacksBase = 0x7800000000ull;  // inside the lazy space, above the guest's ranges
+constexpr uint64_t kStackSlot = 64ull << 20;
+constexpr int kStackSlots = int((lazy::kEnd - kStacksBase) / kStackSlot);  // 256
+constexpr uint64_t kStackGuard = lazy::kChunk;     // never committed: an overflow faults
+constexpr uint64_t kStackEager = 1ull << 20;       // mapped at once (kernel calls with buffers on the stack)
+
+struct StackSlot {
+    std::atomic<int> state{0};  // 0 free, 1 in use, 2 its thread is ending (join it, then reuse)
+    pthread_t thread{};
+};
+StackSlot g_stack_slots[kStackSlots];
+std::mutex g_stack_lock;
+thread_local int t_stack_slot = -1;
+
+// ---- cores ----------------------------------------------------------------------------------------------------
+
+uint64_t g_app_cores = 0x3F;     // the cores this process may use (0x7F with the 7th)
+uint64_t g_helper_cores = 0x30;  // everything that is not pinned: cores 4, 5 (and 6)
+bool g_spread = false;           // NX_PS4_CORES=spread
+
+constexpr int kCoreGuest0 = 0, kCoreReplay = 1, kCoreGuest1 = 2, kCoreGuest2 = 3;
+
+uint64_t guest_core_mask(int core) {
+    if (g_spread) return g_app_cores;
+    switch (core) {
+        case 0: return 1ull << kCoreGuest0;
+        case 1: return 1ull << kCoreGuest1;
+        case 2: return 1ull << kCoreGuest2;
+        default: return g_helper_cores;  // guest core 3 (the Switch's system core)
+    }
+}
+
+void detect_cores() {
+    void* self = ps4_pthread_self();
+    uint64_t before = 0;
+    ps4_get_affinity(self, &before);
+    uint64_t got = 0;
+    bool seventh = ps4_set_affinity(self, 0x40) == 0 && ps4_get_affinity(self, &got) == 0 && got == 0x40;
+    g_app_cores = seventh ? 0x7F : 0x3F;
+    g_helper_cores = seventh ? 0x70 : 0x30;
+    const char* mode = std::getenv("NX_PS4_CORES");
+    g_spread = mode && std::strcmp(mode, "spread") == 0;
+    if (g_spread) g_helper_cores = g_app_cores;
+    ps4_new_thread_cores = g_helper_cores;
+    ps4_set_affinity(self, g_helper_cores);
+    trace("cores: %s (main thread had %#llx), %s: guest cores 0/1/2 on %d/%d/%d, replay+present on %d, the rest on %#llx",
+          seventh ? "7, the 7th granted" : "6, no 7th", (unsigned long long)before, g_spread ? "spread" : "pinned",
+          kCoreGuest0, kCoreGuest1, kCoreGuest2, kCoreReplay, (unsigned long long)g_helper_cores);
+}
+
+// Host threads by id, for placing guest threads from another thread (svcSetThreadCoreMask).
+struct Known {
+    std::atomic<int64_t> tid{0};
+    void* thread = nullptr;
+    std::atomic<bool> guest{false};
+};
+constexpr int kKnown = 512;
+Known g_known[kKnown];
+
+void register_thread() {
+    int64_t tid = ps4_thread_id();
+    for (Known& k : g_known) {
+        int64_t expected = 0;
+        if (k.tid.compare_exchange_strong(expected, tid)) {
+            k.thread = ps4_pthread_self();
+            k.guest = false;
+            return;
+        }
+    }
+}
+
+void forget_thread() {
+    int64_t tid = ps4_thread_id();
+    for (Known& k : g_known)
+        if (k.tid == tid) {
+            k.thread = nullptr;
+            k.tid = 0;
+        }
+}
+
+Known* known(int64_t tid) {
+    for (Known& k : g_known)
+        if (k.tid == tid) return &k;
+    return nullptr;
+}
+
+// ---- pad --------------------------------------------------------------------------------------------------------
+
+std::mutex g_pad_lock;
+PadState g_pad;
+int g_pad_handle = -1;
+bool g_cross_confirms = true;  // NX_BUTTONS=nintendo: by position (Circle = A) instead
+
+// ---- audio ------------------------------------------------------------------------------------------------------
+
+struct Pending {
+    const uint8_t* data;
+    size_t size, pos;
+    void* ctx;
+};
+AudioDone g_done = nullptr;
+int32_t g_audio_port = -1;
+std::mutex g_audio;
+std::deque<Pending> g_pending;
+std::atomic<bool> g_audio_paused{false};
+constexpr int kGrainFrames = 256;  // 5.3 ms at 48 kHz
+
+}  // namespace
+
+uint64_t ps4_lazy_mapped_bytes() { return lazy::g_mapped.load(); }
+uint64_t ps4_lazy_faults() { return lazy::g_faults.load(); }
+uint64_t ps4_lazy_failed() { return lazy::g_failed.load(); }
+uint64_t ps4_lazy_blocks() { return lazy::g_blocks.load(); }
+
+// ---- memory ---------------------------------------------------------------------------------------------------
+
+bool reserve(uint64_t addr, uint64_t size) {
+    void* a = reinterpret_cast<void*>(addr);
+    int32_t r = ps4_reserve_range(&a, size, kMapFixed, 0);
+    if (r != 0 || a != reinterpret_cast<void*>(addr)) {
+        trace("memory: reserving %#llx+%#llx failed (%#x, got %p)", (unsigned long long)addr,
+              (unsigned long long)size, unsigned(r), a);
+        return false;
+    }
+    return true;
+}
+
+bool commit(uint64_t addr, uint64_t size) {
+    if (!lazy::ours(addr) || !lazy::ours(addr + size - 1)) {
+        log("memory: commit %llx+%llx is outside the lazy space", (unsigned long long)addr, (unsigned long long)size);
+        return false;
+    }
+    lazy::commit(addr, size);
+    return true;
+}
+
+void decommit(uint64_t addr, uint64_t size) {
+    if (lazy::ours(addr)) lazy::decommit(addr, size);
+}
+
+// ---- threads and time -----------------------------------------------------------------------------------------
+
+struct ThreadStart {
+    ThreadFn fn;
+    void* arg;
+    int slot;
+};
+
+static void* thread_entry(void* p) {
+    ThreadStart s = *static_cast<ThreadStart*>(p);
+    delete static_cast<ThreadStart*>(p);
+    t_stack_slot = s.slot;
+    register_thread();
+    s.fn(s.arg);
+    forget_thread();
+    if (s.slot >= 0) g_stack_slots[s.slot].state = 2;
+    return nullptr;
+}
+
+void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    int slot = -1;
+    if (stack_size <= kStackSlot - kStackGuard) {
+        std::lock_guard lk(g_stack_lock);
+        for (int k = 0; k < kStackSlots && slot < 0; k++) {
+            int st = g_stack_slots[k].state.load();
+            if (st == 2) {  // its thread has returned from (or is leaving) its function: wait until it is gone
+                pthread_join(g_stack_slots[k].thread, nullptr);
+                st = 0;
+            }
+            if (st == 0) slot = k;
+        }
+        if (slot >= 0) g_stack_slots[slot].state = 1;
+    }
+    if (slot >= 0) {
+        uint64_t base = kStacksBase + uint64_t(slot) * kStackSlot;
+        commit(base + kStackGuard, kStackSlot - kStackGuard);
+        lazy::prefault(base + kStackSlot - kStackEager, kStackEager);
+        pthread_attr_setstack(&a, reinterpret_cast<void*>(base + kStackGuard), size_t(kStackSlot - kStackGuard));
+    } else {
+        log("threads: no lazy stack slot left: a %zu MiB system stack", size_t(8));
+        pthread_attr_setstacksize(&a, 8u << 20);
+    }
+    pthread_t t;
+    int r = pthread_create(&t, &a, thread_entry, new ThreadStart{fn, arg, slot});
+    pthread_attr_destroy(&a);
+    if (r != 0) fatal("threads: pthread_create failed (%d)", r);
+    if (slot >= 0) g_stack_slots[slot].thread = t;
+    else pthread_detach(t);
+}
+
+void exit_thread() {
+    forget_thread();
+    if (t_stack_slot >= 0) g_stack_slots[t_stack_slot].state = 2;
+    pthread_exit(nullptr);
+}
+
+void exit_process(int code) {
+    std::fflush(nullptr);
+    _exit(code);
+}
+
+void sleep_ns(int64_t ns) {
+    if (ns <= 0) {
+        sched_yield();
+        return;
+    }
+    timespec ts{time_t(ns / 1000000000), long(ns % 1000000000)};
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+    }
+}
+
+void yield() { sched_yield(); }
+
+void set_thread_name(const char* name) {
+    char n[32];
+    std::snprintf(n, sizeof n, "%s", name);
+    ps4_rename(ps4_pthread_self(), n);
+    ps4_watch_thread(n);
+}
+
+int64_t current_thread_id() { return int64_t(ps4_thread_id()); }
+
+bool profile(const int64_t*, const uint64_t* const*, size_t, int, const std::string&) {
+    return false;  // port/ps4_sampler.cpp (/data/SMW/profile.txt) samples every thread
+}
+
+uint64_t monotonic_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);  // the time stamp counter (port/ps4_runtime.cpp)
+    return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+}
+
+void set_guest_core(int64_t host_tid, int core) {
+    Known* k = known(host_tid);
+    if (!k || !k->thread) return;
+    k->guest = true;
+    ps4_set_affinity(k->thread, guest_core_mask(core));
+}
+
+void place_frame_thread(int role) {
+    Known* k = known(ps4_thread_id());
+    if (k && k->guest) return;  // a guest thread presents (NX_REPLAY_THREAD=0): it keeps its guest core
+    if (role == 0) ps4_set_affinity(ps4_pthread_self(), g_spread ? g_app_cores : 1ull << kCoreReplay);
+}
+
+// ---- files and output -----------------------------------------------------------------------------------------
+
+FILE* fopen_utf8(const std::string& path, const char* mode) { return std::fopen(path.c_str(), mode); }
+int64_t ftell64(FILE* f) { return ftello(f); }
+int fseek64(FILE* f, int64_t off, int origin) { return fseeko(f, off, origin); }
+
+uint64_t read_at(FILE* f, int64_t off, void* buf, uint64_t size) {
+    if (size > uint64_t(SSIZE_MAX)) return 0;  // the game passes -1 as "everything": fread read nothing
+    lazy::prefault(reinterpret_cast<uint64_t>(buf), size);  // the kernel writes there: no faults to map it
+    int fd = fileno(f);
+    uint64_t done = 0;
+    while (done < size) {
+        ssize_t n = pread(fd, static_cast<uint8_t*>(buf) + done, size_t(size - done), off + int64_t(done));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        done += uint64_t(n);
+    }
+    return done;
+}
+
+void prefault(uint64_t addr, uint64_t size) { lazy::prefault(addr, size); }
+
+bool make_dirs(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::create_directories(path, ec);
+    return !ec;
+}
+
+void log_line(const char*) {}  // nx.log only: the PS4 has no console to write to
+std::string data_root() { return kDataRoot; }
+
+std::string setting(const std::string& key) {
+    std::string env = "NX_";
+    for (char ch : key) env += char(std::toupper(static_cast<unsigned char>(ch)));
+    const char* v = std::getenv(env.c_str());
+    return v ? v : "";
+}
+
+// ---- display ----------------------------------------------------------------------------------------------------
+
+namespace {
+int g_display_token;
+}
+
+bool headless() { return false; }
+void* create_window() { return &g_display_token; }  // the VideoOut display; the surface is the headless one
+void release_window(void*) {}
+uint64_t window_generation() { return 1; }
+bool window_minimized() { return false; }
+
+void window_size(uint32_t& w, uint32_t& h) {
+    w = ps4::kScreenWidth;
+    h = ps4::kScreenHeight;
+}
+
+void screen_size(uint32_t& w, uint32_t& h) { window_size(w, h); }
+float default_render_scale() { return 1.0f; }
+
+// ---- input: the initial user's DualShock 4 (polled on the main thread) -----------------------------------------
+
+static void open_pad() {
+    int32_t user = -1;
+    if (sceUserServiceGetInitialUser(&user) != 0 || user < 0) return;
+    g_pad_handle = scePadOpen(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
+    trace("pad: user %08x, handle %d", unsigned(user), g_pad_handle);
+}
+
+static int32_t stick(uint8_t v, bool invert) {
+    int32_t s = (int32_t(v) - 128) * 258;  // -33024..32766
+    if (s > -3277 && s < 3277) return 0;   // 10% dead zone
+    s = std::clamp(s, -kStickMax, kStickMax);
+    return invert ? -s : s;
+}
+
+static void sample_input() {
+    if (g_pad_handle < 0) {
+        static int retry = 0;
+        if (++retry % 250 == 0) open_pad();
+        return;
+    }
+    OrbisPadData d{};
+    PadState p;
+    if (scePadReadState(g_pad_handle, &d) == 0 && d.connected) {
+        // Nintendo's A is the right face button and B the bottom one. By default Cross is A (confirm, as on every
+        // PS4 menu) and Circle B; NX_BUTTONS=nintendo keeps the positions (Circle A, Cross B).
+        uint32_t b = d.buttons;
+        uint64_t bottom = g_cross_confirms ? kA : kB, right = g_cross_confirms ? kB : kA;
+        uint64_t left = kY, top = kX;
+        struct Map {
+            uint32_t bit;
+            uint64_t npad;
+        };
+        const Map map[] = {
+            {ORBIS_PAD_BUTTON_CROSS, bottom},     {ORBIS_PAD_BUTTON_CIRCLE, right},
+            {ORBIS_PAD_BUTTON_SQUARE, left},      {ORBIS_PAD_BUTTON_TRIANGLE, top},
+            {ORBIS_PAD_BUTTON_L1, kL},            {ORBIS_PAD_BUTTON_R1, kR},
+            {ORBIS_PAD_BUTTON_OPTIONS, kPlus},    {ORBIS_PAD_BUTTON_TOUCH_PAD, kMinus},
+            {ORBIS_PAD_BUTTON_L3, kStickL},       {ORBIS_PAD_BUTTON_R3, kStickR},
+            {ORBIS_PAD_BUTTON_LEFT, kLeft},       {ORBIS_PAD_BUTTON_UP, kUp},
+            {ORBIS_PAD_BUTTON_RIGHT, kRight},     {ORBIS_PAD_BUTTON_DOWN, kDown},
+        };
+        for (const Map& m : map)
+            if (b & m.bit) p.buttons |= m.npad;
+        if (d.analogButtons.l2 > 48 || (b & ORBIS_PAD_BUTTON_L2)) p.buttons |= kZL;
+        if (d.analogButtons.r2 > 48 || (b & ORBIS_PAD_BUTTON_R2)) p.buttons |= kZR;
+        p.lx = stick(d.leftStick.x, false);
+        p.ly = stick(d.leftStick.y, true);  // DS4: down is positive; Horizon: up is positive
+        p.rx = stick(d.rightStick.x, false);
+        p.ry = stick(d.rightStick.y, true);
+    }
+    std::lock_guard lk(g_pad_lock);
+    g_pad = p;
+}
+
+void read_pad(PadState& p) {
+    {
+        std::lock_guard lk(g_pad_lock);
+        p.buttons |= g_pad.buttons;
+        if (g_pad.lx) p.lx = g_pad.lx;
+        if (g_pad.ly) p.ly = g_pad.ly;
+        if (g_pad.rx) p.rx = g_pad.rx;
+        if (g_pad.ry) p.ry = g_pad.ry;
+    }
+    input_script(p);
+}
+
+// ---- audio: sceAudioOut, s16 stereo 48 kHz, fed from the queue of submitted buffers ----------------------------
+
+static void* audio_thread(void*) {
+    set_thread_name("SMW AudioOut");
+    // above the game's threads, so a slow frame does not make the sound crackle (default priority 700)
+    ps4_set_prio(ps4_pthread_self(), 400);
+    alignas(64) static int16_t grains[2][kGrainFrames * 2];
+    int current = 0;
+    std::vector<void*> finished;
+    for (;;) {
+        uint8_t* buf = reinterpret_cast<uint8_t*>(grains[current]);
+        const size_t n = sizeof grains[0];
+        size_t filled = 0;
+        finished.clear();
+        if (!g_audio_paused) {
+            std::lock_guard lk(g_audio);
+            while (filled < n && !g_pending.empty()) {
+                Pending& p = g_pending.front();
+                size_t take = std::min(n - filled, p.size - p.pos);
+                std::memcpy(buf + filled, p.data + p.pos, take);
+                filled += take;
+                p.pos += take;
+                if (p.pos == p.size) {
+                    finished.push_back(p.ctx);
+                    g_pending.pop_front();
+                }
+            }
+        }
+        if (filled < n) std::memset(buf + filled, 0, n - filled);  // underrun or paused: silence
+        for (void* ctx : finished) g_done(ctx);
+        sceAudioOutOutput(g_audio_port, buf);  // blocks until the previous grain plays
+        current ^= 1;
+    }
+    return nullptr;
+}
+
+bool audio_open(AudioDone done) {
+    g_done = done;
+    if (std::getenv("NX_MUTE")) return false;
+    int32_t r = sceAudioOutInit();
+    if (r != 0 && r != int32_t(0x8026000E)) {  // already initialized is fine
+        log("audio: sceAudioOutInit failed: %08x", unsigned(r));
+        return false;
+    }
+    g_audio_port = sceAudioOutOpen(0xFF, ORBIS_AUDIO_OUT_PORT_TYPE_MAIN, 0, kGrainFrames, 48000,
+                                   ORBIS_AUDIO_OUT_PARAM_FORMAT_S16_STEREO);
+    if (g_audio_port < 0) {
+        log("audio: sceAudioOutOpen failed: %08x", unsigned(g_audio_port));
+        return false;
+    }
+    int32_t volume[2] = {32768, 32768};  // 0 dB
+    sceAudioOutSetVolume(g_audio_port, 0x3, volume);
+    pthread_t t;
+    pthread_create(&t, nullptr, audio_thread, nullptr);
+    pthread_detach(t);
+    log("audio: sceAudioOut port %08x, %d frames at 48 kHz", unsigned(g_audio_port), kGrainFrames);
+    return true;
+}
+
+bool audio_submit(const void* data, size_t bytes, void* ctx) {
+    if (g_audio_port < 0) return false;
+    std::lock_guard lk(g_audio);
+    g_pending.push_back({static_cast<const uint8_t*>(data), bytes, 0, ctx});
+    return true;
+}
+
+uint32_t audio_queued() {
+    std::lock_guard lk(g_audio);
+    return uint32_t(g_pending.size());
+}
+
+void audio_pause(bool paused) { g_audio_paused = paused; }
+
+// ---- Vulkan: RADV linked in, with the VideoOut surface (ps4/ps4_vk_wsi.cpp) ------------------------------------
+
+void* vulkan_get_instance_proc_addr() { return ps4::vk_get_instance_proc_addr(); }
+const char* vulkan_surface_extension() { return VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME; }
+
+int vulkan_create_surface(void* instance, void*, uint64_t* surface, void* gipa) {
+    auto get = reinterpret_cast<PFN_vkGetInstanceProcAddr>(gipa ? gipa : ps4::vk_get_instance_proc_addr());
+    auto create = reinterpret_cast<PFN_vkCreateHeadlessSurfaceEXT>(
+        get(static_cast<VkInstance>(instance), "vkCreateHeadlessSurfaceEXT"));
+    VkHeadlessSurfaceCreateInfoEXT ci{VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT};
+    VkSurfaceKHR s = VK_NULL_HANDLE;
+    VkResult r = create ? create(static_cast<VkInstance>(instance), &ci, nullptr, &s) : VK_ERROR_EXTENSION_NOT_PRESENT;
+    *surface = reinterpret_cast<uint64_t>(s);
+    return r;
+}
+
+}  // namespace nx::plat
+
+// ---- fault handler, crash report and entry --------------------------------------------------------------------
+
+namespace {
+
+struct sigaction g_old_segv, g_old_bus;
+
+void chain(int sig, siginfo_t* info, void* uc) {
+    struct sigaction& old = sig == SIGBUS ? g_old_bus : g_old_segv;
+    if (old.sa_flags & SA_SIGINFO) {
+        old.sa_sigaction(sig, info, uc);
+        return;
+    }
+    if (old.sa_handler == SIG_IGN) return;
+    if (old.sa_handler != SIG_DFL) {
+        old.sa_handler(sig);
+        return;
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void fault_handler(int sig, siginfo_t* info, void* uc) {
+    if (nx::plat::write_watch_fault(info->si_addr)) return;               // write_watch.cpp
+    if (nx::plat::lazy::fault(uint64_t(uintptr_t(info->si_addr)))) return;  // first touch of guest memory
+    chain(sig, info, uc);  // port/ps4_crashlog.cpp writes crash.log (and calls ps4_crash_guest_info)
+}
+
+void install_fault_handler() {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = fault_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &g_old_segv);
+    sigaction(SIGBUS, &sa, &g_old_bus);
+}
+
+void load_system_modules() {
+    // Calling into a system library whose module isn't loaded ends the app without a word.
+    const std::pair<const char*, uint32_t> modules[] = {
+        {"SystemService", 0x80000010}, {"UserService", 0x80000011}, {"VideoOut", 0x80000022},
+        {"AudioOut", 0x80000001},      {"Pad", 0x80000024},
+    };
+    for (const auto& [name, id] : modules) {
+        int r = int(sceSysmoduleLoadModuleInternal(OrbisSysModuleInternal(id)));
+        if (r != 0) nx::plat::trace("loading system module %s failed (%x)", name, unsigned(r));
+    }
+}
+
+std::string app_version() {
+    char buf[32]{};
+    if (FILE* f = std::fopen("/app0/version.txt", "r")) {
+        if (!std::fgets(buf, sizeof buf, f)) buf[0] = 0;
+        std::fclose(f);
+    }
+    std::string v(buf);
+    while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back()))) v.pop_back();
+    return v.empty() ? "?" : v;
+}
+
+// /data/SMW/config.txt: NX_<KEY>=<value> per line ('#' starts a comment) into the environment.
+void load_config() {
+    FILE* f = std::fopen("/data/SMW/config.txt", "r");
+    if (!f) return;
+    char line[512];
+    int n = 0;
+    while (std::fgets(line, sizeof line, f)) {
+        std::string s(line);
+        if (auto hash = s.find('#'); hash != std::string::npos) s.resize(hash);
+        auto eq = s.find('=');
+        if (eq == std::string::npos) continue;
+        auto trim = [](std::string t) {
+            size_t a = t.find_first_not_of(" \t\r\n"), b = t.find_last_not_of(" \t\r\n");
+            return a == std::string::npos ? std::string() : t.substr(a, b - a + 1);
+        };
+        std::string key = trim(s.substr(0, eq)), value = trim(s.substr(eq + 1));
+        if (key.empty()) continue;
+        setenv(key.c_str(), value.c_str(), 1);
+        nx::plat::trace("config: %s=%s", key.c_str(), value.c_str());
+        n++;
+    }
+    std::fclose(f);
+    // svc_am.cpp only asks whether NX_HANDHELD exists: NX_HANDHELD=0 means docked, so it must go (as on Android).
+    if (const char* h = std::getenv("NX_HANDHELD"); h && h[0] == '0') unsetenv("NX_HANDHELD");
+    nx::plat::trace("config: %d settings from /data/SMW/config.txt", n);
+}
+
+void game_thread(void*) {
+    try {
+        nx::boot();
+    } catch (const nx::LongJmp& j) {
+        nx::fatal("longjmp to buffer %llx with no setjmp frame", (unsigned long long)j.buf);
+    } catch (const std::exception& e) {
+        nx::fatal("host exception: %s", e.what());
+    }
+    nx::plat::exit_process(0);
+}
+
+}  // namespace
+
+// The game's view of a crash, appended to crash.log by port/ps4_crashlog.cpp after the host's stacks: the guest
+// registers of the crashed thread.
+extern "C" void ps4_crash_guest_info() {
+    const int fd = open("/data/SMW/crash.log", O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) return;
+    char line[200];
+    nx::CPU& c = nx::current_cpu();
+    int n = std::snprintf(line, sizeof line, "\n== guest CPU at the crash: lr %016llx sp %016llx, lazy memory %llu MiB "
+                                             "mapped, %llu chunk maps failed\n",
+                          (unsigned long long)c.x[30], (unsigned long long)c.x[31],
+                          (unsigned long long)(nx::plat::ps4_lazy_mapped_bytes() >> 20),
+                          (unsigned long long)nx::plat::ps4_lazy_failed());
+    write(fd, line, size_t(n));
+    for (int k = 0; k < 32; k += 4) {
+        n = std::snprintf(line, sizeof line, "x%-2d %016llx %016llx %016llx %016llx\n", k,
+                          (unsigned long long)c.x[k], (unsigned long long)c.x[k + 1],
+                          (unsigned long long)c.x[k + 2], (unsigned long long)c.x[k + 3]);
+        write(fd, line, size_t(n));
+    }
+    std::string lr = nx::describe(c.x[30]);  // module+offset and the nearest symbol
+    n = std::snprintf(line, sizeof line, "guest lr: %s\n", lr.c_str());
+    write(fd, line, size_t(n));
+    close(fd);
+}
+
+int main() {
+    using namespace nx::plat;
+    load_system_modules();
+    mkdir(kDataRoot, 0777);
+    trace("SMW %s starting (%s)", app_version().c_str(), nx::game::kInfo.title);
+    load_config();
+    if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_start();
+    detect_cores();
+    g_cross_confirms = !(std::getenv("NX_BUTTONS") && std::strcmp(std::getenv("NX_BUTTONS"), "nintendo") == 0);
+    install_fault_handler();
+    register_thread();
+    // The host stacks' range (the guest's are reserved by nx::memory_init, on the game thread started below).
+    if (!reserve(kStacksBase, lazy::kEnd - kStacksBase)) trace("memory: no range for the thread stacks");
+
+    sceUserServiceInitialize(nullptr);
+    scePadInit();
+    open_pad();
+
+    start_memory_guard();  // memguard_ps4.cpp
+    trace("game thread");
+    // The game on its own thread, with a big stack (recompiled calls nest deeply); the main thread polls the pad.
+    start_thread(game_thread, nullptr, 64ull << 20);
+    for (;;) {
+        sample_input();
+        sleep_ns(4'000'000);
+    }
+}

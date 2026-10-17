@@ -4,6 +4,9 @@ project(SwitchGamesRecomp C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# PS4 homebrew (SMW): set by its scripts/configure-smw.sh with the PS4 toolchain.
+option(NX_PS4 "Build for the PS4 (OpenOrbis toolchain, RADV on GNM)" OFF)
+
 # The game this build is for: games/<NX_GAME>/ holds what only that game needs (game.cpp: nx/game.h), the shared
 # runtime is the rest. One build directory per game.
 set(NX_GAME "hades" CACHE STRING "Game to build (a folder under games/)")
@@ -71,7 +74,10 @@ foreach(mod main sdk)
     file(GLOB src CONFIGURE_DEPENDS "${NX_GEN_DIR}/${mod}/*.cpp")
     add_library(game_${mod} STATIC ${src})
     target_include_directories(game_${mod} PRIVATE runtime/include "${NX_GEN_DIR}/${mod}")
-    if(ANDROID)
+    if(NX_PS4)
+        # PS4 (AMD Jaguar: -march=btver2 from the toolchain, AVX but no AVX2/FMA): no FMA contraction, as on Linux.
+        target_compile_options(game_${mod} PRIVATE -O2 -fvisibility=hidden -ffp-contract=off)
+    elseif(ANDROID)
         # Hidden visibility: calls between recompiled functions are direct, not through the PLT.
         # armv8.2-a+crypto: cpu.h's AES/SHA paths need __ARM_FEATURE_AES/SHA2 (the NDK default armv8-a has neither).
         target_compile_options(game_${mod} PRIVATE -O2 -fPIC -fvisibility=hidden -fno-semantic-interposition
@@ -173,7 +179,21 @@ else()
     set(NX_VULKAN_SDK "C:/VulkanSDK/1.4.357.0" CACHE PATH "Vulkan SDK")
 endif()
 
-if(ANDROID)
+if(NX_PS4)
+    # PS4 homebrew (SMW: configured with its toolchain/ps4-smw.cmake and ps4-love-style.cmake as the project include,
+    # which provide PS4_RUNTIME_SOURCES, ps4_link_mesa and ps4_add_eboot): RADV on GNM linked in, presenting through
+    # VideoOut (runtime/src/ps4/ps4_vk_wsi.cpp), ScePad, sceAudioOut. -> <build>/<game>_eboot/eboot.bin
+    add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_ps4.cpp runtime/src/memguard_ps4.cpp
+        runtime/src/ps4/ps4_vk_wsi.cpp ${PS4_RUNTIME_SOURCES})
+    target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
+    target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -ffp-contract=off)
+    target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk)
+    ps4_link_mesa(${NX_GAME})
+    # The network library's shares (port/ps4_netfs.cpp, inert unless a /net path is opened) and the system libraries.
+    target_link_libraries(${NX_GAME} PRIVATE ${PS4_SYSROOT}/lib/libnfs.a ${PS4_SYSROOT}/lib/libsmb2.a
+        ${PS4_SYSROOT}/lib/libz.a SceSysmodule SceSystemService SceUserService SceVideoOut SceAudioOut ScePad SceNet)
+    ps4_add_eboot(${NX_GAME})
+elseif(ANDROID)
     # NativeActivity app: lib<game>.so, entry android_main (android_native_app_glue).
     set(GLUE "${ANDROID_NDK}/sources/android/native_app_glue")
     add_library(${NX_GAME} SHARED ${NX_RUNTIME_SOURCES} runtime/src/platform_android.cpp

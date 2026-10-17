@@ -82,6 +82,13 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
 // role 0: the thread that replays and presents (frame_presented ticks it); 1: the game's main thread.
 void frame_thread_tick(int role);
 void frame_presented();  // after each present to the display
+// Placement on the host's cores (platform_ps4.cpp; nothing elsewhere): the guest thread on host thread `host_tid`
+// runs on guest core `core` now (svcCreateThread, svcSetThreadCoreMask); the calling thread has frame role `role`.
+void set_guest_core(int64_t host_tid, int core);
+void place_frame_thread(int role);
+// Makes [addr, addr + size) of committed guest memory present, so the OS kernel can write there (platform_ps4.cpp
+// maps guest memory on first touch; nothing elsewhere).
+void prefault(uint64_t addr, uint64_t size);
 // Write watches (write_watch.cpp; page protection, POSIX): add fails when unsupported or full; take re-arms and
 // says whether the range was written since the last take; the crash handler calls fault first (true: handled).
 bool write_watch_add(uint64_t addr, uint64_t size);

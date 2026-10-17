@@ -56,6 +56,10 @@ const Font& font(uint32_t type) {
     candidates.push_back("/System/Library/Fonts/Supplemental/Arial.ttf");
 #elif defined(__ANDROID__)
     candidates.push_back("/system/fonts/Roboto-Regular.ttf");
+#elif defined(__ORBIS__)
+    // The package's own (SMW's package-smw.sh): the button glyph font (shared_5) and Fredoka (OFL) for the rest.
+    candidates.push_back("/app0/fonts/shared_" + std::to_string(type) + ".ttf");
+    candidates.push_back("/app0/fonts/Fredoka.ttf");
 #elif defined(_WIN32)
     // Arial Unicode (Office installs it) covers the most; else Arial, as on the Mac.
     candidates.push_back("C:/Windows/Fonts/arialuni.ttf");

@@ -156,6 +156,9 @@ void thread_counters(uint64_t& cpu_ns, long faults[2], long switches[2]) {
 
 void frame_thread_tick(int role) {
     Role& r = g_roles[role & 1];
+#if defined(__ORBIS__)
+    if (r.ticks == 0) place_frame_thread(role);  // platform_ps4.cpp: its own core
+#endif
 #if defined(__ANDROID__)
     if (r.ticks % 60 == 0) place(role);
     int cpu = sched_getcpu();
@@ -202,5 +205,11 @@ void frame_presented() {
         (unsigned long long)bins[6]);
     for (auto& b : bins) b = 0;
 }
+
+#if !defined(__ORBIS__)
+void set_guest_core(int64_t, int) {}
+void place_frame_thread(int) {}
+void prefault(uint64_t, uint64_t) {}
+#endif
 
 }  // namespace nx::plat
