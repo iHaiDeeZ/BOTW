@@ -235,7 +235,12 @@ void zero_draws_collect();
 void zero_draws_log();
 void frame_sig_flush(uint64_t presents);  // NX_FRAME_SIG=1: the frame's draw signature, logged (nvn_draw_trace.cpp)
 void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw);
-void debug_snapshots_write();  // nvn_pipeline.cpp: before an image is freed
+void debug_snapshots_write();
+// A storyboard of one frame (nvn_debug.cpp): asked for by diag_request (any thread), started and ended at presents.
+void diag_request();
+bool diag_active();
+void diag_frame_boundary(uint64_t presents);
+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs);  // nvn_pipeline.cpp: before an image is freed
 
 // nvn_debug.cpp: GPU time per render pass (NX_GPU_PROFILE=1).
 bool gpu_profile_on();  // NX_GPU_PROFILE=1: per-pass labels, every submit waited for (nvn_debug.cpp)

@@ -396,7 +396,8 @@ struct Player {
 };
 std::mutex g_pad_lock;
 Player g_players[kPlayers];
-bool g_cross_confirms = true;  // NX_BUTTONS=nintendo: by position (Circle = A) instead
+bool g_cross_confirms = true;
+std::atomic<bool> g_diag_requested{false};  // NX_BUTTONS=nintendo: by position (Circle = A) instead
 
 // ---- audio ------------------------------------------------------------------------------------------------------
 
@@ -721,7 +722,17 @@ static void sample_input() {
         g_players[k].connected = on;
         g_players[k].state = p;
     }
+    // L3 + R3 held a second on player 1's controller: a storyboard of the next frame (nvn_debug.cpp, diag/).
+    static int held = 0;
+    bool both = (g_players[0].state.buttons & (kStickL | kStickR)) == (kStickL | kStickR);
+    held = both ? held + 1 : 0;
+    if (held == 250) {
+        g_diag_requested = true;
+        trace("diag: storyboard asked for (L3 + R3)");
+    }
 }
+
+bool take_diag_request() { return g_diag_requested.exchange(false); }
 
 void read_pad(PadState& p) {
     {
@@ -973,6 +984,10 @@ int main() {
     mkdir(kDataRoot, 0777);
     trace("SMW %s starting (%s)", app_version().c_str(), nx::game::kInfo.title);
     load_config();
+    // PS4 defaults (config.txt overrides them): the game renders at 1600x900 and FidelityFX Super Resolution 1 (EASU,
+    // then RCAS sharpening) brings it to the TV's 1080p in the present pass (nvn_present.cpp).
+    setenv("NX_FSR", "1", 0);
+    setenv("NX_RENDER_RES", "1600x900", 0);
     ps4::boot_screen_start();  // our own picture with a progress bar until the game's first frame
     if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_start();
     detect_cores();

@@ -395,6 +395,7 @@ struct Snap {
     uint32_t w = 0, h = 0;
     uint64_t draw = 0;
     uint32_t raw_format = 0;  // NX_SNAP_RAW: the texels as stored (4-byte formats), written as .raw
+    std::string name;         // a storyboard picture (diag_pass): diag/<name>.ppm
 };
 std::vector<Snap> g_snaps;
 
@@ -476,6 +477,83 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
 
 bool debug_snapshots_pending() { return !g_snaps.empty(); }
 
+// ---- storyboard of one frame (diag_request; PS4: L3 + R3 held, or a file named diag_now in the data folder) -----
+// Every colour target of every pass of the next frame, scaled to 480 pixels wide, as diag/<pass>_c<slot>_<size>_f
+// <format>_d<draws>_<last fragment shader>.ppm, listed in diag/passes.txt: the first pass where a picture goes wrong.
+
+namespace {
+std::atomic<bool> g_diag_armed{false};
+bool g_diag_on = false;
+int g_diag_seq = 0;
+FILE* g_diag_index = nullptr;
+constexpr int kDiagMax = 400;
+}  // namespace
+
+void diag_request() { g_diag_armed = true; }
+bool diag_active() { return g_diag_on; }
+
+void diag_frame_boundary(uint64_t presents) {
+    if (g_diag_on) {
+        g_diag_on = false;
+        if (g_diag_index) std::fclose(g_diag_index), g_diag_index = nullptr;
+        log("diag: storyboard of frame %llu: %d pictures in %s/diag", (unsigned long long)presents, g_diag_seq,
+            plat::data_root().c_str());
+    }
+    if (presents % 60 == 0) {  // the file request
+        std::string req = plat::data_root() + "/diag_now";
+        if (FILE* f = plat::fopen_utf8(req, "rb")) {
+            std::fclose(f);
+            std::remove(req.c_str());
+            g_diag_armed = true;
+        }
+    }
+    if (g_diag_armed.exchange(false)) {
+        std::string dir = plat::data_root() + "/diag";
+        plat::make_dirs(dir);
+        g_diag_index = plat::fopen_utf8(dir + "/passes.txt", "w");
+        g_diag_seq = 0;
+        g_diag_on = true;
+        log("diag: storyboard of the next frame (after present %llu)", (unsigned long long)presents);
+    }
+}
+
+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs) {
+    if (!g_diag_on || g_diag_seq >= kDiagMax || !img.image || !(img.aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return;
+    Snap snap;
+    snap.w = std::min(img.width, 480u);
+    snap.h = std::max(1u, uint32_t(uint64_t(img.height) * snap.w / std::max(1u, img.width)));
+    char name[160];
+    std::snprintf(name, sizeof name, "%03d_c%u_%ux%u_f%d_d%u_%s", g_diag_seq, slot, img.width, img.height,
+                  int(img.format), draws, fs.empty() ? "-" : fs.c_str());
+    snap.name = name;
+    if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
+    g_diag_seq++;
+    if (!make_scratch(snap.s, snap.w, snap.h)) {
+        snap.s.destroy(vk_device());
+        return;
+    }
+    VkImageLayout back = img.layout;
+    transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    GpuImage dst;
+    dst.image = snap.s.image;
+    dst.format = VK_FORMAT_R8G8B8A8_UNORM;
+    transition(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {int32_t(img.width), int32_t(img.height), 1};
+    blit.dstSubresource = blit.srcSubresource;
+    blit.dstOffsets[1] = {int32_t(snap.w), int32_t(snap.h), 1};
+    p_vkCmdBlitImage(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.image,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    transition(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy r{};
+    r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.imageExtent = {snap.w, snap.h, 1};
+    p_vkCmdCopyImageToBuffer(cb, snap.s.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.buffer, 1, &r);
+    if (back != VK_IMAGE_LAYOUT_UNDEFINED) transition(cb, img, back);
+    g_snaps.push_back(std::move(snap));
+}
+
 void debug_snapshots_write() {  // after the submit's fence
     for (Snap& snap : g_snaps) {
         void* p = nullptr;
@@ -489,6 +567,21 @@ void debug_snapshots_write() {  // after the submit's fence
                 std::fclose(f);
             }
             p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
+        } else if (!snap.name.empty()) {  // a storyboard picture
+            if (p_vkMapMemory(vk_device(), snap.s.buffer_memory, 0, VK_WHOLE_SIZE, 0, &p) == VK_SUCCESS) {
+                if (FILE* f = plat::fopen_utf8(plat::data_root() + "/diag/" + snap.name + ".ppm", "wb")) {
+                    std::fprintf(f, "P6\n%u %u\n255\n", snap.w, snap.h);
+                    const uint8_t* px = static_cast<const uint8_t*>(p);
+                    std::vector<uint8_t> row(size_t(snap.w) * 3);
+                    for (uint32_t y = 0; y < snap.h; y++) {
+                        for (uint32_t x = 0; x < snap.w; x++)
+                            std::memcpy(&row[x * 3], px + (size_t(y) * snap.w + x) * 4, 3);
+                        std::fwrite(row.data(), 1, row.size(), f);
+                    }
+                    std::fclose(f);
+                }
+                p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
+            }
         } else if (!snap.raw_format) {
             write_ppm(snap.s, snap.w, snap.h, 0, snap.draw);  // frames/00000_<draw in hex>.ppm
         }

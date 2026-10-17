@@ -695,6 +695,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     pi.pImageIndices = &index;
     r = p_vkQueuePresentKHR(g_queue, &pi);
     plat::frame_presented();  // cores, CPU time, present intervals (frame_stats.cpp)
+    {
+        static uint64_t presents = 0;
+        if (plat::take_diag_request()) diag_request();  // PS4: L3 + R3 held
+        diag_frame_boundary(++presents);
+    }
     // SUBOPTIMAL re-makes the swapchain only when the surface size changed: Android returns it for every present when
     // the swapchain's transform is not the display's (a Galaxy S23 did for Hades), a rebuild per frame.
     bool remake = r == VK_ERROR_OUT_OF_DATE_KHR;

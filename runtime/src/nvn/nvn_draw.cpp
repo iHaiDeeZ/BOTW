@@ -54,6 +54,8 @@ bool narrow_pass_barrier() {
 // inside) and the writes so far are made visible to the vertex stages.
 void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs);  // the open pass is a render pass object (nvn_renderpass.cpp), not dynamic rendering
 Targets g_pass;           // what the open pass renders to
+uint32_t g_diag_draws = 0;  // the storyboard: draws in this pass, its last fragment shader
+std::string g_diag_fs;
 GpuImage* g_pass_images[9];  // their images (8: depth), resolved once per pass for gather_textures
 uint32_t g_pass_written = 0;  // targets the open pass's draws wrote: bit c colour c, bit 8 depth
 uint64_t g_pass_ends[8];  // passes ended, by draw_end_rendering reason
@@ -420,6 +422,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         if (q) zero_draws_end(cb);
     }
     g_stats.done++;
+    if (diag_active()) g_diag_draws++, g_diag_fs = fs ? fs->hash : vs->hash;
     g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
     // NX_SNAP_FS=<hash>,<hash>[@<first draw>]: also snapshot after draws with those fragment shaders (8 at most, or
     // NX_SNAP_FS_MAX).
@@ -540,6 +543,11 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
                                        : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
         p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
         g_vertex_pending |= narrow_pass_barrier();
+    }
+    if (diag_active()) {  // the storyboard: what this pass left in its colour targets
+        for (uint32_t k = 0; k < g_pass.color_count && k < 8; k++)
+            if (g_pass_images[k]) diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs);
+        g_diag_draws = 0, g_diag_fs.clear();
     }
     g_pass_serial++;
     for (uint32_t k = 0; k < 9; k++)  // this pass's targets only (the other slots may name freed images)

@@ -211,6 +211,7 @@ void set_guest_core(int64_t, int) {}
 void place_frame_thread(int) {}
 void prefault(uint64_t, uint64_t) {}
 bool read_extra_pad(int, PadState&) { return false; }
+bool take_diag_request() { return false; }
 #endif
 
 }  // namespace nx::plat
