@@ -82,6 +82,7 @@ int32_t ps4_available_flexible_main(size_t* size) __asm__("sceKernelAvailableFle
 void ps4_boot_trace(const char* line);       // port/ps4_crashlog.cpp
 void ps4_watch_thread(const char* name);     // port/ps4_sampler.cpp
 void ps4_sampler_start();                    // port/ps4_sampler.cpp
+void ps4_boost_thread();                     // port/ps4_runtime.cpp: priority 650 (default 700)
 extern uint64_t ps4_new_thread_cores;        // port/ps4_runtime.cpp: the cores pthread_create gives new threads
 }
 
@@ -552,8 +553,10 @@ void set_guest_core(int64_t host_tid, int core) {
 void place_frame_thread(int role) {
     Known* k = known(ps4_thread_id());
     if (k && k->guest) return;  // a guest thread presents (NX_REPLAY_THREAD=0): it keeps its guest core
-    if (role == 0)
+    if (role == 0) {
         ps4_set_affinity(ps4_pthread_self(), g_mode == CoreMode::spread ? g_app_cores : 1ull << kCoreReplay);
+        ps4_boost_thread();  // above loading and shader compiles (port/ps4_runtime.cpp)
+    }
 }
 
 // ---- files and output -----------------------------------------------------------------------------------------
