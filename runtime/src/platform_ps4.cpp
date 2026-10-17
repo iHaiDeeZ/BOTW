@@ -990,10 +990,10 @@ int main() {
     mkdir(kDataRoot, 0777);
     trace("SMW %s starting (%s)", app_version().c_str(), nx::game::kInfo.title);
     load_config();
-    // PS4 defaults (config.txt overrides them): the game renders at 1600x900 and FidelityFX Super Resolution 1 (EASU,
+    // PS4 defaults (config.txt overrides them): the game renders at 1280x720 and FidelityFX Super Resolution 1 (EASU,
     // then RCAS sharpening) brings it to the TV's 1080p in the present pass (nvn_present.cpp).
     setenv("NX_FSR", "1", 0);
-    setenv("NX_RENDER_RES", "1600x900", 0);
+    setenv("NX_RENDER_RES", "1280x720", 0);
     // NX_PS4_GPU_FLUSH=1: every GPU cache written back and invalidated after every draw (slow). Tells a cache
     // coherency problem (data the CPU or a later pass reads before the GPU's L2 wrote it out) from the rest.
     if (const char* f = std::getenv("NX_PS4_GPU_FLUSH"); f && f[0] == '1') {

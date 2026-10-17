@@ -51,6 +51,18 @@ void trace_cube_draw(const Targets& t, const ShaderInfo* vs, const ShaderInfo* f
                       v.levels, v.min_layer, !img ? " no image" : img->rendered ? " rt" : img->uploaded ? " up" : "",
                       img && img->layout == VK_IMAGE_LAYOUT_UNDEFINED ? " undef" : "", self ? " SELF" : "");
         tex += b;
+        // What an uploaded input holds in guest memory (once per texture): the probes' direction map was all zeros
+        // on the Mac (DEBUG.md #46), and a zero direction normalized is NaN on AMD (the PS4's black probes).
+        static std::set<uint64_t> seen_inputs;
+        if (img && !img->rendered && tx && tx->memory && tx->storage_size && seen_inputs.insert(texture).second)
+            if (const uint8_t* m = guest_bytes(tx->memory)) {
+                uint64_t n = std::min<uint64_t>(tx->storage_size, 4u << 20), nonzero = 0;
+                for (uint64_t i = 0; i < n; i++) nonzero += m[i] != 0;
+                const uint16_t* h = reinterpret_cast<const uint16_t*>(m);
+                log("cube input t%zu %llx (%ux%u f%x, %llu bytes): %llu non-zero, first %04x %04x %04x %04x %04x %04x %04x %04x",
+                    k, (unsigned long long)texture, tx->width, tx->height, tx->format, (unsigned long long)n,
+                    (unsigned long long)nonzero, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+            }
     }
     GpuImage* d = t.depth ? image_of(t.depth) : nullptr;
     log("cube draw %llu frame %llu: vs %s fs %s targets %u:%llx level %u layer %u depth %llx (%ux%u)%s",
