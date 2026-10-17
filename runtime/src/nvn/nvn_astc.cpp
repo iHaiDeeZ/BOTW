@@ -421,7 +421,14 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
     // Big images over a few threads, by rows of blocks (each writes its own texel rows). The replay waits for them:
     // a 2048x2048 6x5 texture took ~40 ms on one core (DEBUG-2 #75).
     const uint64_t total = rows * bx;
-    unsigned n = total >= 8192 ? std::min(6u, std::max(1u, std::thread::hardware_concurrency() / 2)) : 1u;
+#if defined(__ORBIS__)
+    // PS4: the C library cannot count the cores (a Linux system call); three helpers, as many as the cores nothing
+    // is pinned to (platform_ps4.cpp), with the replay thread doing its share.
+    const unsigned cores = 6;
+#else
+    const unsigned cores = std::thread::hardware_concurrency();
+#endif
+    unsigned n = total >= 8192 ? std::min(6u, std::max(1u, cores / 2)) : 1u;
     if (n <= 1) return decode_rows(0, rows);
     std::vector<std::thread> pool;
     std::vector<uint64_t> bad(n, 0);

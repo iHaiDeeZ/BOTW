@@ -157,25 +157,28 @@ Slice* make_slice(uint64_t addr) {
     return s;
 }
 
-// A free chunk of direct memory (offset / kChunk), 0 when there is none. With g_lock held.
+constexpr uint32_t kNoPhys = UINT32_MAX;
+
+// A free chunk of direct memory (offset / kChunk), kNoPhys when there is none. With g_lock held.
 uint32_t take_phys() {
     if (g_free_count) return g_free[--g_free_count];
     if (g_block_used == kBlock) {
         off_t phys = 0;
-        if (ps4_allocate_direct(0, off_t(ps4_direct_memory_size()), kBlock, kChunk, kWbOnion, &phys) != 0) return 0;
+        if (ps4_allocate_direct(0, off_t(ps4_direct_memory_size()), kBlock, kChunk, kWbOnion, &phys) != 0)
+            return kNoPhys;
         g_block = uint64_t(phys);
         g_block_used = 0;
         g_blocks++;
     }
     uint64_t at = g_block + g_block_used;
     g_block_used += kChunk;
-    return uint32_t(at / kChunk);  // never 0: offset 0 of direct memory is the system's
+    return uint32_t(at / kChunk);
 }
 
 // Maps the chunk at `addr` (committed, unmapped) with zeroes. With g_lock held. False: out of direct memory.
 bool map_chunk(Slice* s, uint64_t index, uint64_t addr) {
     uint32_t phys = take_phys();
-    if (!phys) return false;
+    if (phys == kNoPhys) return false;
     ps4_munmap(reinterpret_cast<void*>(addr), kChunk);  // our reservation there: mapping over it fails
     void* at = reinterpret_cast<void*>(addr);
     int32_t r = ps4_map_direct(&at, kChunk, kProtCpuRw, kMapFixed, off_t(phys) * off_t(kChunk), kChunk);
@@ -192,6 +195,9 @@ bool map_chunk(Slice* s, uint64_t index, uint64_t addr) {
     return true;
 }
 
+thread_local uint64_t t_last_fault = 0;
+thread_local uint32_t t_repeats = 0;
+
 // The fault handler's part: true when `addr` was committed memory that is mapped now (the access is retried).
 bool fault(uint64_t addr) {
     if (!ours(addr)) return false;
@@ -199,7 +205,13 @@ bool fault(uint64_t addr) {
     if (!s) return false;
     uint64_t chunk = addr & ~(kChunk - 1), index = (chunk - kBase) % kSlice / kChunk;
     uint8_t st = s->state[index].load(std::memory_order_acquire);
-    if (st == kMapped) return true;  // another thread mapped it meanwhile
+    if (st == kMapped) {
+        // Another thread mapped it between the access and now: retry. The same address faulting again and again on
+        // a mapped chunk is a real protection fault: the crash handler's.
+        t_repeats = t_last_fault == addr ? t_repeats + 1 : 0;
+        t_last_fault = addr;
+        return t_repeats < 4;
+    }
     if (st != kCommitted) return false;
     Lock lk;
     st = s->state[index].load(std::memory_order_acquire);
@@ -431,9 +443,10 @@ static void* thread_entry(void* p) {
 void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
     pthread_attr_t a;
     pthread_attr_init(&a);
+    // The slot lock is held until the new thread's handle is in its slot: a later start_thread may join it.
+    std::unique_lock lk(g_stack_lock);
     int slot = -1;
     if (stack_size <= kStackSlot - kStackGuard) {
-        std::lock_guard lk(g_stack_lock);
         for (int k = 0; k < kStackSlots && slot < 0; k++) {
             int st = g_stack_slots[k].state.load();
             if (st == 2) {  // its thread has returned from (or is leaving) its function: wait until it is gone
@@ -450,15 +463,17 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
         lazy::prefault(base + kStackSlot - kStackEager, kStackEager);
         pthread_attr_setstack(&a, reinterpret_cast<void*>(base + kStackGuard), size_t(kStackSlot - kStackGuard));
     } else {
-        log("threads: no lazy stack slot left: a %zu MiB system stack", size_t(8));
+        log("threads: no lazy stack slot left: an 8 MiB system stack");
         pthread_attr_setstacksize(&a, 8u << 20);
     }
     pthread_t t;
     int r = pthread_create(&t, &a, thread_entry, new ThreadStart{fn, arg, slot});
     pthread_attr_destroy(&a);
     if (r != 0) fatal("threads: pthread_create failed (%d)", r);
-    if (slot >= 0) g_stack_slots[slot].thread = t;
-    else pthread_detach(t);
+    if (slot >= 0)
+        g_stack_slots[slot].thread = t;
+    else
+        pthread_detach(t);
 }
 
 void exit_thread() {
