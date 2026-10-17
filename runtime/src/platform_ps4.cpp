@@ -12,12 +12,13 @@
 // chunks back to a free list. Guest threads' 64 MiB host stacks come from the same lazy space (0x78_0000_0000),
 // with their top 1 MiB mapped up front, so a thread costs what it uses.
 //
-// Cores (NX_PS4_CORES=pinned, the default): the app has cores 0-5 and the 7th (core 6) when the system grants it,
-// checked at startup. Guest threads go where their Switch core says (svcCreateThread, svcSetThreadCoreMask): guest
-// core 0 (the game's main thread) on core 0, guest cores 1 and 2 (the job workers) on cores 2 and 3. The thread that
-// replays NVN into Vulkan and presents gets core 1 (frame_stats.cpp, role 0). Everything else - guest core 3, the
-// audio renderer and output, the vsync and watchdog threads, ASTC decoding, RADV's own threads - shares cores 4, 5
-// and 6. NX_PS4_CORES=spread puts every thread on every core instead.
+// Cores: the app has cores 0-5 and the 7th (core 6) when the system grants it, checked at startup. The thread that
+// replays NVN into Vulkan and presents gets core 1 to itself (frame_stats.cpp, role 0); host threads that are not the
+// game's (audio output, vsync, watchdogs, ASTC decoding, RADV's own) start on cores 4, 5 and 6.
+// NX_PS4_CORES=balanced (the default): guest threads on every core but 1. NX_PS4_CORES=pinned: guest threads where
+// their Switch core says (svcCreateThread, svcSetThreadCoreMask): guest core 0 (the game's main thread) on core 0,
+// guest cores 1 and 2 (the job workers) on cores 2 and 3, guest core 3 with the host threads. NX_PS4_CORES=spread:
+// every thread on every core.
 //
 // Data: /data/SMW (analysis/{main,sdk}.bin, extract/romfs, spirv/, fonts/, user/), nx.log there. Settings:
 // /data/SMW/config.txt, one NX_<KEY>=<value> per line, put in the environment at startup: every NX_* switch of the
@@ -298,13 +299,20 @@ thread_local int t_stack_slot = -1;
 // ---- cores ----------------------------------------------------------------------------------------------------
 
 uint64_t g_app_cores = 0x3F;     // the cores this process may use (0x7F with the 7th)
-uint64_t g_helper_cores = 0x30;  // everything that is not pinned: cores 4, 5 (and 6)
-bool g_spread = false;           // NX_PS4_CORES=spread
+uint64_t g_helper_cores = 0x30;  // threads that are not the game's: cores 4, 5 (and 6)
+enum class CoreMode { balanced, pinned, spread };
+CoreMode g_mode = CoreMode::balanced;  // NX_PS4_CORES
 
 constexpr int kCoreGuest0 = 0, kCoreReplay = 1, kCoreGuest1 = 2, kCoreGuest2 = 3;
 
 uint64_t guest_core_mask(int core) {
-    if (g_spread) return g_app_cores;
+    switch (g_mode) {
+        case CoreMode::spread: return g_app_cores;
+        // Every core but the replay thread's: several guest threads share a Switch core, and pinned to one PS4 core
+        // a thread spinning on a lock could keep its holder off it.
+        case CoreMode::balanced: return g_app_cores & ~(1ull << kCoreReplay);
+        case CoreMode::pinned: break;
+    }
     switch (core) {
         case 0: return 1ull << kCoreGuest0;
         case 1: return 1ull << kCoreGuest1;
@@ -322,13 +330,18 @@ void detect_cores() {
     g_app_cores = seventh ? 0x7F : 0x3F;
     g_helper_cores = seventh ? 0x70 : 0x30;
     const char* mode = std::getenv("NX_PS4_CORES");
-    g_spread = mode && std::strcmp(mode, "spread") == 0;
-    if (g_spread) g_helper_cores = g_app_cores;
+    g_mode = mode && std::strcmp(mode, "spread") == 0   ? CoreMode::spread
+             : mode && std::strcmp(mode, "pinned") == 0 ? CoreMode::pinned
+                                                        : CoreMode::balanced;
+    if (g_mode == CoreMode::spread) g_helper_cores = g_app_cores;
     ps4_new_thread_cores = g_helper_cores;
     ps4_set_affinity(self, g_helper_cores);
-    trace("cores: %s (main thread had %#llx), %s: guest cores 0/1/2 on %d/%d/%d, replay+present on %d, the rest on %#llx",
-          seventh ? "7, the 7th granted" : "6, no 7th", (unsigned long long)before, g_spread ? "spread" : "pinned",
-          kCoreGuest0, kCoreGuest1, kCoreGuest2, kCoreReplay, (unsigned long long)g_helper_cores);
+    const char* names[] = {"balanced", "pinned", "spread"};
+    trace("cores: %s (main thread had %#llx), %s: guest threads on %#llx (pinned: guest cores 0/1/2 on %d/%d/%d), "
+          "replay+present on %d, the rest on %#llx",
+          seventh ? "7, the 7th granted" : "6, no 7th", (unsigned long long)before, names[int(g_mode)],
+          (unsigned long long)guest_core_mask(0), kCoreGuest0, kCoreGuest1, kCoreGuest2, kCoreReplay,
+          (unsigned long long)g_helper_cores);
 }
 
 // Host threads by id, for placing guest threads from another thread (svcSetThreadCoreMask).
@@ -446,7 +459,8 @@ void start_thread(ThreadFn fn, void* arg, size_t stack_size) {
     // The slot lock is held until the new thread's handle is in its slot: a later start_thread may join it.
     std::unique_lock lk(g_stack_lock);
     int slot = -1;
-    if (stack_size <= kStackSlot - kStackGuard) {
+    // Guest threads ask for exactly a slot (64 MiB): they get it less the guard chunk.
+    if (stack_size <= kStackSlot) {
         for (int k = 0; k < kStackSlots && slot < 0; k++) {
             int st = g_stack_slots[k].state.load();
             if (st == 2) {  // its thread has returned from (or is leaving) its function: wait until it is gone
@@ -528,7 +542,8 @@ void set_guest_core(int64_t host_tid, int core) {
 void place_frame_thread(int role) {
     Known* k = known(ps4_thread_id());
     if (k && k->guest) return;  // a guest thread presents (NX_REPLAY_THREAD=0): it keeps its guest core
-    if (role == 0) ps4_set_affinity(ps4_pthread_self(), g_spread ? g_app_cores : 1ull << kCoreReplay);
+    if (role == 0)
+        ps4_set_affinity(ps4_pthread_self(), g_mode == CoreMode::spread ? g_app_cores : 1ull << kCoreReplay);
 }
 
 // ---- files and output -----------------------------------------------------------------------------------------

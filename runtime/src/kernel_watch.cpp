@@ -111,6 +111,16 @@ static void watchdog(void*) {
             log("profile: %s", ok ? "written to profile.txt" : "not available on this platform");
         }
         uint64_t f = g_frame, now = plat::monotonic_ns();
+#if defined(__ORBIS__)
+        // PS4: nobody is at a debugger to ask for a dump while the boot splash stays up. No first frame 60 s after
+        // boot: report every guest thread once.
+        static bool boot_reported = false;
+        if (!f && !boot_reported && now - since > 60'000'000'000ull) {
+            boot_reported = true;
+            log("hang: no first frame 60 s after boot; threads:");
+            report_threads();
+        }
+#endif
         if (f != last || plat::window_minimized()) {
             last = f;
             since = now;
