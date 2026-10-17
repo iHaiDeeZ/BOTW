@@ -492,9 +492,7 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
         return decode_rows(0, rows);
     return bad[0] + bad[1] + bad[2];
 #else
-    const unsigned cores = std::thread::hardware_concurrency();
-#endif
-    unsigned n = total >= 8192 ? std::min(6u, std::max(1u, cores / 2)) : 1u;
+    unsigned n = total >= 8192 ? std::min(6u, std::max(1u, std::thread::hardware_concurrency() / 2)) : 1u;
     if (n <= 1) return decode_rows(0, rows);
     std::vector<std::thread> pool;
     std::vector<uint64_t> bad(n, 0);
@@ -505,6 +503,7 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
     uint64_t sum = 0;
     for (uint64_t b : bad) sum += b;
     return sum;
+#endif
 }
 
 }  // namespace nx::nvn
