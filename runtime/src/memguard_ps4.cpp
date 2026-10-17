@@ -63,12 +63,15 @@ void start_memory_guard() {
             uint64_t guest = ps4_lazy_mapped_bytes();
             if (guest > peak) peak = guest;
             bool low = double(f) / kMiB < low_mb;
-            if (++ticks % 6 == 0 || low)
+            if (++ticks % 6 == 0 || low) {
+                size_t flex = 0;
+                ps4_available_flexible(&flex);  // thread stacks come from it: they ran out twice
                 log("memory: guest %.0f MiB mapped (peak %.0f, %llu first touches, %llu blocks of 32 MiB), "
-                    "direct memory free %.0f of %.0f MiB%s",
+                    "direct memory free %.0f of %.0f MiB, flexible %.0f MiB free%s",
                     double(guest) / kMiB, double(peak) / kMiB, (unsigned long long)ps4_lazy_faults(),
                     (unsigned long long)ps4_lazy_blocks(), double(f) / kMiB, double(t) / kMiB,
-                    low ? " - LOW" : "");
+                    double(flex) / kMiB, low ? " - LOW" : "");
+            }
             if (uint64_t failed = ps4_lazy_failed())
                 log("memory: %llu chunks could not be mapped (out of direct memory)", (unsigned long long)failed);
         }
