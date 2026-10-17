@@ -12,6 +12,7 @@
 // the image the frame renders into is off screen when vkAcquireNextImageKHR returns (it waits for the flip that
 // replaced it), and the flip runs on the GPU behind the frame's commands.
 #include "ps4_vk_wsi.h"
+#include "ps4_boot_screen.h"
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -61,8 +62,8 @@ struct Swapchain {
 VkInstance g_instance = VK_NULL_HANDLE;
 VkPhysicalDevice g_physical = VK_NULL_HANDLE;
 VkDevice g_device = VK_NULL_HANDLE;
-int g_video = -1;
-OrbisKernelEqueue g_flip_queue;
+int g_video = -1;  // video_out() (ps4_boot_screen.cpp): the boot screen shows on it first
+OrbisKernelEqueue* g_flip_queue = nullptr;
 std::atomic<uint64_t> g_flips{0};
 int g_next_first_buffer = 0;
 std::mutex g_lock;
@@ -78,15 +79,9 @@ T instance_fn(const char* name) {
 }
 
 bool open_video_out() {
-    if (g_video >= 0) return true;
-    g_video = sceVideoOutOpen(0xFF, 0, 0, nullptr);
-    if (g_video < 0) {
-        log("ps4/wsi: sceVideoOutOpen failed: %x", unsigned(g_video));
-        return false;
-    }
-    sceKernelCreateEqueue(&g_flip_queue, "smw flip");
-    sceVideoOutAddFlipEvent(g_flip_queue, g_video, nullptr);
-    return true;
+    g_video = video_out();
+    g_flip_queue = static_cast<OrbisKernelEqueue*>(video_out_flip_queue());
+    return g_video >= 0;
 }
 
 // Appends extensions to an enumeration result (count/properties two-call idiom).
@@ -166,6 +161,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     g_physical = physical;
     VkResult r = real(physical, &copy, alloc, device);
     if (r == VK_SUCCESS) g_device = *device;
+    boot_note_graphics();  // the boot screen says so
     return r;
 }
 
@@ -380,7 +376,7 @@ void wait_off_screen(uint32_t images) {
         OrbisKernelEvent ev;
         int got = 0;
         OrbisKernelUseconds timeout = 5000;
-        sceKernelWaitEqueue(g_flip_queue, &ev, 1, &got, &timeout);
+        sceKernelWaitEqueue(*g_flip_queue, &ev, 1, &got, &timeout);
     }
     if (!done) g_stats.timeouts++;
     g_stats.wait_ns +=
@@ -430,6 +426,7 @@ VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInf
         const uint32_t buffer = uint32_t(sc->first_buffer) + info->pImageIndices[k];
         const int64_t arg = int64_t(g_flips.load() + 1);
         // the flip goes to the GPU behind the frame's commands: no CPU wait for the GPU or the vblank
+        boot_screen_stop();  // the game's first frame takes over from the boot screen (once)
         int r = ac_ps4_submit_flip(g_video, buffer, sc->flip_mode, arg);
         const bool gpu_flip = r == 0;
         if (!gpu_flip) {  // fallback: wait for the GPU on the CPU, then flip

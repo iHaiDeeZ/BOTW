@@ -184,7 +184,8 @@ if(NX_PS4)
     # which provide PS4_RUNTIME_SOURCES, ps4_link_mesa and ps4_add_eboot): RADV on GNM linked in, presenting through
     # VideoOut (runtime/src/ps4/ps4_vk_wsi.cpp), ScePad, sceAudioOut. -> <build>/<game>_eboot/eboot.bin
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_ps4.cpp runtime/src/memguard_ps4.cpp
-        runtime/src/ps4/ps4_vk_wsi.cpp ${PS4_RUNTIME_SOURCES})
+        runtime/src/ps4/ps4_vk_wsi.cpp runtime/src/ps4/ps4_boot_screen.cpp runtime/src/ps4/ps4_boot_draw.cpp
+        ${PS4_RUNTIME_SOURCES})
     target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -ffp-contract=off)
     target_link_libraries(${NX_GAME} PRIVATE game_main game_sdk)

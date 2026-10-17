@@ -59,6 +59,7 @@
 
 #include "kernel.h"
 #include "platform.h"
+#include "ps4/ps4_boot_screen.h"
 #include "ps4/ps4_vk_wsi.h"
 
 // libkernel, declared by hand: several OpenOrbis prototypes are wrong or take no parameters.
@@ -572,6 +573,7 @@ uint64_t read_at(FILE* f, int64_t off, void* buf, uint64_t size) {
         if (n <= 0) break;
         done += uint64_t(n);
     }
+    ps4::boot_note_bytes(done);  // the boot screen's progress
     return done;
 }
 
@@ -968,6 +970,7 @@ int main() {
     mkdir(kDataRoot, 0777);
     trace("SMW %s starting (%s)", app_version().c_str(), nx::game::kInfo.title);
     load_config();
+    ps4::boot_screen_start();  // our own picture with a progress bar until the game's first frame
     if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_start();
     detect_cores();
     g_cross_confirms = !(std::getenv("NX_BUTTONS") && std::strcmp(std::getenv("NX_BUTTONS"), "nintendo") == 0);
