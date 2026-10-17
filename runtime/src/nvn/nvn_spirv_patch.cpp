@@ -7,6 +7,7 @@
 // patch_int_inputs() rewrites a module so the chosen locations are declared as ivec4/uvec4 and every load is bitcast
 // back to the float the rest of the code expects: the Maxwell semantics exactly.
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -413,6 +414,52 @@ uint32_t unwritten_inputs(const ShaderInfo* vs, const ShaderInfo* fs) {
     return mask;
 }
 
+// Infinities that become NaN on AMD (the PS4's black light probes): Maxwell's RSQ of 0 is +Inf, and the code multiplies
+// it by the 0 it came from (a zero direction, normalized). Under FMZ that product is 0; where the translated code has a
+// plain multiply, 0 * Inf is NaN, and NaN in a light probe draws every lit model black. NX_RSQ_CLAMP=1 clamps every
+// scalar float InverseSqrt to the largest finite float (0 * FLT_MAX = 0), =2 also every scalar float division.
+bool clamp_infinities(const std::vector<uint32_t>& in, bool divisions, std::vector<uint32_t>& out) {
+    enum : uint32_t { OpExtInstImport = 11, OpExtInst = 12, OpTypeFloat = 22, OpConstant = 43, OpFunction = 54,
+                      OpFDiv = 136, GlslInverseSqrt = 32, GlslFMin = 37 };
+    if (in.size() < 5 || in[0] != 0x07230203u) return false;
+    uint32_t glsl = 0, f32 = 0, bound = in[3];
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (!len || i + len > in.size()) return false;
+        if (op == OpExtInstImport && len >= 3 &&
+            std::strcmp(reinterpret_cast<const char*>(&in[i + 2]), "GLSL.std.450") == 0)
+            glsl = in[i + 1];
+        if (op == OpTypeFloat && len == 3 && in[i + 2] == 32) f32 = in[i + 1];
+        i += len;
+    }
+    if (!glsl || !f32) return false;
+    const uint32_t cmax = bound++;
+    bool any = false, placed = false;
+    out.assign(in.begin(), in.begin() + 5);
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (op == OpFunction && !placed) {  // the constant, after every type and global
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, cmax, 0x7F7FFFFFu});
+            placed = true;
+        }
+        bool rsq = op == OpExtInst && len == 6 && in[i + 1] == f32 && in[i + 3] == glsl && in[i + 4] == GlslInverseSqrt;
+        bool div = divisions && op == OpFDiv && len == 5 && in[i + 1] == f32;
+        if (placed && (rsq || div)) {
+            const uint32_t result = in[i + 2], raw = bound++;
+            out.insert(out.end(), in.begin() + i, in.begin() + i + len);
+            out[out.size() - len + 2] = raw;  // the original instruction now makes `raw`
+            out.insert(out.end(), {(7u << 16) | OpExtInst, f32, result, glsl, GlslFMin, raw, cmax});
+            any = true;
+        } else {
+            out.insert(out.end(), in.begin() + i, in.begin() + i + len);
+        }
+        i += len;
+    }
+    if (!any) return false;
+    out[3] = bound;
+    return true;
+}
+
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
     std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
@@ -430,6 +477,8 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
             ok ? " read (0, 0, 0, 1)" : ", left as they are");
     }
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
+    static const int rsq_clamp = std::getenv("NX_RSQ_CLAMP") ? std::atoi(std::getenv("NX_RSQ_CLAMP")) : 0;
+    if (rsq_clamp && clamp_infinities(code, rsq_clamp >= 2, next)) code.swap(next);
     return code;
 }
 
