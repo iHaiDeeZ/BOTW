@@ -7,10 +7,71 @@
 #include <cstring>
 #include <thread>
 #include <vector>
+#if defined(__ORBIS__)
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#endif
 
 namespace nx::nvn {
 
 namespace {
+
+#if defined(__ORBIS__)
+// PS4: two decoding helpers that live as long as the app (astc_decode_image). astc_pool_run(job) runs job(1) and
+// job(2) on them and job(0) on the caller, and returns when all three are done; false (nothing run) when the helpers
+// could not be made. One image at a time: callers queue on `serial`.
+struct AstcPool {
+    std::mutex serial, m;
+    std::condition_variable start, done;
+    std::function<void(unsigned)> job;
+    uint64_t generation = 0;
+    unsigned pending = 0;
+    bool ok = false;
+
+    AstcPool() {
+        try {
+            for (unsigned k = 1; k <= 2; k++) std::thread([this, k] { serve(k); }).detach();
+            ok = true;
+        } catch (...) {
+            ok = false;  // no thread to be had: callers decode alone
+        }
+    }
+
+    void serve(unsigned k) {
+        uint64_t seen = 0;
+        for (;;) {
+            std::function<void(unsigned)> j;
+            {
+                std::unique_lock lk(m);
+                start.wait(lk, [&] { return generation != seen; });
+                seen = generation;
+                j = job;
+            }
+            j(k);
+            std::lock_guard lk(m);
+            if (--pending == 0) done.notify_all();
+        }
+    }
+};
+
+bool astc_pool_run(const std::function<void(unsigned)>& job) {
+    static AstcPool pool;
+    if (!pool.ok) return false;
+    std::lock_guard one(pool.serial);
+    {
+        std::lock_guard lk(pool.m);
+        pool.job = job;
+        pool.pending = 2;
+        pool.generation++;
+    }
+    pool.start.notify_all();
+    job(0);
+    std::unique_lock lk(pool.m);
+    pool.done.wait(lk, [&] { return pool.pending == 0; });
+    return true;
+}
+#endif
 
 struct Block {
     uint64_t w[2];
@@ -422,9 +483,14 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
     // a 2048x2048 6x5 texture took ~40 ms on one core (DEBUG-2 #75).
     const uint64_t total = rows * bx;
 #if defined(__ORBIS__)
-    // PS4: the C library cannot count the cores (a Linux system call); three helpers, as many as the cores nothing
-    // is pinned to (platform_ps4.cpp), with the replay thread doing its share.
-    const unsigned cores = 6;
+    // PS4: no thread per image. Each new thread's stack comes from the system's small flexible memory, which the
+    // character select screen's run of ASTC images exhausted (std::thread threw, the app ended). Two helpers made
+    // once (astc_pool) and the replay thread take a third each.
+    if (total < 8192) return decode_rows(0, rows);
+    uint64_t bad[3] = {};
+    if (!astc_pool_run([&](unsigned k) { bad[k] = decode_rows(rows * k / 3, rows * (k + 1) / 3); }))
+        return decode_rows(0, rows);
+    return bad[0] + bad[1] + bad[2];
 #else
     const unsigned cores = std::thread::hardware_concurrency();
 #endif
