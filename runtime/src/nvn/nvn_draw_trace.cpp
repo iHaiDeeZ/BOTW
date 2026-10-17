@@ -55,7 +55,7 @@ void trace_cube_draw(const Targets& t, const ShaderInfo* vs, const ShaderInfo* f
         // on the Mac (DEBUG.md #46), and a zero direction normalized is NaN on AMD (the PS4's black probes).
         static std::set<uint64_t> seen_inputs;
         if (img && !img->rendered && tx && tx->memory && tx->storage_size && seen_inputs.insert(texture).second)
-            if (const uint8_t* m = guest_bytes(tx->memory)) {
+            if (const uint8_t* m = reinterpret_cast<const uint8_t*>(tx->memory)) {  // a host pointer, as the uploads read it
                 uint64_t n = std::min<uint64_t>(tx->storage_size, 4u << 20), nonzero = 0;
                 for (uint64_t i = 0; i < n; i++) nonzero += m[i] != 0;
                 const uint16_t* h = reinterpret_cast<const uint16_t*>(m);
