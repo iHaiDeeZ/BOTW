@@ -292,6 +292,25 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             fs ? fs->hash.c_str() : "-", indexed ? "indexed" : "arrays", count, instances);
     trace_cube_draw(t, vs, fs, tex_bindings, handles);
     frame_sig_draw(t, indexed, count, instances, fs, tex_bindings, handles);
+    if (diag_active()) {  // the storyboard: what this draw reads
+        std::string line = "  draw " + std::to_string(g_stats.done) + " vs " + vs->hash + " fs " + (fs ? fs->hash : "-");
+        for (size_t k = 0; k < tex_bindings.size() && k < handles.size(); k++) {
+            uint64_t texture = 0;
+            SamplerInfo si;
+            ViewInfo vw;
+            texture_for(handles[k], texture, si, &vw);
+            GpuImage* img = texture ? image_of(texture) : nullptr;
+            char b[160];
+            std::snprintf(b, sizeof b, " t%zu=%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g)", k,
+                          (unsigned long long)texture, img ? img->width : 0, img ? img->height : 0,
+                          img ? int(img->format) : 0, img ? img->levels : 0, img ? img->layers : 0,
+                          img && img->rendered ? " rt" : "", img && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? " depth" : "",
+                          si.compare_mode, double(si.lod_min), double(si.lod_max));
+            line += b;
+            diag_want_texture(texture);
+        }
+        diag_line(line);
+    }
     // NX_TRACE_DRAWS=<first draw>: logs 80 draws from there.
     static const char* trace_env = std::getenv("NX_TRACE_DRAWS");
     static const uint64_t trace_from = trace_env ? std::strtoull(trace_env, nullptr, 10) : 0;

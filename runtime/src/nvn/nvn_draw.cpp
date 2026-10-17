@@ -224,6 +224,22 @@ void dispatch(VkCommandBuffer cb, const Cmd& c) {
     if (!pipeline) return;
     draw_end_rendering(cb, 2);
     gather_textures(stages);
+    if (diag_active()) {  // the storyboard: what this dispatch reads
+        std::string line = "  dispatch cs " + cs->hash + " " + std::to_string(x) + "x" + std::to_string(y) + "x" +
+                           std::to_string(z);
+        for (size_t k = 0; k < g_textures.handles.size(); k++) {
+            uint64_t texture = 0;
+            SamplerInfo si;
+            texture_for(g_textures.handles[k], texture, si);
+            GpuImage* img = texture ? image_of(texture) : nullptr;
+            char b[128];
+            std::snprintf(b, sizeof b, " t%zu=%llx(%ux%u vk%d%s)", k, (unsigned long long)texture, img ? img->width : 0,
+                          img ? img->height : 0, img ? int(img->format) : 0, img && img->rendered ? " rt" : "");
+            line += b;
+            diag_want_texture(texture);
+        }
+        diag_line(line);
+    }
     build_sets(cb, stages, layout);
     p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
@@ -544,6 +560,7 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
         p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
         g_vertex_pending |= narrow_pass_barrier();
     }
+    diag_textures(cb);  // the last storyboard frame's sampled textures (once)
     if (diag_active()) {  // the storyboard: what this pass left in its colour targets
         for (uint32_t k = 0; k < g_pass.color_count && k < 8; k++)
             if (g_pass_images[k]) diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs);

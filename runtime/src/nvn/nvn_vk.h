@@ -240,7 +240,10 @@ void debug_snapshots_write();
 void diag_request();
 bool diag_active();
 void diag_frame_boundary(uint64_t presents);
-void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs);  // nvn_pipeline.cpp: before an image is freed
+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs);
+void diag_line(const std::string& line);   // into diag/passes.txt
+void diag_want_texture(uint64_t texture);  // sampled by the storyboard frame: pictured on the next one
+void diag_textures(VkCommandBuffer cb);    // outside a pass: those pictures, once  // nvn_pipeline.cpp: before an image is freed
 
 // nvn_debug.cpp: GPU time per render pass (NX_GPU_PROFILE=1).
 bool gpu_profile_on();  // NX_GPU_PROFILE=1: per-pass labels, every submit waited for (nvn_debug.cpp)

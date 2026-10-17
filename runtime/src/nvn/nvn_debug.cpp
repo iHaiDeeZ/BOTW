@@ -6,7 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -396,8 +398,11 @@ struct Snap {
     uint64_t draw = 0;
     uint32_t raw_format = 0;  // NX_SNAP_RAW: the texels as stored (4-byte formats), written as .raw
     std::string name;         // a storyboard picture (diag_pass): diag/<name>.ppm
+    uint32_t depth_bytes = 0;  // a storyboard depth picture: texels of this size in the buffer, written as .pgm
 };
 std::vector<Snap> g_snaps;
+std::set<uint64_t> g_diag_wanted;  // textures the storyboard frame sampled: pictured at the next frame's first pass end
+bool g_diag_textures_due = false;
 
 }  // namespace
 
@@ -477,6 +482,69 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
 
 bool debug_snapshots_pending() { return !g_snaps.empty(); }
 
+namespace {
+
+void diag_texture_level(VkCommandBuffer cb, GpuImage& img, uint64_t texture, uint32_t level) {
+    uint32_t lw = std::max(1u, img.width >> level), lh = std::max(1u, img.height >> level);
+    Snap snap;
+    bool depth = img.aspect & VK_IMAGE_ASPECT_DEPTH_BIT;
+    char name[160];
+    std::snprintf(name, sizeof name, "tex_%llx_%ux%u_f%d_l%u_L%u%s", (unsigned long long)texture, img.width, img.height,
+                  int(img.format), level, img.layers, img.rendered ? "_rt" : "");
+    snap.name = name;
+    VkImageLayout back = img.layout;
+    if (depth) {
+        snap.depth_bytes = img.format == VK_FORMAT_D16_UNORM || img.format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
+        snap.w = lw, snap.h = lh;
+        if (!make_scratch(snap.s, lw, lh)) return snap.s.destroy(vk_device());
+        transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy r{};
+        r.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, level, 0, 1};
+        r.imageExtent = {lw, lh, 1};
+        p_vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.buffer, 1, &r);
+    } else {
+        snap.w = std::min(lw, 480u);
+        snap.h = std::max(1u, uint32_t(uint64_t(lh) * snap.w / lw));
+        if (!make_scratch(snap.s, snap.w, snap.h)) return snap.s.destroy(vk_device());
+        transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        GpuImage dst;
+        dst.image = snap.s.image;
+        dst.format = VK_FORMAT_R8G8B8A8_UNORM;
+        transition(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+        blit.srcOffsets[1] = {int32_t(lw), int32_t(lh), 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[1] = {int32_t(snap.w), int32_t(snap.h), 1};
+        p_vkCmdBlitImage(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+        transition(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy r{};
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        r.imageExtent = {snap.w, snap.h, 1};
+        p_vkCmdCopyImageToBuffer(cb, snap.s.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.buffer, 1, &r);
+    }
+    if (back != VK_IMAGE_LAYOUT_UNDEFINED) transition(cb, img, back);
+    g_snaps.push_back(std::move(snap));
+}
+
+}  // namespace
+
+// Outside a render pass (nvn_draw.cpp pass end): the storyboard frame's sampled textures, once.
+void diag_textures(VkCommandBuffer cb) {
+    if (!g_diag_textures_due) return;
+    g_diag_textures_due = false;
+    int n = 0;
+    for (uint64_t texture : g_diag_wanted)
+        if (GpuImage* img = image_of(texture); img && img->image) {
+            diag_texture_level(cb, *img, texture, 0);
+            if (img->levels > 1 && !(img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) diag_texture_level(cb, *img, texture, 1);
+            n++;
+        }
+    log("diag: %d sampled textures pictured (diag/tex_*)", n);
+    g_diag_wanted.clear();
+}
+
 // ---- storyboard of one frame (diag_request; PS4: L3 + R3 held, or a file named diag_now in the data folder) -----
 // Every colour target of every pass of the next frame, scaled to 480 pixels wide, as diag/<pass>_c<slot>_<size>_f
 // <format>_d<draws>_<last fragment shader>.ppm, listed in diag/passes.txt: the first pass where a picture goes wrong.
@@ -489,12 +557,21 @@ FILE* g_diag_index = nullptr;
 constexpr int kDiagMax = 400;
 }  // namespace
 
+void diag_line(const std::string& line) {
+    if (g_diag_on && g_diag_index) std::fprintf(g_diag_index, "%s\n", line.c_str());
+}
+
+void diag_want_texture(uint64_t texture) {
+    if (g_diag_on && texture && g_diag_wanted.size() < 300) g_diag_wanted.insert(texture);
+}
+
 void diag_request() { g_diag_armed = true; }
 bool diag_active() { return g_diag_on; }
 
 void diag_frame_boundary(uint64_t presents) {
     if (g_diag_on) {
         g_diag_on = false;
+        g_diag_textures_due = !g_diag_wanted.empty();
         if (g_diag_index) std::fclose(g_diag_index), g_diag_index = nullptr;
         log("diag: storyboard of frame %llu: %d pictures in %s/diag", (unsigned long long)presents, g_diag_seq,
             plat::data_root().c_str());
@@ -567,6 +644,37 @@ void debug_snapshots_write() {  // after the submit's fence
                 std::fclose(f);
             }
             p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
+        } else if (snap.depth_bytes) {  // a storyboard depth picture
+            if (p_vkMapMemory(vk_device(), snap.s.buffer_memory, 0, VK_WHOLE_SIZE, 0, &p) == VK_SUCCESS) {
+                size_t n = size_t(snap.w) * snap.h;
+                std::vector<float> v(n);
+                for (size_t k = 0; k < n; k++) {
+                    if (snap.depth_bytes == 2) {
+                        uint16_t x;
+                        std::memcpy(&x, static_cast<const uint8_t*>(p) + k * 2, 2);
+                        v[k] = x / 65535.0f;
+                    } else {
+                        std::memcpy(&v[k], static_cast<const uint8_t*>(p) + k * 4, 4);
+                    }
+                }
+                float lo = 1e30f, hi = -1e30f;
+                for (float x : v)
+                    if (x == x) lo = std::min(lo, x), hi = std::max(hi, x);
+                if (FILE* f = plat::fopen_utf8(plat::data_root() + "/diag/" + snap.name + ".pgm", "wb")) {
+                    std::fprintf(f, "P5\n%u %u\n255\n", snap.w, snap.h);
+                    std::vector<uint8_t> row(snap.w);
+                    for (uint32_t y = 0; y < snap.h; y++) {
+                        for (uint32_t x = 0; x < snap.w; x++) {
+                            float d = v[size_t(y) * snap.w + x];
+                            row[x] = d == d && hi > lo ? uint8_t(std::clamp((d - lo) / (hi - lo), 0.0f, 1.0f) * 255) : 0;
+                        }
+                        std::fwrite(row.data(), 1, row.size(), f);
+                    }
+                    std::fclose(f);
+                }
+                log("diag: depth %s: %g .. %g", snap.name.c_str(), double(lo), double(hi));
+                p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
+            }
         } else if (!snap.name.empty()) {  // a storyboard picture
             if (p_vkMapMemory(vk_device(), snap.s.buffer_memory, 0, VK_WHOLE_SIZE, 0, &p) == VK_SUCCESS) {
                 if (FILE* f = plat::fopen_utf8(plat::data_root() + "/diag/" + snap.name + ".ppm", "wb")) {
