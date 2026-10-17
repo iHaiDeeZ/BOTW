@@ -67,6 +67,9 @@ struct PadState {
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
 };
 void read_pad(PadState& p);  // player 1
+// Players 2-4 (player 1..3): true and its state when a controller is there for that player (platform_ps4.cpp:
+// one DualShock 4 per signed-in user); false elsewhere.
+bool read_extra_pad(int player, PadState& p);
 // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
 // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
 struct OverlayShape {

@@ -76,6 +76,7 @@ int32_t ps4_get_affinity(void* thread, uint64_t* mask) __asm__("scePthreadGetaff
 int32_t ps4_set_prio(void* thread, int prio) __asm__("scePthreadSetprio");
 int32_t ps4_rename(void* thread, const char* name) __asm__("scePthreadRename");
 int32_t ps4_thread_id() __asm__("scePthreadGetthreadid");
+int32_t ps4_available_flexible_main(size_t* size) __asm__("sceKernelAvailableFlexibleMemorySize");
 
 void ps4_boot_trace(const char* line);       // port/ps4_crashlog.cpp
 void ps4_watch_thread(const char* name);     // port/ps4_sampler.cpp
@@ -382,9 +383,17 @@ Known* known(int64_t tid) {
 
 // ---- pad --------------------------------------------------------------------------------------------------------
 
+// Up to four DualShock 4s, one per signed-in user: player 1 is the user who started the app, players 2-4 the others
+// in the order they appear (each controller on a PS4 belongs to a user; a second player picks theirs or a guest).
+constexpr int kPlayers = 4;
+struct Player {
+    int32_t user = -1;
+    int handle = -1;
+    bool connected = false;
+    PadState state;
+};
 std::mutex g_pad_lock;
-PadState g_pad;
-int g_pad_handle = -1;
+Player g_players[kPlayers];
 bool g_cross_confirms = true;  // NX_BUTTONS=nintendo: by position (Circle = A) instead
 
 // ---- audio ------------------------------------------------------------------------------------------------------
@@ -604,13 +613,55 @@ void window_size(uint32_t& w, uint32_t& h) {
 void screen_size(uint32_t& w, uint32_t& h) { window_size(w, h); }
 float default_render_scale() { return 1.0f; }
 
-// ---- input: the initial user's DualShock 4 (polled on the main thread) -----------------------------------------
+// ---- input: a DualShock 4 per signed-in user, up to four players (polled on the main thread) --------------------
 
-static void open_pad() {
-    int32_t user = -1;
-    if (sceUserServiceGetInitialUser(&user) != 0 || user < 0) return;
-    g_pad_handle = scePadOpen(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
-    trace("pad: user %08x, handle %d", unsigned(user), g_pad_handle);
+static void open_player(int k, int32_t user) {
+    Player& p = g_players[k];
+    int handle = scePadOpen(user, ORBIS_PAD_PORT_TYPE_STANDARD, 0, nullptr);
+    if (handle < 0) return;  // no controller for that user yet: the next scan tries again
+    p.user = user;
+    p.handle = handle;
+    trace("pad: player %d is user %08x (handle %d)", k + 1, unsigned(user), handle);
+}
+
+// Users who signed out lose their slot; signed-in users with a controller get the first free one. Player 1 is kept
+// for the user who started the app.
+static void scan_players() {
+    OrbisUserServiceLoginUserIdList list{};
+    if (sceUserServiceGetLoginUserIdList(&list) != 0) return;
+    auto signed_in = [&](int32_t user) {
+        for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++)
+            if (list.userId[i] == user) return true;
+        return false;
+    };
+    for (int k = 0; k < kPlayers; k++) {
+        Player& p = g_players[k];
+        if (p.handle >= 0 && !signed_in(p.user)) {
+            scePadClose(p.handle);
+            trace("pad: player %d (user %08x) signed out", k + 1, unsigned(p.user));
+            std::lock_guard lk(g_pad_lock);
+            p = Player();
+        }
+    }
+    static int32_t initial = [] {
+        int32_t u = -1;
+        return sceUserServiceGetInitialUser(&u) == 0 ? u : -1;
+    }();
+    if (g_players[0].handle < 0 && initial >= 0 && signed_in(initial)) open_player(0, initial);
+    for (int i = 0; i < ORBIS_USER_SERVICE_MAX_LOGIN_USERS; i++) {
+        int32_t user = list.userId[i];
+        if (user == -1 || user == 0) continue;
+        bool known = false;
+        for (const Player& p : g_players) known |= p.handle >= 0 && p.user == user;
+        if (known) continue;
+        // Player 1's slot waits for the user who started the app, unless that user has left.
+        int first = g_players[0].handle < 0 && !(initial >= 0 && signed_in(initial)) ? 0 : 1;
+        for (int k = first; k < kPlayers; k++)
+            if (g_players[k].handle < 0) {
+                open_player(k, user);
+                break;
+            }
+    }
 }
 
 static int32_t stick(uint8_t v, bool invert) {
@@ -620,15 +671,10 @@ static int32_t stick(uint8_t v, bool invert) {
     return invert ? -s : s;
 }
 
-static void sample_input() {
-    if (g_pad_handle < 0) {
-        static int retry = 0;
-        if (++retry % 250 == 0) open_pad();
-        return;
-    }
+static bool read_player(const Player& pl, PadState& p) {
     OrbisPadData d{};
-    PadState p;
-    if (scePadReadState(g_pad_handle, &d) == 0 && d.connected) {
+    if (pl.handle < 0 || scePadReadState(pl.handle, &d) != 0 || !d.connected) return false;
+    {
         // Nintendo's A is the right face button and B the bottom one. By default Cross is A (confirm, as on every
         // PS4 menu) and Circle B; NX_BUTTONS=nintendo keeps the positions (Circle A, Cross B).
         uint32_t b = d.buttons;
@@ -656,20 +702,41 @@ static void sample_input() {
         p.rx = stick(d.rightStick.x, false);
         p.ry = stick(d.rightStick.y, true);
     }
-    std::lock_guard lk(g_pad_lock);
-    g_pad = p;
+    return true;
+}
+
+static void sample_input() {
+    static int ticks = 0;
+    if (ticks++ % 500 == 0) scan_players();  // every 2 s: sign-ins, sign-outs, controllers turned on
+    for (int k = 0; k < kPlayers; k++) {
+        PadState p;
+        bool on = read_player(g_players[k], p);
+        std::lock_guard lk(g_pad_lock);
+        if (on != g_players[k].connected) trace("pad: player %d %s", k + 1, on ? "connected" : "disconnected");
+        g_players[k].connected = on;
+        g_players[k].state = p;
+    }
 }
 
 void read_pad(PadState& p) {
     {
         std::lock_guard lk(g_pad_lock);
-        p.buttons |= g_pad.buttons;
-        if (g_pad.lx) p.lx = g_pad.lx;
-        if (g_pad.ly) p.ly = g_pad.ly;
-        if (g_pad.rx) p.rx = g_pad.rx;
-        if (g_pad.ry) p.ry = g_pad.ry;
+        const PadState& s = g_players[0].state;
+        p.buttons |= s.buttons;
+        if (s.lx) p.lx = s.lx;
+        if (s.ly) p.ly = s.ly;
+        if (s.rx) p.rx = s.rx;
+        if (s.ry) p.ry = s.ry;
     }
     input_script(p);
+}
+
+bool read_extra_pad(int player, PadState& p) {
+    if (player < 1 || player >= kPlayers) return false;
+    std::lock_guard lk(g_pad_lock);
+    if (!g_players[player].connected) return false;
+    p = g_players[player].state;
+    return true;
 }
 
 // ---- audio: sceAudioOut, s16 stereo 48 kHz, fed from the queue of submitted buffers ----------------------------
@@ -856,6 +923,13 @@ void game_thread(void*) {
     } catch (const nx::LongJmp& j) {
         nx::fatal("longjmp to buffer %llx with no setjmp frame", (unsigned long long)j.buf);
     } catch (const std::exception& e) {
+        // Where the game was when a host call threw: the guest registers still hold the call that failed.
+        nx::CPU& c = nx::current_cpu();
+        nx::log("host exception in a host call from the guest; guest lr %s", nx::describe(c.x[30]).c_str());
+        nx::backtrace(c);
+        size_t flex = 0;
+        ps4_available_flexible_main(&flex);
+        nx::log("flexible memory free: %zu MiB", flex >> 20);
         nx::fatal("host exception: %s", e.what());
     }
     nx::plat::exit_process(0);
@@ -904,7 +978,7 @@ int main() {
 
     sceUserServiceInitialize(nullptr);
     scePadInit();
-    open_pad();
+    scan_players();
 
     start_memory_guard();  // memguard_ps4.cpp
     trace("game thread");

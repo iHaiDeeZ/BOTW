@@ -102,7 +102,11 @@ T* get(uint64_t guest) {
             uint64_t guest = 0, serial = 0;
             T* object = nullptr;
         };
-        thread_local Slot table[1024];
+        // On the heap, made by the first replay on a thread: as a thread_local array the nine types' tables were 221
+        // KB of every thread's static TLS, game threads included (PS4: the system thread library allocates each
+        // thread's TLS from a small pool, and with ~50 threads it ran dry: "mutex lock failed: Out of memory").
+        thread_local Slot* table = nullptr;
+        if (!table) table = new Slot[1024]();  // one per replaying thread, for its lifetime
         Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 1023];
         if (s.serial == serial && s.guest == guest) return s.object;
         T* p;
