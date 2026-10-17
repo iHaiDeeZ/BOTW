@@ -66,7 +66,7 @@ void start_memory_guard() {
             if (++ticks % 6 == 0 || low) {
                 size_t flex = 0;
                 ps4_available_flexible(&flex);  // thread stacks come from it: they ran out twice
-                log("memory: guest %.0f MiB mapped (peak %.0f, %llu first touches, %llu blocks of 32 MiB), "
+                log("memory: guest %.0f MiB mapped (peak %.0f, %llu first touches, %llu direct memory blocks), "
                     "direct memory free %.0f of %.0f MiB, flexible %.0f MiB free%s",
                     double(guest) / kMiB, double(peak) / kMiB, (unsigned long long)ps4_lazy_faults(),
                     (unsigned long long)ps4_lazy_blocks(), double(f) / kMiB, double(t) / kMiB,

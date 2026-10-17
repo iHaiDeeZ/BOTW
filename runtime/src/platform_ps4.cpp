@@ -83,6 +83,8 @@ void ps4_boot_trace(const char* line);       // port/ps4_crashlog.cpp
 void ps4_watch_thread(const char* name);     // port/ps4_sampler.cpp
 void ps4_sampler_start();                    // port/ps4_sampler.cpp
 void ps4_boost_thread();                     // port/ps4_runtime.cpp: priority 650 (default 700)
+extern int ac_ps4_flush_all_draws;           // RADV (Crema's Mesa): after every draw write back and invalidate every
+                                             // GPU cache (a diagnostic: NX_PS4_GPU_FLUSH=1)
 extern uint64_t ps4_new_thread_cores;        // port/ps4_runtime.cpp: the cores pthread_create gives new threads
 }
 
@@ -133,7 +135,7 @@ struct Slice {
 std::atomic<Slice*> g_slices[kSlices];
 std::mutex g_slice_alloc;
 std::atomic_flag g_lock = ATOMIC_FLAG_INIT;  // the fault handler takes it: no mutex
-uint64_t g_block = 0, g_block_used = kBlock;  // the current block (offset), how much of it is handed out
+uint64_t g_block = 0, g_block_size = 0, g_block_used = 0;  // the current block (offset, size), how much is handed out
 uint32_t g_free[kMaxFree];
 size_t g_free_count = 0;
 std::atomic<uint64_t> g_mapped{0}, g_faults{0}, g_failed{0};
@@ -166,11 +168,15 @@ constexpr uint32_t kNoPhys = UINT32_MAX;
 // A free chunk of direct memory (offset / kChunk), kNoPhys when there is none. With g_lock held.
 uint32_t take_phys() {
     if (g_free_count) return g_free[--g_free_count];
-    if (g_block_used == kBlock) {
+    if (g_block_used == g_block_size) {
+        // 32 MiB at a time; when direct memory is that fragmented (late in a course, with the GPU's allocations
+        // between ours), smaller pieces down to one chunk, not a crash with megabytes still free.
         off_t phys = 0;
-        if (ps4_allocate_direct(0, off_t(ps4_direct_memory_size()), kBlock, kChunk, kWbOnion, &phys) != 0)
-            return kNoPhys;
+        uint64_t size = kBlock;
+        while (ps4_allocate_direct(0, off_t(ps4_direct_memory_size()), size, kChunk, kWbOnion, &phys) != 0)
+            if ((size /= 2) < kChunk) return kNoPhys;
         g_block = uint64_t(phys);
+        g_block_size = size;
         g_block_used = 0;
         g_blocks++;
     }
@@ -988,6 +994,12 @@ int main() {
     // then RCAS sharpening) brings it to the TV's 1080p in the present pass (nvn_present.cpp).
     setenv("NX_FSR", "1", 0);
     setenv("NX_RENDER_RES", "1600x900", 0);
+    // NX_PS4_GPU_FLUSH=1: every GPU cache written back and invalidated after every draw (slow). Tells a cache
+    // coherency problem (data the CPU or a later pass reads before the GPU's L2 wrote it out) from the rest.
+    if (const char* f = std::getenv("NX_PS4_GPU_FLUSH"); f && f[0] == '1') {
+        ac_ps4_flush_all_draws = 1;
+        trace("gpu: every cache flushed after every draw (NX_PS4_GPU_FLUSH)");
+    }
     ps4::boot_screen_start();  // our own picture with a progress bar until the game's first frame
     if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_start();
     detect_cores();
