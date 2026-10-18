@@ -556,6 +556,155 @@ bool mark_nan_outputs(const std::vector<uint32_t>& in, bool zero_nan, std::vecto
     return true;
 }
 
+// NX_FS_NAN=3 (a test): which kind of instruction first made a NaN in each fragment. Every float or vec4 result of
+// the kinds below is checked; the first NaN sets a Private flag to its kind, and an output holding NaN as main returns
+// writes (kind * 28 / 255, 0, 1, 1): read red in the storyboard picture of the pass (diag/*.ppm) as kind * 28.
+//   1 input (varying) load, 2 uniform or storage load, 3 texture sample or fetch, 4 log/exp/pow, 5 sqrt/rsq/normalize/
+//   length, 6 division or modulo, 7 multiply/add/subtract/fma/dot, 8 conversion or bitcast to float, 0 none of these.
+bool trace_first_nan(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+    enum : uint32_t { OpExtInstImport = 11, OpExtInst = 12, OpEntryPoint = 15, OpTypeBool = 20, OpTypeInt = 21,
+                      OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32, OpConstant = 43,
+                      OpConstantComposite = 44, OpFunction = 54, OpFunctionEnd = 56, OpVariable = 59, OpLoad = 61,
+                      OpStore = 62, OpAccessChain = 65, OpInBoundsAccessChain = 66, OpCompositeConstruct = 80,
+                      OpConvertSToF = 111, OpConvertUToF = 112, OpBitcast = 124, OpFAdd = 129, OpFSub = 131,
+                      OpFMul = 133, OpFDiv = 136, OpFRem = 140, OpFMod = 141, OpVectorTimesScalar = 142, OpDot = 148,
+                      OpAny = 154, OpIsNan = 156, OpIEqual = 170, OpLogicalAnd = 167, OpSelect = 169,
+                      OpReturn = 253, StorageInput = 1, StorageUniform = 2, StorageOutput = 3, StoragePrivate = 6,
+                      StorageBuffer = 12 };
+    if (in.size() < 5 || in[0] != 0x07230203u) return false;
+    uint32_t f32 = 0, v4 = 0, b = 0, v4b = 0, u32 = 0, glsl = 0, entry = 0, bound = in[3];
+    std::map<uint32_t, uint32_t> vec_of, ptr_class, var_class;
+    std::vector<uint32_t> outs;
+    bool fragment = false;
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (!len || i + len > in.size()) return false;
+        if (op == OpExtInstImport && len >= 3 &&
+            std::strcmp(reinterpret_cast<const char*>(&in[i + 2]), "GLSL.std.450") == 0)
+            glsl = in[i + 1];
+        if (op == OpEntryPoint && len >= 3) fragment = in[i + 1] == 4, entry = in[i + 2];
+        if (op == OpTypeBool) b = in[i + 1];
+        if (op == OpTypeInt && len == 4 && in[i + 2] == 32 && in[i + 3] == 0) u32 = in[i + 1];
+        if (op == OpTypeFloat && len == 3 && in[i + 2] == 32) f32 = in[i + 1];
+        if (op == OpTypeVector && len == 4 && in[i + 3] == 4) vec_of[in[i + 1]] = in[i + 2];
+        if (op == OpTypePointer && len == 4) ptr_class[in[i + 1]] = in[i + 2];
+        if (op == OpVariable && len >= 4) var_class[in[i + 2]] = in[i + 3];
+        i += len;
+    }
+    if (!fragment || !f32 || !u32) return false;
+    for (auto [vec, comp] : vec_of) {
+        if (comp == f32) v4 = vec;
+        if (b && comp == b) v4b = vec;
+    }
+    if (!v4) return false;
+    std::map<uint32_t, uint32_t> v4_out_ptr;
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (op == OpTypePointer && len == 4 && in[i + 2] == StorageOutput && in[i + 3] == v4) v4_out_ptr[in[i + 1]] = 1;
+        i += len;
+    }
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (op == OpVariable && len >= 4 && in[i + 3] == StorageOutput && v4_out_ptr.count(in[i + 1])) outs.push_back(in[i + 2]);
+        i += len;
+    }
+    if (outs.empty()) return false;
+    bool new_b = !b, new_v4b = !v4b;
+    if (new_b) b = bound++;
+    if (new_v4b) v4b = bound++;
+    const uint32_t ptr = bound++, flag = bound++, one = bound++, zero = bound++, scale = bound++;
+    uint32_t kind[9];
+    for (uint32_t& k : kind) k = bound++;
+    auto kind_of = [&](const uint32_t* w, uint32_t op, uint32_t len) -> uint32_t {
+        uint32_t type = len >= 3 ? w[1] : 0;
+        if (type != f32 && type != v4) return 0;
+        switch (op) {
+            case OpLoad: {
+                auto c = var_class.find(w[3]);
+                if (c == var_class.end()) return 0;
+                return c->second == StorageInput ? 1 : (c->second == StorageUniform || c->second == StorageBuffer) ? 2 : 0;
+            }
+            case 87: case 88: case 89: case 90: case 91: case 92: case 93: case 94: case 95: case 96: case 97: return 3;
+            case OpExtInst:
+                if (w[3] != glsl) return 0;
+                switch (w[4]) {
+                    case 26: case 27: case 28: case 29: case 30: return 4;  // Pow Exp Log Exp2 Log2
+                    case 31: case 32: case 66: case 69: return 5;           // Sqrt InverseSqrt Length Normalize
+                    case 50: return 7;                                      // Fma
+                    default: return 0;
+                }
+            case OpFDiv: case OpFRem: case OpFMod: return 6;
+            case OpFAdd: case OpFSub: case OpFMul: case OpVectorTimesScalar: case OpDot: return 7;
+            case OpConvertSToF: case OpConvertUToF: case OpBitcast: return 8;
+            default: return 0;
+        }
+    };
+    bool placed = false, in_func = false, in_entry = false, any = false;
+    out.assign(in.begin(), in.begin() + 5);
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        const uint32_t* w = &in[i];
+        if (op == OpFunction && !placed) {
+            if (new_b) out.insert(out.end(), {(2u << 16) | OpTypeBool, b});
+            if (new_v4b) out.insert(out.end(), {(4u << 16) | OpTypeVector, v4b, b, 4u});
+            out.insert(out.end(), {(4u << 16) | OpTypePointer, ptr, StoragePrivate, u32});
+            for (uint32_t k = 0; k < 9; k++) out.insert(out.end(), {(4u << 16) | OpConstant, u32, kind[k], k});
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, one, 0x3F800000u});
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, zero, 0u});
+            float sc = 28.0f / 255.0f;
+            uint32_t scb;
+            std::memcpy(&scb, &sc, 4);
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, scale, scb});
+            out.insert(out.end(), {(5u << 16) | OpVariable, ptr, flag, StoragePrivate, kind[0]});
+            placed = true;
+        }
+        if (op == OpFunction) in_func = true, in_entry = w[2] == entry;
+        if (op == OpFunctionEnd) in_func = in_entry = false;
+        // Access chains carry their base's storage class.
+        if ((op == OpAccessChain || op == OpInBoundsAccessChain) && len >= 4)
+            if (auto c = var_class.find(w[3]); c != var_class.end()) var_class[w[2]] = c->second;
+        if (op == OpReturn && in_entry && placed) {
+            for (uint32_t var : outs) {
+                uint32_t v = bound++, nan = bound++, an = bound++, cn = bound++, f = bound++, ff = bound++,
+                         r = bound++, col = bound++, sel = bound++;
+                out.insert(out.end(), {(4u << 16) | OpLoad, v4, v, var});
+                out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, nan, v});
+                out.insert(out.end(), {(4u << 16) | OpAny, b, an, nan});
+                out.insert(out.end(), {(7u << 16) | OpCompositeConstruct, v4b, cn, an, an, an, an});
+                out.insert(out.end(), {(4u << 16) | OpLoad, u32, f, flag});
+                out.insert(out.end(), {(4u << 16) | OpConvertUToF, f32, ff, f});
+                out.insert(out.end(), {(5u << 16) | OpFMul, f32, r, ff, scale});
+                out.insert(out.end(), {(7u << 16) | OpCompositeConstruct, v4, col, r, zero, one, one});
+                out.insert(out.end(), {(6u << 16) | OpSelect, v4, sel, cn, col, v});
+                out.insert(out.end(), {(3u << 16) | OpStore, var, sel});
+            }
+            any = true;
+        }
+        out.insert(out.end(), in.begin() + i, in.begin() + i + len);
+        if (in_func && placed) {
+            if (uint32_t k = kind_of(w, op, len)) {
+                uint32_t result = w[2], nan = bound++, f = bound++, z = bound++, a = bound++, sel = bound++;
+                if (w[1] == f32) {
+                    out.insert(out.end(), {(4u << 16) | OpIsNan, b, nan, result});
+                } else {
+                    uint32_t nv = bound++;
+                    out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, nv, result});
+                    out.insert(out.end(), {(4u << 16) | OpAny, b, nan, nv});
+                }
+                out.insert(out.end(), {(4u << 16) | OpLoad, u32, f, flag});
+                out.insert(out.end(), {(5u << 16) | OpIEqual, b, z, f, kind[0]});
+                out.insert(out.end(), {(5u << 16) | OpLogicalAnd, b, a, nan, z});
+                out.insert(out.end(), {(6u << 16) | OpSelect, u32, sel, a, kind[k], f});
+                out.insert(out.end(), {(3u << 16) | OpStore, flag, sel});
+            }
+        }
+        i += len;
+    }
+    if (!any) return false;
+    out[3] = bound;
+    return true;
+}
+
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
     std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
@@ -575,7 +724,8 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
     static const int rsq_clamp = std::getenv("NX_RSQ_CLAMP") ? std::atoi(std::getenv("NX_RSQ_CLAMP")) : 0;
     if (rsq_clamp && clamp_infinities(code, rsq_clamp >= 2, next)) code.swap(next);
-    // NX_FS_NAN: 0 off, 1 NaN/Inf outputs marked in colour (a test), 2 NaN components written as 0 (the PS4's default).
+    // NX_FS_NAN: 0 off, 1 NaN/Inf outputs marked in colour (a test), 2 NaN components written as 0 (the PS4's default),
+    // 3 the kind of instruction that first made the NaN (trace_first_nan).
     static const int fs_nan = [] {
         const char* e = std::getenv("NX_FS_NAN");
 #if defined(__ORBIS__)
@@ -584,7 +734,11 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
         return e ? std::atoi(e) : 0;
 #endif
     }();
-    if (fs_nan && s->stage == ShaderStage::Fragment && mark_nan_outputs(code, fs_nan == 2, next)) code.swap(next);
+    if (fs_nan == 3 && s->stage == ShaderStage::Fragment) {
+        if (trace_first_nan(code, next)) code.swap(next);
+    } else if (fs_nan && s->stage == ShaderStage::Fragment && mark_nan_outputs(code, fs_nan == 2, next)) {
+        code.swap(next);
+    }
     return code;
 }
 
