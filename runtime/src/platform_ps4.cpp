@@ -83,6 +83,7 @@ int32_t ps4_available_flexible_main(size_t* size) __asm__("sceKernelAvailableFle
 void ps4_boot_trace(const char* line);       // port/ps4_crashlog.cpp
 void ps4_watch_thread(const char* name);     // port/ps4_sampler.cpp
 void ps4_sampler_start();                    // port/ps4_sampler.cpp
+void ps4_sampler_register_thread(const char* name);  // port/ps4_sampler.cpp
 void ps4_boost_thread();                     // port/ps4_runtime.cpp: priority 650 (default 700)
 extern int ac_ps4_flush_all_draws;           // RADV (Crema's Mesa): after every draw write back and invalidate every
                                              // GPU cache (a diagnostic: NX_PS4_GPU_FLUSH=1)
@@ -559,6 +560,8 @@ void set_guest_core(int64_t host_tid, int core) {
 }
 
 void place_frame_thread(int role) {
+    // /data/SMW/profile.txt: these two are the threads worth sampling (port/ps4_sampler.cpp, samples.log)
+    if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
     Known* k = known(ps4_thread_id());
     if (k && k->guest) return;  // a guest thread presents (NX_REPLAY_THREAD=0): it keeps its guest core
     if (role == 0) {
