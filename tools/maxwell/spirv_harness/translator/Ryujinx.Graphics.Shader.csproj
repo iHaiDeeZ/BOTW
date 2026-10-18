@@ -28,13 +28,17 @@
   <ItemGroup>
     <ShaderPatch Include="spirv-else-if.patch" File="CodeGen/Spirv/SpirvGenerator.cs" />
     <ShaderPatch Include="spirv-fmz.patch" File="Instructions/InstEmitFloatArithmetic.cs" />
+    <ShaderPatch Include="totk-ast-side-effects.patch" File="StructuredIr/AstOptimizer.cs" />
+    <ShaderPatch Include="totk-dead-node-calls.patch" File="Translation/Optimizations/Optimizer.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="$(ShaderSrc)**/*.cs"
-             Exclude="$(ShaderSrc)bin/**;$(ShaderSrc)obj/**;$(ShaderSrc)CodeGen/Spirv/SpirvGenerator.cs;$(ShaderSrc)Instructions/InstEmitFloatArithmetic.cs" />
+             Exclude="$(ShaderSrc)bin/**;$(ShaderSrc)obj/**;$(ShaderSrc)CodeGen/Spirv/SpirvGenerator.cs;$(ShaderSrc)Instructions/InstEmitFloatArithmetic.cs;$(ShaderSrc)StructuredIr/AstOptimizer.cs;$(ShaderSrc)Translation/Optimizations/Optimizer.cs" />
     <Compile Include="$(PatchedDir)CodeGen/Spirv/SpirvGenerator.cs" />
     <Compile Include="$(PatchedDir)Instructions/InstEmitFloatArithmetic.cs" />
+    <Compile Include="$(PatchedDir)StructuredIr/AstOptimizer.cs" />
+    <Compile Include="$(PatchedDir)Translation/Optimizations/Optimizer.cs" />
     <EmbeddedResource Include="$(ShaderSrc)CodeGen/Glsl/HelperFunctions/*.glsl"
                       LogicalName="Ryujinx.Graphics.Shader.CodeGen.Glsl.HelperFunctions.%(Filename)%(Extension)" />
   </ItemGroup>

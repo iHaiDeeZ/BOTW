@@ -16,6 +16,8 @@ struct Info {
     // region; svcGetInfo(SystemResourceSizeTotal) reports it.
     uint64_t system_resource_size = 0;
 };
+// system_resource_size: read main.npdm (analysis/main.npdm, written by the importer) instead of a fixed value.
+constexpr uint64_t kSystemResourceFromNpdm = ~0ull;
 extern const Info kInfo;
 
 // After the modules' static constructors, right before nnMain: patch globals, add virtual files.

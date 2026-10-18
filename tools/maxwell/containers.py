@@ -12,7 +12,8 @@ Understood formats (docs/nvn/SHADERS.md has the layouts and what is verified vs.
   VFXB   NintendoWare Vfx2 effect binary: its GRSR/GRSC sections hold BNSH files
   BAHS   agl shader archive binary (.sharcb): programs, variations, per-stage records
   BYML   (.esetb.byml) not parsed: the VFXB inside is found by its magic
-Files ending in .zs are zstd and are decompressed first (zstandard module or the zstd tool).
+Files ending in .zs are zstd and are decompressed first (zstandard module or the zstd tool); Tears of the Kingdom's
+dictionary-compressed ones with the dictionaries in romfs/Pack/ZsDic.pack.zs.
 
 Every stage gets a stable id (container path / program / stage) and a content hash of its code block. --extract writes
 <id>.code.bin (the code block as stored: 0x30-byte NVN header, SPH for graphics stages, Maxwell instructions,
@@ -468,14 +469,46 @@ def open_blob(d, base, size, path, reflect=False):
     return None
 
 
+_ZSDICS = {}
+
+
+def zs_dictionaries(path):
+    """Tears of the Kingdom compresses most of its RomFS with zstd dictionaries, kept in romfs/Pack/ZsDic.pack.zs (a
+    SARC of zs.zsdic, pack.zsdic, bcett.byml.zsdic; itself plain zstd). Returns {dictionary id: bytes} for the RomFS
+    `path` is in ({} when there is none)."""
+    d = os.path.dirname(os.path.abspath(path))
+    while d != os.path.dirname(d) and os.path.basename(d) != "romfs":
+        d = os.path.dirname(d)
+    pack = os.path.join(d, "Pack", "ZsDic.pack.zs")
+    if pack not in _ZSDICS:
+        dicts = {}
+        if os.path.isfile(pack):
+            import zstandard
+            sarc = zstandard.ZstdDecompressor().decompress(open(pack, "rb").read(), max_output_size=1 << 28)
+            for _, off, n in sarc_files(sarc, 0):
+                blob = bytes(sarc[off:off + n])
+                if u32(blob, 0) == 0xEC30A437:  # zstd dictionary magic; its id follows
+                    dicts[u32(blob, 4)] = blob
+        _ZSDICS[pack] = dicts
+    return _ZSDICS[pack]
+
+
 def read_file(path):
     raw = open(path, "rb").read()
     if path.endswith(".zs"):
         try:
             import zstandard
-            raw = zstandard.ZstdDecompressor().decompress(raw, max_output_size=1 << 31)
         except ImportError:
-            raw = subprocess.run(["zstd", "-dc", path], capture_output=True, check=True).stdout
+            return subprocess.run(["zstd", "-dc", path], capture_output=True, check=True).stdout
+        params = zstandard.get_frame_parameters(raw)
+        if params.dict_id:
+            dicts = zs_dictionaries(path)
+            if params.dict_id not in dicts:
+                raise ValueError(f"{path}: zstd dictionary {params.dict_id:#x} not found (romfs/Pack/ZsDic.pack.zs)")
+            dctx = zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(dicts[params.dict_id]))
+        else:
+            dctx = zstandard.ZstdDecompressor()
+        raw = dctx.decompress(raw, max_output_size=1 << 31)
     return raw
 
 

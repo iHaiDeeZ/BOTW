@@ -125,6 +125,10 @@ def _parse_mod0(m):
             break
         dyn.setdefault(tag, val)
     m.dynamic = dyn
+    # DT_RELR (35/36/37: packed relative relocations, Tears of the Kingdom 1.4.3 and newer SDKs) is handled neither
+    # here nor in the runtime's loader: a module with it would run with unrelocated pointers, so refuse it.
+    if any(t in dyn for t in (35, 36, 37)):
+        raise ValueError("module uses DT_RELR relocations, which are not supported yet")
 
     strtab, symtab = dyn[DT_STRTAB], dyn[DT_SYMTAB]
     syment = dyn.get(DT_SYMENT, 24)

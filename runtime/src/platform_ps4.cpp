@@ -59,6 +59,7 @@
 
 #include "kernel.h"
 #include "platform.h"
+#include "ps4/ps4_app.h"
 #include "ps4/ps4_boot_screen.h"
 #include "ps4/ps4_menu.h"
 #include "ps4/ps4_vk_wsi.h"
@@ -98,7 +99,7 @@ namespace nx::plat {
 
 namespace {
 
-const char* const kDataRoot = "/data/SMW";
+const char* const kDataRoot = NX_PS4_DATA;
 
 constexpr int32_t kMapFixed = 0x10;  // SCE_KERNEL_MAP_FIXED
 constexpr int32_t kProtCpuRw = 0x3;
@@ -561,7 +562,7 @@ void set_guest_core(int64_t host_tid, int core) {
 
 void place_frame_thread(int role) {
     // /data/SMW/profile.txt: these two are the threads worth sampling (port/ps4_sampler.cpp, samples.log)
-    if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
+    if (access(NX_PS4_DATA "/profile.txt", F_OK) == 0) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
     Known* k = known(ps4_thread_id());
     if (k && k->guest) return;  // a guest thread presents (NX_REPLAY_THREAD=0): it keeps its guest core
     if (role == 0) {
@@ -816,7 +817,7 @@ bool read_extra_pad(int player, PadState& p) {
 // ---- audio: sceAudioOut, s16 stereo 48 kHz, fed from the queue of submitted buffers ----------------------------
 
 static void* audio_thread(void*) {
-    set_thread_name("SMW AudioOut");
+    set_thread_name(NX_PS4_APP " AudioOut");
     // above the game's threads, so a slow frame does not make the sound crackle (default priority 700)
     ps4_set_prio(ps4_pthread_self(), 400);
     alignas(64) static int16_t grains[2][kGrainFrames * 2];
@@ -966,7 +967,7 @@ std::string app_version() {
 
 // /data/SMW/config.txt: NX_<KEY>=<value> per line ('#' starts a comment) into the environment.
 void load_config() {
-    FILE* f = std::fopen("/data/SMW/config.txt", "r");
+    FILE* f = std::fopen(NX_PS4_DATA "/config.txt", "r");
     if (!f) return;
     char line[512];
     int n = 0;
@@ -1014,7 +1015,7 @@ void game_thread(void*) {
 // The game's view of a crash, appended to crash.log by port/ps4_crashlog.cpp after the host's stacks: the guest
 // registers of the crashed thread.
 extern "C" void ps4_crash_guest_info() {
-    const int fd = open("/data/SMW/crash.log", O_WRONLY | O_CREAT | O_APPEND, 0666);
+    const int fd = open(NX_PS4_DATA "/crash.log", O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (fd < 0) return;
     char line[200];
     nx::CPU& c = nx::current_cpu();
@@ -1040,7 +1041,7 @@ int main() {
     using namespace nx::plat;
     load_system_modules();
     mkdir(kDataRoot, 0777);
-    trace("SMW %s starting (%s)", app_version().c_str(), nx::game::kInfo.title);
+    trace(NX_PS4_APP " %s starting (%s)", app_version().c_str(), nx::game::kInfo.title);
     load_config();
     // PS4 defaults (config.txt overrides them): the game renders at 1280x720 and FidelityFX Super Resolution 1 (EASU,
     // then RCAS sharpening) brings it to the TV's 1080p in the present pass (nvn_present.cpp).
@@ -1057,7 +1058,7 @@ int main() {
         trace("gpu: every cache flushed after every draw (NX_PS4_GPU_FLUSH)");
     }
     ps4::boot_screen_start();  // our own picture with a progress bar until the game's first frame
-    if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_start();
+    if (access(NX_PS4_DATA "/profile.txt", F_OK) == 0) ps4_sampler_start();
     detect_cores();
     g_cross_confirms = !(std::getenv("NX_BUTTONS") && std::strcmp(std::getenv("NX_BUTTONS"), "nintendo") == 0);
     ps4::settings_load(g_cross_confirms);  // the quick menu's settings (ps4_menu.cpp): button mapping, FSR

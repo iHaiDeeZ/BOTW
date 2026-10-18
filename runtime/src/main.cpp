@@ -12,8 +12,10 @@
 #include "kernel.h"
 #include "platform.h"
 
-extern const nx::ModuleInfo nx_module_main;
-extern const nx::ModuleInfo nx_module_sdk;
+// The game's modules in rtld's order (main first, sdk last; CMakeLists.txt generates the table from NX_GAME_MODULES).
+extern const nx::ModuleInfo* const nx_modules[];
+extern const size_t nx_module_count;
+#define nx_module_main (*nx_modules[0])
 
 namespace nx {
 
@@ -108,8 +110,7 @@ static void rtld_mark(CPU&) {}
 // nnMain, as called by nn::init::Start: the constructors need the program's allocator, which nninitStartup has
 // set up by now, so they run here, right before the real nnMain.
 static void nn_main(CPU& c) {
-    init_module(c, nx_module_sdk);
-    init_module(c, nx_module_main);
+    for (size_t k = nx_module_count; k-- > 0;) init_module(c, *nx_modules[k]);  // sdk first, main last
     game::after_init();
     log("entering nnMain");
     uint64_t real = 0;
@@ -142,8 +143,7 @@ void boot() {
     if (plat::setting("trace") == "1") g_trace = true;
     memory_init();
     kernel_init();
-    const ModuleInfo* mods[] = {&nx_module_main, &nx_module_sdk};
-    load_modules(mods, 2, plat::content_root() + "/analysis");
+    load_modules(nx_modules, nx_module_count, plat::content_root() + "/analysis");
 
     uint64_t tdata = 0, tdata_end = 0;
     if (tdata_range(nx_module_main, tdata, tdata_end) && tdata_end > tdata) {

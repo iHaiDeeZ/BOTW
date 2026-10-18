@@ -4,6 +4,7 @@
 // uses the boot screen's outlined font.bin as it is. SMW_MENU_PREVIEW builds the drawing alone on a PC
 // (scripts/menu-preview.sh): no PS4 calls then.
 #include "ps4_menu.h"
+#include "ps4_app.h"
 
 #include <algorithm>
 #include <atomic>
@@ -45,7 +46,7 @@ void request_diag();
 namespace {
 
 constexpr uint32_t kW = 1920, kH = 1080;
-constexpr const char* kConfig = "/data/SMW/config.txt";
+constexpr const char* kConfig = NX_PS4_DATA "/config.txt";
 
 // ---- settings -----------------------------------------------------------------------------------------------------
 
@@ -339,7 +340,7 @@ void menu_frame(MenuState& m, const Input& in, std::string& title, std::vector<R
     if (m.page == Page::Main) {
         char sharp[32];
         std::snprintf(sharp, sizeof sharp, "%.1f", double(g_set.sharp));
-        title = "SMW quick menu";
+        title = NX_PS4_APP " quick menu";
         rows = {{"Resume", ""},
                 {"Render resolution", kResolutions[g_set.res].label, true},
                 {"Upscaling", g_set.fsr ? "FSR 1" : "Bilinear"},

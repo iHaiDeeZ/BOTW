@@ -6,6 +6,7 @@
 // the last boot's time, whichever is further (/data/SMW/boot-profile.txt, written at each first frame; the first boot
 // guesses). The bar eases towards that and never goes back.
 #include "ps4_boot_screen.h"
+#include "ps4_app.h"
 
 #include <sys/types.h>
 
@@ -43,7 +44,7 @@ constexpr int kFirstBuffer = 12;
 constexpr size_t kBufferSize = 8ull << 20;  // 1920x1080x4 rounded up to 2 MiB pages
 constexpr int32_t kWcGarlic = 3;            // SCE_KERNEL_WC_GARLIC: write-combined, what the display reads
 constexpr int32_t kProtCpuGpu = 0x33;       // CPU read/write, GPU read/write
-const char* const kProfile = "/data/SMW/boot-profile.txt";
+const char* const kProfile = NX_PS4_DATA "/boot-profile.txt";
 
 std::mutex g_video_lock;
 int g_video = -1;

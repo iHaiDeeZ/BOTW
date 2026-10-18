@@ -2,6 +2,7 @@
 // mappings, and the initial static TLS every thread starts with. kernel.cpp dispatches to these.
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 #include <vector>
 
 #include <nx/game.h>
@@ -13,6 +14,24 @@
 namespace nx {
 
 // ---- svcGetInfo -------------------------------------------------------------------------------------------------
+
+// SystemResourceSizeTotal: the game's own value, or (kSystemResourceFromNpdm) main.npdm META +0x14 from the dump.
+static uint64_t system_resource_size() {
+    static const uint64_t size = [] {
+        if (game::kInfo.system_resource_size != game::kSystemResourceFromNpdm) return game::kInfo.system_resource_size;
+        std::ifstream f(plat::content_root() + "/analysis/main.npdm", std::ios::binary);
+        char meta[0x18] = {};
+        if (!f.read(meta, sizeof meta) || std::memcmp(meta, "META", 4) != 0) {
+            log("main.npdm missing or not META: SystemResourceSize 0");
+            return uint64_t(0);
+        }
+        uint32_t v;
+        std::memcpy(&v, meta + 0x14, 4);
+        log("main.npdm: SystemResourceSize %#x", v);
+        return uint64_t(v);
+    }();
+    return size;
+}
 
 uint64_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint32_t& rc) {
     (void)handle;
@@ -34,7 +53,7 @@ uint64_t get_info(uint32_t type, uint32_t handle, uint64_t sub, uint32_t& rc) {
         case 13: return kAddressSpaceSize;
         case 14: return kStackBase;
         case 15: return kStackSize;
-        case 16: return game::kInfo.system_resource_size;  // SystemResourceSizeTotal
+        case 16: return system_resource_size();  // SystemResourceSizeTotal
         case 17: return 0;
         case 18: return game::kInfo.program_id;  // ProgramId
         case 20: {  // UserExceptionContextAddress: a page of ours (SDK 16 keeps its dying-message region at +0x1C0)
