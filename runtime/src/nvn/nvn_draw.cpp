@@ -272,7 +272,35 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
     g_vertex_pending = false, g_vertex_barriers++, g_vertex_visible_at = g_pass_serial;
 }
 
+// Where a draw's replay time goes (logged with the per-frame timings, nvn_vk.cpp): the textures gathered (uploads,
+// layouts), the descriptor sets (uniform copies), the vertex and index data, the pass begun, the pipeline looked up
+// (or made), the binds and the draw call. Phase k is the time from mark k-1 (or the draw's start) to mark k.
+namespace {
+enum Phase { kPhTextures, kPhSets, kPhInputs, kPhPass, kPhPipeline, kPhCommands, kPhCount };
+uint64_t g_phase_ns[kPhCount], g_phase_draws = 0;
+struct PhaseClock {
+    uint64_t last = plat::monotonic_ns();
+    void mark(Phase p) {
+        uint64_t now = plat::monotonic_ns();
+        g_phase_ns[p] += now - last;
+        last = now;
+    }
+};
+}  // namespace
+
+void draw_phase_log(uint64_t frames) {
+    if (!g_phase_draws || !frames) return;
+    const double f = double(frames) * 1e6;
+    log("nvn/vk: draw replay per frame: %.0f draws, textures %.2f ms, sets %.2f, vertex/index %.2f, pass %.2f, "
+        "pipeline %.2f, binds+draw %.2f",
+        double(g_phase_draws) / double(frames), g_phase_ns[kPhTextures] / f, g_phase_ns[kPhSets] / f,
+        g_phase_ns[kPhInputs] / f, g_phase_ns[kPhPass] / f, g_phase_ns[kPhPipeline] / f, g_phase_ns[kPhCommands] / f);
+    for (uint64_t& n : g_phase_ns) n = 0;
+    g_phase_draws = 0;
+}
+
 bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
+    PhaseClock clock;
     g_stats.total++;
     if (g_state.rasterizer_discard || !g_state.render_enable) return false;  // nothing reaches the targets
     const auto* shaders = program_shaders(g_state.program);
@@ -312,6 +340,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     // Textures first: an upload or a layout change cannot happen inside the render pass.
     uint32_t gathered = gather_textures(*shaders);
+    clock.mark(kPhTextures);
     // A pass that neither tests nor writes depth but keeps its depth image bound while sampling that same image (the
     // world map's depth-to-colour linearization, fs 0aa56d1b): on Metal the image is then attached and read in one
     // encoder, which is undefined, and the copy came out 0 everywhere; the composite then took the player for
@@ -345,6 +374,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
 
     probe_fill(t, fs);  // NX_PROBE_FILL (nvn_draw_trace.cpp)
     build_sets(cb, *shaders, layout);
+    clock.mark(kPhSets);
     // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
     // (nvn_written.cpp), which cannot be recorded inside a pass.
     DrawInputs in;
@@ -353,6 +383,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         return false;
     }
     check_vertex_ranges(vs, fs, indexed, c, in);  // NX_CHECK_VERTS (nvn_written.cpp)
+    clock.mark(kPhInputs);
     if (!g_rendering) {
         if (gpu_profile_on()) {
             GpuImage* img = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
@@ -363,6 +394,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         }
         begin_rendering(cb, tt);
     }
+    clock.mark(kPhPass);
 
     // Pipeline.
     PipelineKey key;
@@ -395,6 +427,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     if (!t.color_count && !dimg) may_defer = false;
     VkPipeline pipeline = graphics_pipeline(key, layout, may_defer);
+    clock.mark(kPhPipeline);
     if (!pipeline) {
         g_stats.no_pipeline++;
         return false;
@@ -449,6 +482,8 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         if (q) zero_draws_end(cb);
     }
     g_stats.done++;
+    clock.mark(kPhCommands);
+    g_phase_draws++;
     if (diag_active()) g_diag_draws++, g_diag_fs = fs ? fs->hash : vs->hash;
     g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
     // NX_SNAP_FS=<hash>,<hash>[@<first draw>]: also snapshot after draws with those fragment shaders (8 at most, or

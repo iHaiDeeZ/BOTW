@@ -513,7 +513,8 @@ void log_timing(uint64_t frames) {
         ms(t.fence_ns), ms(t.submit_ns > known ? t.submit_ns - known : 0), ms(t.present_ns),
         double(t.upload_bytes) / 1e6 / double(frames));
     frame_log(frames);
-    creation_log(frames);  // pipelines and ASTC decodes of the window; saves the pipeline cache now and then
+    creation_log(frames);
+    replay::draw_phase_log(frames);  // nvn_draw.cpp  // pipelines and ASTC decodes of the window; saves the pipeline cache now and then
     g_timing = {};
 }
 

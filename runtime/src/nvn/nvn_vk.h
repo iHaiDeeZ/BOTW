@@ -86,6 +86,9 @@ void pipeline_cache_save();
 void note_pipeline_created(uint64_t ns);
 void note_astc_decoded(uint64_t ns);
 void creation_log(uint64_t frames);
+namespace replay {
+void draw_phase_log(uint64_t frames);  // nvn_draw.cpp: where the draws' replay time went
+}
 Upload upload(const void* data, uint64_t size, uint64_t align);
 
 // Descriptor sets for this submit (freed when it completes).
