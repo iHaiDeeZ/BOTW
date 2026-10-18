@@ -47,6 +47,9 @@ def main():
     ap.add_argument("--name", default="main")
     ap.add_argument("--base", default="0x4000000000")
     ap.add_argument("--only", nargs="*", default=None, help="only these function addresses (debug)")
+    ap.add_argument("--trace", default=None,
+                    help="file of function addresses (hex, one per line, '#' comments) whose entry and return the runtime "
+                         "logs (nx::guest_trace); only the files holding them change")
     args = ap.parse_args()
     base = int(args.base, 0)
     name = args.name
@@ -58,6 +61,12 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     e = emit.Emitter(an, prefix=name)
+    if args.trace and os.path.exists(args.trace):
+        for line in open(args.trace):
+            line = line.split("#")[0].strip()
+            if line:
+                e.trace.add(int(line, 16))
+        print(f"tracing {len(e.trace)} functions")
     funcs = an.functions
     if args.only:
         want = {int(x, 16) for x in args.only}

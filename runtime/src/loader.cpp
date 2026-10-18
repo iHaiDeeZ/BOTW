@@ -3,6 +3,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -278,6 +279,28 @@ void load_modules(const ModuleInfo* const* mods, size_t count, const std::string
         }
     }
     log("linked: %zu to HLE, %zu across modules, %zu unresolved", hle, linked, missing);
+}
+
+}  // namespace nx
+
+namespace nx {
+
+// --trace (recomp/__main__.py): entry and return of chosen guest functions, the first 400 of each, then every 1000th.
+void guest_trace(CPU& c, uint64_t addr, int exit) {
+    static std::mutex m;
+    static std::map<uint64_t, uint64_t> counts;
+    uint64_t n;
+    {
+        std::lock_guard lk(m);
+        n = exit ? counts[addr] : ++counts[addr];
+    }
+    if (n > 400 && n % 1000) return;
+    if (!exit)
+        log("trace > %s #%llu (%llx, %llx, %llx, %llx) lr %s", describe(addr).c_str(), (unsigned long long)n,
+            (unsigned long long)c.x[0], (unsigned long long)c.x[1], (unsigned long long)c.x[2],
+            (unsigned long long)c.x[3], describe(c.x[30]).c_str());
+    else
+        log("trace < %s #%llu = %llx", describe(addr).c_str(), (unsigned long long)n, (unsigned long long)c.x[0]);
 }
 
 }  // namespace nx

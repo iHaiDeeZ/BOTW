@@ -121,6 +121,7 @@ from .emit_neon_wide import NeonWideOps  # noqa: E402
 
 class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
     def __init__(self, an, prefix="sub"):
+        self.trace = set()  # function starts to wrap with nx::guest_trace (--trace)
         self.an = an
         self.m = an.module
         self.cs = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
@@ -251,7 +252,11 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
                 stmt += f" nx::trace_sp(c, {B} + {a:#x}ull);"
             body.append((a, f"{stmt} // {i.mnemonic} {i.op_str}"))
             last_term = i.mnemonic in ("b", "br", "ret", "udf", "brk") or stmt.endswith("return; }")
-        out = [f"void {self.fn(f.start)}(nx::CPU& NX_RESTRICT c) {{"]
+        traced = f.start in self.trace
+        name = self.fn(f.start) + ("_body" if traced else "")
+        out = [f"{'static ' if traced else ''}void {name}(nx::CPU& NX_RESTRICT c) {{"]
+        if traced:  # declared here, not in nx/cpu.h: only the files holding traced functions change
+            out.insert(0, "namespace nx { void guest_trace(CPU& c, uint64_t addr, int exit); }")
         sj = self.setjmp_sites
         if sj:
             # Functions that call setjmp run inside a try: a longjmp on one of their buffers resumes after the call.
@@ -276,6 +281,9 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
             out.append("        js_[jr_].restore(c); c.x[0] = e_.val ? e_.val : 1;")
             out.append("    } }")
         out.append("}")
+        if traced:  # --trace: entry (x0..x3, lr) and return (x0) logged by the runtime
+            out.append(f"void {self.fn(f.start)}(nx::CPU& NX_RESTRICT c) {{ nx::guest_trace(c, {B} + {f.start:#x}ull, 0); "
+                       f"{name}(c); nx::guest_trace(c, {B} + {f.start:#x}ull, 1); }}")
         return "\n".join(out)
 
     # ---- instruction dispatch -----------------------------------------------------------------------------
