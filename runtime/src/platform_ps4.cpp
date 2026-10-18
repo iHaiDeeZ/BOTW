@@ -1046,6 +1046,10 @@ int main() {
     // then RCAS sharpening) brings it to the TV's 1080p in the present pass (nvn_present.cpp).
     setenv("NX_FSR", "1", 0);
     setenv("NX_RENDER_RES", "1280x720", 0);
+    // Pipelined submits (the CPU does not wait for the GPU at the end of each frame, nvn_frames.cpp) and uniform
+    // buffers bound with dynamic offsets (descriptor sets reused, nvn_pipeline.cpp): course 1-1 from 25-27 fps to 30.
+    setenv("NX_PIPELINED", "1", 0);
+    setenv("NX_DYNAMIC_UBO", "1", 0);
     // NX_PS4_GPU_FLUSH=1: every GPU cache written back and invalidated after every draw (slow). Tells a cache
     // coherency problem (data the CPU or a later pass reads before the GPU's L2 wrote it out) from the rest.
     if (const char* f = std::getenv("NX_PS4_GPU_FLUSH"); f && f[0] == '1') {
