@@ -247,6 +247,18 @@ bool all_write_backs() {  // NX_WRITE_BACK_ALL=1: every compute storage binding,
 
 // guest: the bytes are guest memory (a copy is shared by later draws of the submit); host scratch data (the support
 // buffer, c[0]: on the stack, at the same address for every draw) is copied every time (docs/nvn/DEBUG.md #30).
+// PS4 (AMD): every buffer load and store checks the descriptor's range in hardware; a read past it returns 0, as on
+// Maxwell, and a write past it is dropped. The zero padding to 4 KB / 64 KB that Metal needs (it reads garbage past a
+// buffer) cost ~5 ms of copies a course frame (13 MB) on the PS4's CPU: buffers there are bound at their own size.
+uint64_t padding(uint64_t metal_min) {
+#if defined(__ORBIS__)
+    static const bool pad = std::getenv("NX_PS4_PAD_BUFFERS") != nullptr;  // bisecting: the padding as elsewhere
+    return pad ? metal_min : 16;
+#else
+    return metal_min;
+#endif
+}
+
 VkDescriptorBufferInfo buffer_of(VkCommandBuffer cb, const void* bytes, uint64_t size, uint64_t min_size = 16,
                                  bool write_back = false, bool guest = true) {
     uint64_t n = std::max<uint64_t>((size + 15) & ~15ull, min_size);
@@ -456,7 +468,7 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     // Banks the shader indexes with a computed value (clamped to 64 KB, nvn_spirv_patch.cpp): all
                     // 64 KB, so every read past the data returns 0 as on Maxwell.
                     bool indexed = b.set == 0 && b.binding < 64 && (dynamic_uniform_bindings(s) >> b.binding & 1);
-                    info = buffer_of(cb, p, p ? std::min<uint64_t>(r.size, 0x10000) : 0, indexed ? 0x10000 : 0x1000);
+                    info = buffer_of(cb, p, p ? std::min<uint64_t>(r.size, 0x10000) : 0, padding(indexed ? 0x10000 : 0x1000));
                     break;
                 }
                 case NvnSource::StorageBuffer: {
@@ -466,7 +478,7 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     if (!written && s->stage != ShaderStage::Compute && written_overlaps(p, size)) written_count_bind();
                     // At least 64 KB: Metal does not bound-check, and a shader writing past a small or missing
                     // buffer overwrote the next data in the upload buffer (garbage everywhere after a compute).
-                    info = buffer_of(cb, p, size, 0x10000, written);
+                    info = buffer_of(cb, p, size, written ? 0x10000 : padding(0x10000), written);
                     break;
                 }
                 case NvnSource::DriverConstants: {
