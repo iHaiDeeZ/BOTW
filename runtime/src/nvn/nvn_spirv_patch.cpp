@@ -460,6 +460,90 @@ bool clamp_infinities(const std::vector<uint32_t>& in, bool divisions, std::vect
     return true;
 }
 
+// NX_FS_NAN=1 (a test): every vec4 output of a fragment shader is checked as main returns: a NaN component writes
+// magenta (1, 0, 1, 1), an infinite one yellow (1, 1, 0, 1). The PS4's lit course models come out black; this shows
+// whether their shaders compute NaN on AMD (which the targets and the storyboard turn into black) or a real 0.
+bool mark_nan_outputs(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+    enum : uint32_t { OpEntryPoint = 15, OpTypeBool = 20, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32,
+                      OpConstant = 43, OpConstantComposite = 44, OpFunction = 54, OpFunctionEnd = 56,
+                      OpVariable = 59, OpLoad = 61, OpStore = 62, OpCompositeConstruct = 80, OpAny = 154,
+                      OpIsNan = 156, OpIsInf = 157, OpSelect = 169, OpReturn = 253, StorageOutput = 3 };
+    if (in.size() < 5 || in[0] != 0x07230203u) return false;
+    uint32_t f32 = 0, v4 = 0, b = 0, v4b = 0, entry = 0, bound = in[3];
+    std::map<uint32_t, uint32_t> vec_of;  // vector type -> component type, for float and bool vectors of 4
+    std::vector<uint32_t> out_ptrs, outs;
+    bool fragment = false;
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (!len || i + len > in.size()) return false;
+        if (op == OpEntryPoint && len >= 3) fragment = in[i + 1] == 4, entry = in[i + 2];
+        if (op == OpTypeBool) b = in[i + 1];
+        if (op == OpTypeFloat && len == 3 && in[i + 2] == 32) f32 = in[i + 1];
+        if (op == OpTypeVector && len == 4 && in[i + 3] == 4) vec_of[in[i + 1]] = in[i + 2];
+        if (op == OpTypePointer && len == 4 && in[i + 2] == StorageOutput) out_ptrs.push_back(in[i + 1] << 1), out_ptrs.push_back(in[i + 3]);
+        i += len;
+    }
+    if (!fragment || !f32) return false;
+    for (auto [vec, comp] : vec_of) {
+        if (comp == f32) v4 = vec;
+        if (b && comp == b) v4b = vec;
+    }
+    if (!v4) return false;
+    std::vector<uint32_t> v4_ptrs;  // Output pointers to vec4 float
+    for (size_t k = 0; k + 1 < out_ptrs.size(); k += 2)
+        if (out_ptrs[k + 1] == v4) v4_ptrs.push_back(out_ptrs[k] >> 1);
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (op == OpVariable && len >= 4 && in[i + 3] == StorageOutput &&
+            std::find(v4_ptrs.begin(), v4_ptrs.end(), in[i + 1]) != v4_ptrs.end())
+            outs.push_back(in[i + 2]);
+        i += len;
+    }
+    if (outs.empty()) return false;
+    bool new_b = !b, new_v4b = !v4b;
+    if (new_b) b = bound++;
+    if (new_v4b) v4b = bound++;
+    const uint32_t one = bound++, zero = bound++, magenta = bound++, yellow = bound++;
+    bool placed = false, in_entry = false, any = false;
+    out.assign(in.begin(), in.begin() + 5);
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (op == OpFunction && !placed) {  // types and constants after every global
+            if (new_b) out.insert(out.end(), {(2u << 16) | OpTypeBool, b});
+            if (new_v4b) out.insert(out.end(), {(4u << 16) | OpTypeVector, v4b, b, 4u});
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, one, 0x3F800000u});
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, zero, 0u});
+            out.insert(out.end(), {(7u << 16) | OpConstantComposite, v4, magenta, one, zero, one, one});
+            out.insert(out.end(), {(7u << 16) | OpConstantComposite, v4, yellow, one, one, zero, one});
+            placed = true;
+        }
+        if (op == OpFunction) in_entry = in[i + 2] == entry;
+        if (op == OpFunctionEnd) in_entry = false;
+        if (op == OpReturn && in_entry && placed) {
+            for (uint32_t var : outs) {
+                uint32_t v = bound++, nan = bound++, inf = bound++, an = bound++, ai = bound++, cn = bound++,
+                         ci = bound++, s1 = bound++, s2 = bound++;
+                out.insert(out.end(), {(4u << 16) | OpLoad, v4, v, var});
+                out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, nan, v});
+                out.insert(out.end(), {(4u << 16) | OpIsInf, v4b, inf, v});
+                out.insert(out.end(), {(4u << 16) | OpAny, b, an, nan});
+                out.insert(out.end(), {(4u << 16) | OpAny, b, ai, inf});
+                out.insert(out.end(), {(7u << 16) | OpCompositeConstruct, v4b, cn, an, an, an, an});
+                out.insert(out.end(), {(7u << 16) | OpCompositeConstruct, v4b, ci, ai, ai, ai, ai});
+                out.insert(out.end(), {(6u << 16) | OpSelect, v4, s1, ci, yellow, v});
+                out.insert(out.end(), {(6u << 16) | OpSelect, v4, s2, cn, magenta, s1});
+                out.insert(out.end(), {(3u << 16) | OpStore, var, s2});
+            }
+            any = true;
+        }
+        out.insert(out.end(), in.begin() + i, in.begin() + i + len);
+        i += len;
+    }
+    if (!any) return false;
+    out[3] = bound;
+    return true;
+}
+
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
     std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
@@ -479,6 +563,8 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
     static const int rsq_clamp = std::getenv("NX_RSQ_CLAMP") ? std::atoi(std::getenv("NX_RSQ_CLAMP")) : 0;
     if (rsq_clamp && clamp_infinities(code, rsq_clamp >= 2, next)) code.swap(next);
+    static const bool fs_nan = std::getenv("NX_FS_NAN") && std::getenv("NX_FS_NAN")[0] == '1';
+    if (fs_nan && s->stage == ShaderStage::Fragment && mark_nan_outputs(code, next)) code.swap(next);
     return code;
 }
 
