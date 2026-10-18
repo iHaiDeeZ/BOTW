@@ -460,10 +460,13 @@ bool clamp_infinities(const std::vector<uint32_t>& in, bool divisions, std::vect
     return true;
 }
 
-// NX_FS_NAN=1 (a test): every vec4 output of a fragment shader is checked as main returns: a NaN component writes
-// magenta (1, 0, 1, 1), an infinite one yellow (1, 1, 0, 1). The PS4's lit course models come out black; this shows
-// whether their shaders compute NaN on AMD (which the targets and the storyboard turn into black) or a real 0.
-bool mark_nan_outputs(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+// NaN in fragment outputs. Wonder's HDR targets are R11G11B10F on the Switch, an unsigned float format Maxwell stores
+// NaN into as 0; here they are RGBA16F (nvn_format.cpp), which keeps it. On the PS4 (AMD) some passes, the light probes
+// among them, write NaN texels, and every lit model sampling them came out NaN: black silhouettes in every course.
+// With `zero`, each NaN component of every vec4 output becomes 0 as main returns (Maxwell's result for those targets;
+// the default on the PS4). Without it (NX_FS_NAN=1, a test), an output with a NaN writes magenta (1, 0, 1, 1) and one
+// with an infinity yellow (1, 1, 0, 1): what still computes NaN.
+bool mark_nan_outputs(const std::vector<uint32_t>& in, bool zero_nan, std::vector<uint32_t>& out) {
     enum : uint32_t { OpEntryPoint = 15, OpTypeBool = 20, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32,
                       OpConstant = 43, OpConstantComposite = 44, OpFunction = 54, OpFunctionEnd = 56,
                       OpVariable = 59, OpLoad = 61, OpStore = 62, OpCompositeConstruct = 80, OpAny = 154,
@@ -503,7 +506,7 @@ bool mark_nan_outputs(const std::vector<uint32_t>& in, std::vector<uint32_t>& ou
     bool new_b = !b, new_v4b = !v4b;
     if (new_b) b = bound++;
     if (new_v4b) v4b = bound++;
-    const uint32_t one = bound++, zero = bound++, magenta = bound++, yellow = bound++;
+    const uint32_t one = bound++, zero = bound++, magenta = bound++, yellow = bound++, zeros = bound++;
     bool placed = false, in_entry = false, any = false;
     out.assign(in.begin(), in.begin() + 5);
     for (size_t i = 5; i < in.size();) {
@@ -515,12 +518,21 @@ bool mark_nan_outputs(const std::vector<uint32_t>& in, std::vector<uint32_t>& ou
             out.insert(out.end(), {(4u << 16) | OpConstant, f32, zero, 0u});
             out.insert(out.end(), {(7u << 16) | OpConstantComposite, v4, magenta, one, zero, one, one});
             out.insert(out.end(), {(7u << 16) | OpConstantComposite, v4, yellow, one, one, zero, one});
+            out.insert(out.end(), {(7u << 16) | OpConstantComposite, v4, zeros, zero, zero, zero, zero});
             placed = true;
         }
         if (op == OpFunction) in_entry = in[i + 2] == entry;
         if (op == OpFunctionEnd) in_entry = false;
         if (op == OpReturn && in_entry && placed) {
             for (uint32_t var : outs) {
+                if (zero_nan) {  // per component: select(isnan(v), 0, v)
+                    uint32_t v = bound++, nan = bound++, s = bound++;
+                    out.insert(out.end(), {(4u << 16) | OpLoad, v4, v, var});
+                    out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, nan, v});
+                    out.insert(out.end(), {(6u << 16) | OpSelect, v4, s, nan, zeros, v});
+                    out.insert(out.end(), {(3u << 16) | OpStore, var, s});
+                    continue;
+                }
                 uint32_t v = bound++, nan = bound++, inf = bound++, an = bound++, ai = bound++, cn = bound++,
                          ci = bound++, s1 = bound++, s2 = bound++;
                 out.insert(out.end(), {(4u << 16) | OpLoad, v4, v, var});
@@ -563,8 +575,16 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     if (clamp_uniform_indices(code, next, nullptr)) code.swap(next);
     static const int rsq_clamp = std::getenv("NX_RSQ_CLAMP") ? std::atoi(std::getenv("NX_RSQ_CLAMP")) : 0;
     if (rsq_clamp && clamp_infinities(code, rsq_clamp >= 2, next)) code.swap(next);
-    static const bool fs_nan = std::getenv("NX_FS_NAN") && std::getenv("NX_FS_NAN")[0] == '1';
-    if (fs_nan && s->stage == ShaderStage::Fragment && mark_nan_outputs(code, next)) code.swap(next);
+    // NX_FS_NAN: 0 off, 1 NaN/Inf outputs marked in colour (a test), 2 NaN components written as 0 (the PS4's default).
+    static const int fs_nan = [] {
+        const char* e = std::getenv("NX_FS_NAN");
+#if defined(__ORBIS__)
+        return e ? std::atoi(e) : 2;
+#else
+        return e ? std::atoi(e) : 0;
+#endif
+    }();
+    if (fs_nan && s->stage == ShaderStage::Fragment && mark_nan_outputs(code, fs_nan == 2, next)) code.swap(next);
     return code;
 }
 
