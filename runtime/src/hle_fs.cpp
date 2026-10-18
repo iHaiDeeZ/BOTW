@@ -1,11 +1,18 @@
 // nn::fs at the API level, on host files. The game imports these by name (main), so no fsp-srv IPC is involved:
-//   rom:   -> private/extract/romfs (the RomFS with the update applied)
+//   rom:   -> private/extract/romfs (the RomFS with the update applied), or the RomFS pack when there is no such folder:
+//            romfs.pak (every file, 16-byte aligned) + romfs.idx ("<offset>\t<size>\t<path>" per file), made by the
+//            PS4 port's scripts/make-romfs-pack.py so the console holds two files instead of 304,207 (Tears of the
+//            Kingdom).
 //   save:  -> private/user/save/<mount>
 //   cache: -> private/user/cache<index>
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
+#include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -46,10 +53,16 @@ std::map<std::string, fs::path> g_mounts;
 struct File {
     FILE* f;
     std::string path;
+    uint64_t base = 0;   // RomFS pack: where the file starts in romfs.pak
+    int64_t size = -1;   // RomFS pack: the file's size (-1: a host file of its own)
+    bool owns = true;    // false: the shared romfs.pak
     File(FILE* file, std::string p) : f(file), path(std::move(p)) {}
+    File(FILE* file, std::string p, uint64_t b, int64_t n) : f(file), path(std::move(p)), base(b), size(n), owns(false) {}
     File(const File&) = delete;  // owns the FILE: one instance only
     File& operator=(const File&) = delete;
-    ~File() { std::fclose(f); }
+    ~File() {
+        if (owns) std::fclose(f);
+    }
 };
 std::map<uint64_t, std::shared_ptr<File>> g_files;
 
@@ -73,8 +86,95 @@ const std::string* find_virtual(const fs::path& resolved) {
             return &data;
     return nullptr;
 }
+std::string utf8(const fs::path& p);
+
+// ---- the RomFS pack ----------------------------------------------------------------------------------------
+// Paths under it resolve below kPackRoot (resolve() keeps working on fs::path); pack_key() turns them back.
+const fs::path kPackRoot = fs::u8path("/\x01romfs-pack");
+
+struct PackEntry {
+    uint64_t offset;
+    int64_t size;  // -1: a directory
+};
+struct Pack {
+    FILE* f = nullptr;
+    std::unordered_map<std::string, PackEntry> entries;                 // "Shader/x.bfsha.zs", "Shader" (dirs)
+    std::unordered_map<std::string, std::vector<std::string>> children;  // dir ("" = root) -> names
+};
+Pack* g_pack = nullptr;
+
+// The pack in the content root, loaded once; nullptr when the RomFS is a folder (or there is no pack).
+Pack* load_pack() {
+    static bool tried = false;
+    if (tried) return g_pack;
+    tried = true;
+    fs::path root = fs::u8path(plat::content_root());
+    std::error_code ec;
+    if (fs::is_directory(root / "extract" / "romfs", ec)) return nullptr;
+    std::ifstream idx(root / "romfs.idx", std::ios::binary);
+    FILE* f = plat::fopen_utf8(utf8(root / "romfs.pak"), "rb");
+    if (!idx || !f) {
+        if (f) std::fclose(f);
+        return nullptr;
+    }
+    auto* pack = new Pack;
+    pack->f = f;
+    pack->entries[""] = {0, -1};
+    std::string line;
+    size_t files = 0;
+    while (std::getline(idx, line)) {
+        size_t t1 = line.find('\t'), t2 = t1 == std::string::npos ? t1 : line.find('\t', t1 + 1);
+        if (t2 == std::string::npos) continue;
+        std::string path = line.substr(t2 + 1);
+        if (!path.empty() && path.back() == '\r') path.pop_back();
+        pack->entries[path] = {std::strtoull(line.c_str(), nullptr, 10), int64_t(std::strtoll(line.c_str() + t1 + 1, nullptr, 10))};
+        files++;
+        // its folders, up to the root
+        std::string child = path;
+        for (;;) {
+            size_t slash = child.rfind('/');
+            std::string parent = slash == std::string::npos ? std::string() : child.substr(0, slash);
+            auto& kids = pack->children[parent];
+            std::string name = child.substr(slash == std::string::npos ? 0 : slash + 1);
+            bool new_dir = !parent.empty() && pack->entries.find(parent) == pack->entries.end();
+            if (child == path || new_dir || std::find(kids.begin(), kids.end(), name) == kids.end()) kids.push_back(name);
+            if (parent.empty() || !new_dir) break;
+            pack->entries[parent] = {0, -1};
+            child = parent;
+        }
+    }
+    log("fs: RomFS pack: %zu files, %zu folders (%s)", files, pack->children.size(), utf8(root / "romfs.pak").c_str());
+    g_pack = pack;
+    return pack;
+}
+
+// The pack-relative key of a resolved path ("" = the root), or false when the path is not in the pack.
+bool pack_key(const fs::path& p, std::string& key) {
+    if (!g_pack || p.empty()) return false;
+    auto rel = p.lexically_normal().lexically_relative(kPackRoot);
+    if (rel.empty()) return false;
+    auto g = rel.generic_u8string();
+    key.assign(g.begin(), g.end());
+    if (key == ".") key.clear();
+    if (key.rfind("..", 0) == 0) return false;
+    while (!key.empty() && key.back() == '/') key.pop_back();
+    return true;
+}
+
+const PackEntry* pack_find(const fs::path& p) {
+    std::string key;
+    if (!pack_key(p, key)) return nullptr;
+    auto it = g_pack->entries.find(key);
+    return it == g_pack->entries.end() ? nullptr : &it->second;
+}
+
+struct DirEntry {
+    std::string name;
+    bool dir;
+    int64_t size;
+};
 struct Dir {
-    std::vector<fs::directory_entry> entries;
+    std::vector<DirEntry> entries;
     size_t pos = 0;
 };
 std::map<uint64_t, Dir> g_dirs;
@@ -101,7 +201,7 @@ fs::path resolve(const std::string& guest) {
 }
 
 void mount(const std::string& name, const fs::path& p) {
-    fs::create_directories(p);
+    if (p != kPackRoot) fs::create_directories(p);
     g_mounts[name] = p;
     log("fs: mounted %s: -> %s", name.c_str(), p.string().c_str());
 }
@@ -115,7 +215,7 @@ void QueryMountRomCacheSize(CPU& c) {
 
 void MountRom(CPU& c) {
     std::lock_guard lk(g_fs);
-    mount(cstr(c.x[0]), fs::u8path(plat::content_root()) / "extract" / "romfs");
+    mount(cstr(c.x[0]), load_pack() ? kPackRoot : fs::u8path(plat::content_root()) / "extract" / "romfs");
     c.x[0] = kOk;
 }
 
@@ -193,6 +293,17 @@ void GetEntryType(CPU& c) {  // (DirectoryEntryType* out, path)
         c.x[0] = kOk;
         return;
     }
+    std::string key;
+    if (pack_key(p, key)) {
+        const PackEntry* e = pack_find(p);
+        if (!e) {
+            c.x[0] = kPathNotFound;
+            return;
+        }
+        st<uint32_t>(c.x[0], e->size < 0 ? 0 : 1);
+        c.x[0] = kOk;
+        return;
+    }
     std::error_code ec;
     if (p.empty() || !fs::exists(p, ec)) {
         c.x[0] = kPathNotFound;
@@ -219,6 +330,21 @@ void OpenFile(CPU& c) {  // (FileHandle* out, path, int mode: 1 read, 2 write, 4
         g_files[h] = std::make_shared<File>(f, guest);
         st<uint64_t>(c.x[0], h);
         if (trace_fs()) log("fs: OpenFile(%s) -> virtual, %zu bytes", guest.c_str(), v->size());
+        c.x[0] = kOk;
+        return;
+    }
+    std::string key;
+    if (pack_key(p, key)) {
+        const PackEntry* e = pack_find(p);
+        if (!e || e->size < 0) {
+            if (trace_fs()) log("fs: OpenFile(%s) not found", guest.c_str());
+            c.x[0] = kPathNotFound;
+            return;
+        }
+        uint64_t h = g_next++;
+        g_files[h] = std::make_shared<File>(g_pack->f, guest, e->offset, e->size);
+        st<uint64_t>(c.x[0], h);
+        if (trace_fs()) log("fs: OpenFile(%s, %d) -> %llu (pack)", guest.c_str(), mode, (unsigned long long)h);
         c.x[0] = kOk;
         return;
     }
@@ -257,6 +383,11 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
         c.x[0] = kTargetNotFound;
         return;
     }
+    if (file->size >= 0) {
+        st<int64_t>(c.x[0], file->size);
+        c.x[0] = kOk;
+        return;
+    }
     std::lock_guard lk(g_fs);  // the FILE position is shared with writers
     FILE* f = file->f;
     int64_t cur = plat::ftell64(f);
@@ -269,6 +400,11 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
 
 uint64_t read_at(const File& file, int64_t off, uint64_t buf, uint64_t size) {
     uint64_t t0 = plat::monotonic_ns();
+    if (file.size >= 0) {  // a window of the RomFS pack: never past the file's end
+        if (off < 0 || off >= file.size) return 0;
+        size = std::min<uint64_t>(size, uint64_t(file.size - off));
+        off += int64_t(file.base);
+    }
     uint64_t n = plat::read_at(file.f, off, reinterpret_cast<void*>(buf), size);
     uint64_t ms = (plat::monotonic_ns() - t0) / 1'000'000;
     if (g_trace) log("fs: read %s at %lld size %llu -> %llu", file.path.c_str(), (long long)off, (unsigned long long)size,
@@ -333,15 +469,31 @@ void OpenDirectory(CPU& c) {  // (DirectoryHandle* out, path, int mode: 1 dirs, 
     std::lock_guard lk(g_fs);
     fs::path p = resolve(cstr(c.x[1]));
     int mode = int(c.x[2]);
-    std::error_code ec;
-    if (p.empty() || !fs::is_directory(p, ec)) {
-        c.x[0] = kPathNotFound;
-        return;
-    }
     Dir d;
-    for (auto& e : fs::directory_iterator(p, ec)) {
-        bool dir = e.is_directory();
-        if ((dir && (mode & 1)) || (!dir && (mode & 2))) d.entries.push_back(e);
+    std::string key;
+    if (pack_key(p, key)) {
+        const PackEntry* e = pack_find(p);
+        if (!e || e->size >= 0) {
+            c.x[0] = kPathNotFound;
+            return;
+        }
+        for (const std::string& name : g_pack->children[key]) {
+            const PackEntry& k = g_pack->entries[key.empty() ? name : key + "/" + name];
+            bool dir = k.size < 0;
+            if ((dir && (mode & 1)) || (!dir && (mode & 2))) d.entries.push_back({name, dir, dir ? 0 : k.size});
+        }
+    } else {
+        std::error_code ec;
+        if (p.empty() || !fs::is_directory(p, ec)) {
+            c.x[0] = kPathNotFound;
+            return;
+        }
+        for (auto& e : fs::directory_iterator(p, ec)) {
+            bool dir = e.is_directory();
+            auto u8 = e.path().filename().u8string();
+            if ((dir && (mode & 1)) || (!dir && (mode & 2)))
+                d.entries.push_back({std::string(u8.begin(), u8.end()), dir, dir ? 0 : int64_t(e.file_size())});
+        }
     }
     uint64_t h = g_next++;
     g_dirs[h] = std::move(d);
@@ -362,12 +514,9 @@ void ReadDirectory(CPU& c) {  // (s64* out_count, DirectoryEntry* entries, Direc
         const auto& e = d.entries[d.pos];
         uint64_t out = c.x[1] + uint64_t(n) * 0x310;
         std::memset(reinterpret_cast<void*>(out), 0, 0x310);
-        auto u8 = e.path().filename().u8string();
-        std::string name(u8.begin(), u8.end());
-        std::memcpy(reinterpret_cast<void*>(out), name.c_str(), std::min<size_t>(name.size(), 0x300));
-        bool dir = e.is_directory();
-        st<int8_t>(out + 0x304, dir ? 0 : 1);
-        st<int64_t>(out + 0x308, dir ? 0 : int64_t(e.file_size()));
+        std::memcpy(reinterpret_cast<void*>(out), e.name.c_str(), std::min<size_t>(e.name.size(), 0x300));
+        st<int8_t>(out + 0x304, e.dir ? 0 : 1);
+        st<int64_t>(out + 0x308, e.size);
     }
     st<int64_t>(c.x[0], n);
     c.x[0] = kOk;
@@ -481,6 +630,13 @@ void add_virtual_file(const std::string& path, std::string data) {
 }
 
 std::string read_game_file(const std::string& relative_to_romfs) {
+    if (Pack* pack = load_pack()) {
+        auto it = pack->entries.find(relative_to_romfs);
+        if (it == pack->entries.end() || it->second.size < 0) return {};
+        std::string s(size_t(it->second.size), '\0');
+        s.resize(plat::read_at(pack->f, int64_t(it->second.offset), s.data(), s.size()));
+        return s;
+    }
     FILE* f = plat::fopen_utf8(utf8(fs::u8path(plat::content_root()) / "extract" / "romfs" / fs::u8path(relative_to_romfs)), "rb");
     if (!f) return {};
     std::string s;

@@ -901,7 +901,11 @@ struct Writer {
         }
     }
     void commit() {
-        if (fdatasync(fd) != 0 && errno != EINVAL && errno != EROFS) fail("sync of %s failed (%s)", final_path.c_str(), strerror(errno));
+        // NX_IMPORT_NOSYNC=1 (desktop imports, scripts/prepare-game.sh): no sync per file. Tears of the Kingdom has
+        // 304,207 RomFS files, and a sync each took hours on WSL's virtual disk; the journal still records only
+        // files that were written completely.
+        static const bool sync = !(getenv("NX_IMPORT_NOSYNC") && getenv("NX_IMPORT_NOSYNC")[0] == '1');
+        if (sync && fdatasync(fd) != 0 && errno != EINVAL && errno != EROFS) fail("sync of %s failed (%s)", final_path.c_str(), strerror(errno));
         ::close(fd);
         fd = -1;
         if (rename(part.c_str(), final_path.c_str()) != 0) fail("cannot rename %s (%s)", part.c_str(), strerror(errno));

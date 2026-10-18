@@ -623,7 +623,7 @@ std::string data_root() { return kDataRoot; }
 // The package's own copy of the game data (scripts/package-smw.sh, SMW_BUNDLE_DATA) when it has one, else /data/SMW
 // (scripts/upload-data.py).
 std::string content_root() {
-    static const std::string root = access("/app0/data/extract/romfs", F_OK) == 0 ? "/app0/data" : kDataRoot;
+    static const std::string root = access("/app0/data/extract/romfs", F_OK) == 0 || access("/app0/data/romfs.idx", F_OK) == 0 ? "/app0/data" : kDataRoot;
     return root;
 }
 
