@@ -616,6 +616,13 @@ bool make_dirs(const std::string& path) {
 void log_line(const char*) {}  // nx.log only: the PS4 has no console to write to
 std::string data_root() { return kDataRoot; }
 
+// The package's own copy of the game data (scripts/package-smw.sh, SMW_BUNDLE_DATA) when it has one, else /data/SMW
+// (scripts/upload-data.py).
+std::string content_root() {
+    static const std::string root = access("/app0/data/extract/romfs", F_OK) == 0 ? "/app0/data" : kDataRoot;
+    return root;
+}
+
 std::string setting(const std::string& key) {
     std::string env = "NX_";
     for (char ch : key) env += char(std::toupper(static_cast<unsigned char>(ch)));

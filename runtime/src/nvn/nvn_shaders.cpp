@@ -255,7 +255,7 @@ const ShaderInfo* shader_for(uint64_t code_host, uint64_t control) {
     Cache& k = cache();
     std::lock_guard lk(k.lock);
     if (auto it = k.by_hash.find(hash); it != k.by_hash.end()) return it->second.get();
-    std::string dir = plat::data_root() + "/spirv/";
+    std::string dir = plat::content_root() + "/spirv/";
     if (!k.resources_loaded) {
         k.resources_loaded = true;
         std::string text;

@@ -115,7 +115,7 @@ void QueryMountRomCacheSize(CPU& c) {
 
 void MountRom(CPU& c) {
     std::lock_guard lk(g_fs);
-    mount(cstr(c.x[0]), data_root() / "extract" / "romfs");
+    mount(cstr(c.x[0]), fs::u8path(plat::content_root()) / "extract" / "romfs");
     c.x[0] = kOk;
 }
 
@@ -481,7 +481,7 @@ void add_virtual_file(const std::string& path, std::string data) {
 }
 
 std::string read_game_file(const std::string& relative_to_romfs) {
-    FILE* f = plat::fopen_utf8(utf8(data_root() / "extract" / "romfs" / fs::u8path(relative_to_romfs)), "rb");
+    FILE* f = plat::fopen_utf8(utf8(fs::u8path(plat::content_root()) / "extract" / "romfs" / fs::u8path(relative_to_romfs)), "rb");
     if (!f) return {};
     std::string s;
     char buf[65536];

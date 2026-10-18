@@ -1,7 +1,9 @@
 // PS4 quick menu (ps4_menu.cpp): hold L3 + R3 in game for the settings an emulator would offer. The game pauses while
 // it is open; the menu draws over a dimmed copy of the last frame on the boot screen's two VideoOut buffers.
-//   Live: upscaling (FSR 1 or a plain stretch), FSR sharpness, the button mapping, a storyboard capture.
-//   At the next start (the menu can restart the game): render resolution, docked or handheld mode, CPU core layout.
+//   Live: upscaling (FSR 1 or a plain stretch), FSR sharpness, a frame counter, the button mapping, a storyboard
+//   capture.
+//   At the next start (the menu can restart the game): render resolution (FSR 1 quality modes), handheld mode, CPU
+//   core layout.
 // Settings are kept in /data/SMW/config.txt as NX_<KEY>=<value> lines, read at startup like the rest of that file.
 #pragma once
 
@@ -20,6 +22,9 @@ void settings_load(bool cross_confirms);
 uint32_t settings_ds4_for(int b);
 bool settings_fsr();
 float settings_fsr_sharpness();
+int settings_frame_counter();  // 0 off, 1 FPS, 2 FPS and frame time (NX_PS4_FPS)
+// The frame counter's label (ps4_vk_wsi.cpp copies it into each frame's top right corner): w x h RGBA, opaque.
+void counter_label(uint8_t* rgba, uint32_t w, uint32_t h, double fps, double ms);
 
 // The input thread (platform_ps4.cpp): L3 + R3 held asks for the menu; while it is open (and until every button is
 // released after it) the game reads no buttons.

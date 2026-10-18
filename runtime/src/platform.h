@@ -40,6 +40,9 @@ bool make_dirs(const std::string& path);
 // ---- output ----
 void log_line(const char* line);  // stderr / logcat
 std::string data_root();
+// Where the game's read-only content is (extract/romfs, spirv, analysis): data_root(), except on the PS4 when the
+// package carries it (/app0/data). Saves, logs, settings and caches stay in data_root().
+std::string content_root();
 std::string setting(const std::string& key);  // a player setting: config.txt (Android), NX_<KEY> (PC); "" if unset          // where private/ lives ("private" on PC, the app's external files dir on Android)
 
 // ---- display, input, audio ----

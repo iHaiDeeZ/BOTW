@@ -280,7 +280,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateSwapchainKHR(VkDevice device, const VkSwapc
         ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_LINEAR;
-        ici.usage = info->imageUsage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // TRANSFER_DST: the frame counter's label is copied in (draw_counter)
+        ici.usage = info->imageUsage | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkResult r = create_image(device, &ici, nullptr, &sc->images[k]);
         if (r != VK_SUCCESS) {
@@ -388,6 +389,118 @@ void wait_off_screen(uint32_t images) {
         uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
 }
 
+// ---- the frame counter (the quick menu's setting, ps4_menu.cpp) --------------------------------------------------
+// The label is drawn by the CPU into a host-visible buffer (one per swapchain image) and copied into the image's top
+// right corner by a small submit behind the frame's commands, before the flip: no CPU wait for the GPU.
+constexpr uint32_t kLabelW = 340, kLabelH = 56, kLabelX = 1920 - kLabelW - 24, kLabelY = 24;
+struct Counter {
+    bool tried = false, ok = false;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer cb[kMaxImages]{};
+    VkFence fence[kMaxImages]{};
+    bool in_flight[kMaxImages]{};
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    uint8_t* ptr = nullptr;
+    std::chrono::steady_clock::time_point times[64]{};  // the last presents
+    uint64_t presents = 0;
+} g_counter;
+
+bool counter_init(VkDevice d) {
+    Counter& c = g_counter;
+    if (c.tried) return c.ok;
+    c.tried = true;
+    VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pi.queueFamilyIndex = 0;
+    if (device_fn<PFN_vkCreateCommandPool>(d, "vkCreateCommandPool")(d, &pi, nullptr, &c.pool) != VK_SUCCESS) return false;
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = c.pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = kMaxImages;
+    if (device_fn<PFN_vkAllocateCommandBuffers>(d, "vkAllocateCommandBuffers")(d, &ai, c.cb) != VK_SUCCESS) return false;
+    VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    for (VkFence& f : c.fence)
+        if (device_fn<PFN_vkCreateFence>(d, "vkCreateFence")(d, &fi, nullptr, &f) != VK_SUCCESS) return false;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = VkDeviceSize(kLabelW) * kLabelH * 4 * kMaxImages;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (device_fn<PFN_vkCreateBuffer>(d, "vkCreateBuffer")(d, &bi, nullptr, &c.buffer) != VK_SUCCESS) return false;
+    VkMemoryRequirements req;
+    device_fn<PFN_vkGetBufferMemoryRequirements>(d, "vkGetBufferMemoryRequirements")(d, c.buffer, &req);
+    VkMemoryAllocateInfo mi{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mi.allocationSize = req.size, mi.memoryTypeIndex = host_visible_type(req.memoryTypeBits);
+    if (device_fn<PFN_vkAllocateMemory>(d, "vkAllocateMemory")(d, &mi, nullptr, &c.memory) != VK_SUCCESS ||
+        device_fn<PFN_vkBindBufferMemory>(d, "vkBindBufferMemory")(d, c.buffer, c.memory, 0) != VK_SUCCESS ||
+        device_fn<PFN_vkMapMemory>(d, "vkMapMemory")(d, c.memory, 0, VK_WHOLE_SIZE, 0, reinterpret_cast<void**>(&c.ptr)) !=
+            VK_SUCCESS)
+        return false;
+    log("ps4/wsi: frame counter ready");
+    return c.ok = true;
+}
+
+// Each present: the time is noted; with the counter on, the label goes into `image` behind the frame's commands.
+void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
+    Counter& c = g_counter;
+    auto now = std::chrono::steady_clock::now();
+    c.times[c.presents++ % 64] = now;
+    if (settings_frame_counter() == 0 || slot >= kMaxImages || !counter_init(d)) return;
+    // frames in the last second, and the mean interval over the last 30
+    uint64_t n = std::min<uint64_t>(c.presents, 64);
+    int fps = 0;
+    for (uint64_t k = 0; k < n; k++)
+        if (now - c.times[(c.presents - 1 - k) % 64] < std::chrono::seconds(1)) fps++;
+    uint64_t span = std::min<uint64_t>(n - 1, 30);
+    double ms = span ? std::chrono::duration<double, std::milli>(now - c.times[(c.presents - 1 - span) % 64]).count() /
+                           double(span)
+                     : 0.0;
+    if (c.in_flight[slot]) {
+        device_fn<PFN_vkWaitForFences>(d, "vkWaitForFences")(d, 1, &c.fence[slot], VK_TRUE, 100'000'000ull);
+        device_fn<PFN_vkResetFences>(d, "vkResetFences")(d, 1, &c.fence[slot]);
+        c.in_flight[slot] = false;
+    }
+    const VkDeviceSize offset = VkDeviceSize(kLabelW) * kLabelH * 4 * slot;
+    counter_label(c.ptr + offset, kLabelW, kLabelH, double(fps), ms);
+    VkCommandBuffer cb = c.cb[slot];
+    device_fn<PFN_vkResetCommandBuffer>(d, "vkResetCommandBuffer")(cb, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    device_fn<PFN_vkBeginCommandBuffer>(d, "vkBeginCommandBuffer")(cb, &bi);
+    auto barrier = device_fn<PFN_vkCmdPipelineBarrier>(d, "vkCmdPipelineBarrier");
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    VkBufferImageCopy r{};
+    r.bufferOffset = offset;
+    r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.imageOffset = {int32_t(kLabelX), int32_t(kLabelY), 0};
+    r.imageExtent = {kLabelW, kLabelH, 1};
+    device_fn<PFN_vkCmdCopyBufferToImage>(d, "vkCmdCopyBufferToImage")(cb, c.buffer, image,
+                                                                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    device_fn<PFN_vkEndCommandBuffer>(d, "vkEndCommandBuffer")(cb);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1, si.pCommandBuffers = &cb;
+    if (device_fn<PFN_vkQueueSubmit>(d, "vkQueueSubmit")(queue, 1, &si, c.fence[slot]) == VK_SUCCESS)
+        c.in_flight[slot] = true;
+}
+
+// Until VideoOut shows flip `arg` (the GPU has written the frame out by then), at most ~100 ms.
+void wait_flipped(int64_t arg) {
+    for (int tries = 0; tries < 20; tries++) {
+        OrbisVideoOutFlipStatus status{};
+        if (sceVideoOutGetFlipStatus(g_video, &status) < 0 || status.flipArg >= arg) return;
+        OrbisKernelEvent ev;
+        int got = 0;
+        OrbisKernelUseconds timeout = 5000;
+        sceKernelWaitEqueue(*g_flip_queue, &ev, 1, &got, &timeout);
+    }
+}
+
 void count_present() {
     g_stats.flips++;
     auto now = std::chrono::steady_clock::now();
@@ -432,6 +545,7 @@ VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInf
         const int64_t arg = int64_t(g_flips.load() + 1);
         // the flip goes to the GPU behind the frame's commands: no CPU wait for the GPU or the vblank
         boot_screen_stop();  // the game's first frame takes over from the boot screen (once)
+        draw_counter(sc->device, queue, sc->images[info->pImageIndices[k]], info->pImageIndices[k]);
         int r = ac_ps4_submit_flip(g_video, buffer, sc->flip_mode, arg);
         const bool gpu_flip = r == 0;
         if (!gpu_flip) {  // fallback: wait for the GPU on the CPU, then flip
@@ -452,6 +566,7 @@ VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInf
             // L3 + R3: the quick menu (ps4_menu.cpp), over this frame once the GPU has drawn it. The game waits here.
             if (menu_requested()) {
                 device_fn<PFN_vkQueueWaitIdle>(sc->device, "vkQueueWaitIdle")(queue);
+                wait_flipped(int64_t(n));  // the frame is in memory once it is on screen (read before: black)
                 menu_run(sc->pixels[info->pImageIndices[k]], sc->pitch, g_video, int(buffer), int64_t(n));
             }
         }

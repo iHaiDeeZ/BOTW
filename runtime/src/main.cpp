@@ -143,7 +143,7 @@ void boot() {
     memory_init();
     kernel_init();
     const ModuleInfo* mods[] = {&nx_module_main, &nx_module_sdk};
-    load_modules(mods, 2, plat::data_root() + "/analysis");
+    load_modules(mods, 2, plat::content_root() + "/analysis");
 
     uint64_t tdata = 0, tdata_end = 0;
     if (tdata_range(nx_module_main, tdata, tdata_end) && tdata_end > tdata) {
