@@ -125,8 +125,13 @@ struct DrawTextures {
     std::vector<ResolvedTexture> resolved;
 };
 extern DrawTextures g_textures;  // filled by gather_textures, read by build_sets and the traces of the same draw
-enum : uint32_t { kNeedBreak = 1, kSampledPending = 2 };
-uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders);
+// kTexturesPending: a texture is being decoded in the background (astc_pending): the draw is skipped this time.
+enum : uint32_t { kNeedBreak = 1, kSampledPending = 2, kTexturesPending = 4 };
+uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may_defer = false);
+// nvn_upload.cpp: true while `texture`'s ASTC texels are decoded in the background, which this starts when the draw
+// may wait (may_defer); false when the upload can go ahead (it waits for a decode under way itself).
+bool astc_pending(uint64_t texture, bool may_defer);
+uint64_t astc_deferred_take();  // draws skipped for a texture being decoded, since the last call
 void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
 // vkUpdateDescriptorSets for what build_sets made, then the sets bound at `point`.
 void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayout& layout);

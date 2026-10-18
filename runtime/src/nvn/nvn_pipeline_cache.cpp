@@ -23,7 +23,7 @@ bool g_tried = false;
 size_t g_saved_size = 0;
 std::string g_path;
 std::atomic<uint64_t> g_pipelines{0}, g_pipeline_ns{0};  // the pipeline workers count too (nvn_pipeline.cpp)
-uint64_t g_astc = 0, g_astc_ns = 0;
+std::atomic<uint64_t> g_astc{0}, g_astc_ns{0};  // the background decoder counts too (nvn_upload.cpp)
 
 }  // namespace
 
@@ -76,13 +76,14 @@ void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.
 void creation_log(uint64_t frames) {
-    uint64_t deferred = deferred_draws_take();
-    if (g_pipelines || g_astc || deferred)
+    uint64_t deferred = deferred_draws_take(), astc_skipped = replay::astc_deferred_take();
+    if (g_pipelines || g_astc || deferred || astc_skipped)
         log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms), %llu draws "
-            "skipped while their pipeline compiled",
+            "skipped while their pipeline compiled, %llu while their texture decoded",
             (unsigned long long)frames, (unsigned long long)g_pipelines.load(), double(g_pipeline_ns.load()) / 1e6,
-            (unsigned long long)g_astc, double(g_astc_ns) / 1e6, (unsigned long long)deferred);
-    g_pipelines = 0, g_pipeline_ns = 0, g_astc = g_astc_ns = 0;
+            (unsigned long long)g_astc.load(), double(g_astc_ns.load()) / 1e6, (unsigned long long)deferred,
+            (unsigned long long)astc_skipped);
+    g_pipelines = 0, g_pipeline_ns = 0, g_astc = 0, g_astc_ns = 0;
     static uint64_t windows = 0;
     if (++windows % 10 == 0) pipeline_cache_save();
 }

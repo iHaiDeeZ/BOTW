@@ -584,7 +584,7 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
 
 // Texture bindings of a program's stages and their handles, into g_textures. kNeedBreak: one needs a transfer or a
 // layout change (so no render pass may be open while the sets are built); kSampledPending: one has a pending clear.
-uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
+uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may_defer) {
     DrawTextures& t = g_textures;
     if (draw_slow(kSlowScratch))
         t = DrawTextures{};
@@ -629,6 +629,7 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
                 texture = 0;
         }
         r.texture = texture;
+        if (texture && astc_pending(texture, may_defer)) out |= kTexturesPending;
         if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak;
         if (!texture) continue;
         GpuImage* img = image_of(texture);

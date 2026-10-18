@@ -339,8 +339,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
             }
     }
     // Textures first: an upload or a layout change cannot happen inside the render pass.
-    uint32_t gathered = gather_textures(*shaders);
+    // A draw into the frame's own targets (redrawn every frame: a 2D colour target of at least 256x144, or a
+    // depth-only pass) may skip a frame while a new pipeline or a new texture is made in the background. Light probes
+    // (cube faces), arrays and small targets (LUTs, rendered once or rarely) wait for theirs.
+    bool may_defer = true;
+    for (uint32_t k = 0; k < t.color_count && may_defer; k++) {
+        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+        if (img && (img->view_type != VK_IMAGE_VIEW_TYPE_2D || img->layers > 1 || img->width < 256 || img->height < 144))
+            may_defer = false;
+    }
+    if (!t.color_count && !t.depth) may_defer = false;
+    uint32_t gathered = gather_textures(*shaders, may_defer);
     clock.mark(kPhTextures);
+    if (gathered & kTexturesPending) {
+        g_stats.no_pipeline++;
+        return false;
+    }
     // A pass that neither tests nor writes depth but keeps its depth image bound while sampling that same image (the
     // world map's depth-to-colour linearization, fs 0aa56d1b): on Metal the image is then attached and read in one
     // encoder, which is undefined, and the copy came out 0 everywhere; the composite then took the player for
@@ -416,16 +430,6 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
     key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
-    // A new pipeline may be made in the background while this draw is skipped, if the draw is into the frame's own
-    // targets (redrawn every frame): a 2D colour target of at least 256x144, or a depth-only pass. Light probes (cube
-    // faces), arrays and small targets (LUTs, rendered once or rarely) wait for theirs.
-    bool may_defer = true;
-    for (uint32_t k = 0; k < t.color_count && may_defer; k++) {
-        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
-        if (img && (img->view_type != VK_IMAGE_VIEW_TYPE_2D || img->layers > 1 || img->width < 256 || img->height < 144))
-            may_defer = false;
-    }
-    if (!t.color_count && !dimg) may_defer = false;
     VkPipeline pipeline = graphics_pipeline(key, layout, may_defer);
     clock.mark(kPhPipeline);
     if (!pipeline) {

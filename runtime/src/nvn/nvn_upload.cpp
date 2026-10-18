@@ -1,6 +1,13 @@
 // Texture uploads (nvn_pipeline.h): guest pool memory into the host image, untiled, widened where the host stores a
 // format wider than NVN does, and checked against what the copies read (docs/nvn/DEBUG.md #50).
 #include <algorithm>
+#include <unordered_map>
+#include <thread>
+#include <mutex>
+#include <memory>
+#include <deque>
+#include <condition_variable>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <set>
@@ -139,6 +146,115 @@ void clear_image(VkCommandBuffer cb, GpuImage& img, bool magenta) {
     }
 }
 
+// ---- ASTC decoded in the background (NX_ASYNC_ASTC, on by default on the PS4) ----------------------------------------
+// Decoding a texture's ASTC blocks to RGBA8 on the replay thread cost the PS4 1-2 s in a window of 60 frames when new
+// objects came in (the frame dips of a course). A draw that may wait (into the frame's own targets) skips its frame
+// instead while a worker untiles and decodes a copy of the texture's bytes (the decoder's own helpers join in);
+// once done, the next upload takes the texels as they are. Other draws decode at once, as before.
+namespace {
+struct AstcJob {
+    std::shared_ptr<GpuImage> image;  // kept alive while the job runs
+    std::vector<uint8_t> raw, linear;
+    std::vector<LinearLevel> levels;
+    uint32_t format = 0, width = 0, height = 0, layers = 1, level_count = 1, bw = 1, bh = 1, bytes = 4, gobs = 0;
+    std::atomic<bool> done{false};
+};
+std::unordered_map<const GpuImage*, std::shared_ptr<AstcJob>> g_astc_jobs;  // the replay thread's
+std::mutex g_astc_lock;
+std::condition_variable g_astc_cv, g_astc_done;
+std::deque<std::shared_ptr<AstcJob>> g_astc_queue;
+uint64_t g_astc_deferred = 0;
+
+bool async_astc() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_ASYNC_ASTC");
+#if defined(__ORBIS__)
+        bool v = !e || e[0] != '0';
+#else
+        bool v = e && e[0] == '1';
+#endif
+        if (v)
+            std::thread([] {
+                for (;;) {
+                    std::shared_ptr<AstcJob> j;
+                    {
+                        std::unique_lock lk(g_astc_lock);
+                        g_astc_cv.wait(lk, [] { return !g_astc_queue.empty(); });
+                        j = g_astc_queue.front();
+                        g_astc_queue.pop_front();
+                    }
+                    j->levels = deswizzle_texture(j->raw.data(), j->raw.size(), j->width, j->height, j->layers,
+                                                  j->level_count, j->bw, j->bh, j->bytes, j->linear, j->gobs);
+                    if (!j->levels.empty()) decode_astc(j->format, j->linear, j->levels, j->layers, j->bw, j->bh);
+                    std::vector<uint8_t>().swap(j->raw);
+                    std::lock_guard lk(g_astc_lock);
+                    j->done = true;
+                    g_astc_done.notify_all();
+                }
+            }).detach();
+        return v;
+    }();
+    return on;
+}
+
+// The finished decode of `img`, taken (false: none).
+bool take_astc(const GpuImage* img, std::vector<uint8_t>& linear, std::vector<LinearLevel>& levels) {
+    if (g_astc_jobs.empty()) return false;
+    auto it = g_astc_jobs.find(img);
+    if (it == g_astc_jobs.end()) return false;
+    std::shared_ptr<AstcJob> j = it->second;
+    if (!j->done.load(std::memory_order_acquire)) {  // asked for now: wait for it
+        std::unique_lock lk(g_astc_lock);
+        g_astc_done.wait(lk, [&] { return j->done.load(); });
+    }
+    g_astc_jobs.erase(it);
+    if (j->levels.empty()) return false;
+    linear.swap(j->linear);
+    levels.swap(j->levels);
+    return true;
+}
+}  // namespace
+
+namespace replay {  // declared with the draw state (nvn_draw_state.h)
+bool astc_pending(uint64_t texture, bool may_defer) {
+    if (!async_astc()) return false;
+    Texture* t = get<Texture>(texture);
+    if (!t || !t->memory || !t->storage_size || t->stride || !astc_decoded(t->format)) return false;
+    GpuImage* img = image_of(texture);
+    if (!img || img->uploaded || img->rendered || img->alpha_from_r) return false;
+    auto it = g_astc_jobs.find(img);
+    if (it == g_astc_jobs.end()) {
+        if (!may_defer) return false;  // decoded at once by the upload, as before
+        auto j = std::make_shared<AstcJob>();
+        j->image = t->image;
+        const auto* m = reinterpret_cast<const uint8_t*>(t->memory);
+        j->raw.assign(m, m + t->storage_size);  // the game may reuse the memory while the worker reads
+        j->format = t->format, j->width = img->width, j->height = img->height;
+        j->layers = img->view_type == VK_IMAGE_VIEW_TYPE_3D ? std::max(1u, t->depth) : img->layers;
+        j->level_count = img->levels, j->gobs = t->block_height_gobs;
+        format_block(t->format, j->bw, j->bh, j->bytes);
+        g_astc_jobs[img] = j;
+        {
+            std::lock_guard lk(g_astc_lock);
+            g_astc_queue.push_back(j);
+        }
+        g_astc_cv.notify_one();
+        g_astc_deferred++;
+        return true;
+    }
+    if (it->second->done.load(std::memory_order_acquire)) return false;
+    if (!may_defer) return false;  // the upload waits for it
+    g_astc_deferred++;
+    return true;
+}
+
+uint64_t astc_deferred_take() {
+    uint64_t n = g_astc_deferred;
+    g_astc_deferred = 0;
+    return n;
+}
+}  // namespace replay
+
 void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_t lo, uint64_t hi) {
     const bool was_uploaded = img.uploaded;
     img.uploaded = true;
@@ -230,8 +346,11 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
         return;
     }
-    auto levels = deswizzle_texture(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size, img.width,
-                                    img.height, layers, img.levels, bw, bh, bytes, linear, t.block_height_gobs);
+    std::vector<LinearLevel> levels;
+    const bool predecoded = astc_decoded(t.format) && take_astc(&img, linear, levels);  // decoded in the background
+    if (!predecoded)
+        levels = deswizzle_texture(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size, img.width, img.height,
+                                   layers, img.levels, bw, bh, bytes, linear, t.block_height_gobs);
     if (levels.empty()) {
         log("nvn/vk: texture %ux%u format %#x: could not untile (%llu bytes)", img.width, img.height, t.format,
             (unsigned long long)t.storage_size);
@@ -258,7 +377,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         return;
     }
     if (astc_decoded(t.format)) {  // RGBA8 texels from here on
-        decode_astc(t.format, linear, levels, layers, bw, bh);
+        if (!predecoded) decode_astc(t.format, linear, levels, layers, bw, bh);
         bw = bh = 1, bytes = host_bytes = 4;
     }
     // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).

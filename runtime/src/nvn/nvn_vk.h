@@ -88,6 +88,7 @@ void note_astc_decoded(uint64_t ns);
 void creation_log(uint64_t frames);
 namespace replay {
 void draw_phase_log(uint64_t frames);  // nvn_draw.cpp: where the draws' replay time went
+uint64_t astc_deferred_take();          // nvn_upload.cpp: draws skipped for a texture decoding in the background
 }
 Upload upload(const void* data, uint64_t size, uint64_t align);
 
