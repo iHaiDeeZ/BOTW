@@ -557,7 +557,8 @@ bool mark_nan_outputs(const std::vector<uint32_t>& in, bool zero_nan, std::vecto
 }
 
 // NX_FS_NAN=3 (a test): which kind of instruction first made a NaN. Every float or vec4 result of the kinds below
-// is checked; the first NaN sets a Private flag to its kind. Vertex shaders hand theirs to the fragment shader in a flat
+// is checked (in vertex shaders an infinity too); the first sets a Private flag to its kind. Vertex shaders hand theirs to
+// the fragment shader in a flat
 // uint at location 31; a fragment output holding NaN as main returns writes (fs kind * 28, vs kind * 28, 255, 255) / 255:
 // read red and green in the storyboard picture of the pass (diag/*.ppm).
 //   1 input load (a varying; a vertex attribute in the vertex shader), 2 uniform or storage load, 3 texture sample or
@@ -570,7 +571,7 @@ bool trace_first_nan(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
                       OpStore = 62, OpAccessChain = 65, OpInBoundsAccessChain = 66, OpDecorate = 71,
                       OpCompositeConstruct = 80, OpConvertSToF = 111, OpConvertUToF = 112, OpBitcast = 124,
                       OpFAdd = 129, OpFSub = 131, OpFMul = 133, OpFDiv = 136, OpFRem = 140, OpFMod = 141,
-                      OpVectorTimesScalar = 142, OpDot = 148, OpAny = 154, OpIsNan = 156, OpIEqual = 170,
+                      OpVectorTimesScalar = 142, OpDot = 148, OpAny = 154, OpIsNan = 156, OpIsInf = 157, OpLogicalOr = 166, OpIEqual = 170,
                       OpLogicalAnd = 167, OpSelect = 169, OpReturn = 253, StorageInput = 1, StorageUniform = 2,
                       StorageOutput = 3, StoragePrivate = 6, StorageBuffer = 12, DecorationFlat = 14,
                       DecorationLocation = 30 };
@@ -708,11 +709,26 @@ bool trace_first_nan(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
         if (in_func && placed && op != OpFunction) {
             if (uint32_t k = kind_of(w, op, len)) {
                 uint32_t result = w[2], nan = bound++, f = bound++, z = bound++, a = bound++, sel = bound++;
+                // Vertex shaders: an infinity counts too (interpolated, it becomes NaN in the fragment shader).
                 if (w[1] == f32) {
-                    out.insert(out.end(), {(4u << 16) | OpIsNan, b, nan, result});
+                    if (vertex) {
+                        uint32_t n1 = bound++, n2 = bound++;
+                        out.insert(out.end(), {(4u << 16) | OpIsNan, b, n1, result});
+                        out.insert(out.end(), {(4u << 16) | OpIsInf, b, n2, result});
+                        out.insert(out.end(), {(5u << 16) | OpLogicalOr, b, nan, n1, n2});
+                    } else {
+                        out.insert(out.end(), {(4u << 16) | OpIsNan, b, nan, result});
+                    }
                 } else {
                     uint32_t nv = bound++;
-                    out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, nv, result});
+                    if (vertex) {
+                        uint32_t n1 = bound++, n2 = bound++;
+                        out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, n1, result});
+                        out.insert(out.end(), {(4u << 16) | OpIsInf, v4b, n2, result});
+                        out.insert(out.end(), {(5u << 16) | OpLogicalOr, v4b, nv, n1, n2});
+                    } else {
+                        out.insert(out.end(), {(4u << 16) | OpIsNan, v4b, nv, result});
+                    }
                     out.insert(out.end(), {(4u << 16) | OpAny, b, nan, nv});
                 }
                 out.insert(out.end(), {(4u << 16) | OpLoad, u32, f, flag});
