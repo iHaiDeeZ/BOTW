@@ -288,7 +288,7 @@ struct PhaseClock {
 };
 }  // namespace
 
-void draw_phase_log(uint64_t frames) {
+void phase_log(uint64_t frames) {
     if (!g_phase_draws || !frames) return;
     const double f = double(frames) * 1e6;
     log("nvn/vk: draw replay per frame: %.0f draws, textures %.2f ms, sets %.2f, vertex/index %.2f, pass %.2f, "
@@ -651,5 +651,9 @@ uint64_t draw_take_dump_request() {
     g_dump_request = 0;
     return r;
 }
+
+namespace replay {
+void draw_phase_log(uint64_t frames) { phase_log(frames); }
+}  // namespace replay
 
 }  // namespace nx::nvn
