@@ -745,6 +745,71 @@ bool trace_first_nan(const std::vector<uint32_t>& in, std::vector<uint32_t>& out
     return true;
 }
 
+// NaN varyings. On the PS4 the front of a course's ground got NaN in a fragment input whose vertex shader computes
+// nothing NaN or infinite (NX_FS_NAN=3 traced it): the interpolation between the stages made it. Each float or vec4
+// load from an Input variable of a fragment shader has its NaN components replaced by 0 (part of NX_FS_NAN=2).
+bool zero_nan_inputs(const std::vector<uint32_t>& in, std::vector<uint32_t>& out) {
+    enum : uint32_t { OpEntryPoint = 15, OpTypeBool = 20, OpTypeFloat = 22, OpTypeVector = 23, OpConstant = 43,
+                      OpConstantComposite = 44, OpFunction = 54, OpFunctionEnd = 56, OpVariable = 59, OpLoad = 61,
+                      OpAccessChain = 65, OpInBoundsAccessChain = 66, OpIsNan = 156, OpSelect = 169,
+                      StorageInput = 1 };
+    if (in.size() < 5 || in[0] != 0x07230203u) return false;
+    uint32_t f32 = 0, v4 = 0, b = 0, v4b = 0, model = 99, bound = in[3];
+    std::map<uint32_t, uint32_t> vec_of, var_class;
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        if (!len || i + len > in.size()) return false;
+        if (op == OpEntryPoint && len >= 3) model = in[i + 1];
+        if (op == OpTypeBool) b = in[i + 1];
+        if (op == OpTypeFloat && len == 3 && in[i + 2] == 32) f32 = in[i + 1];
+        if (op == OpTypeVector && len == 4 && in[i + 3] == 4) vec_of[in[i + 1]] = in[i + 2];
+        if (op == OpVariable && len >= 4) var_class[in[i + 2]] = in[i + 3];
+        i += len;
+    }
+    if (model != 4 || !f32) return false;
+    for (auto [vec, comp] : vec_of) {
+        if (comp == f32) v4 = vec;
+        if (b && comp == b) v4b = vec;
+    }
+    bool new_b = !b, new_v4b = v4 && !v4b;
+    if (new_b) b = bound++;
+    if (new_v4b) v4b = bound++;
+    const uint32_t zero = bound++, zeros = v4 ? bound++ : 0;
+    bool placed = false, in_func = false, any = false;
+    out.assign(in.begin(), in.begin() + 5);
+    for (size_t i = 5; i < in.size();) {
+        uint32_t op = in[i] & 0xFFFF, len = in[i] >> 16;
+        const uint32_t* w = &in[i];
+        if (op == OpFunction && !placed) {
+            if (new_b) out.insert(out.end(), {(2u << 16) | OpTypeBool, b});
+            if (new_v4b) out.insert(out.end(), {(4u << 16) | OpTypeVector, v4b, b, 4u});
+            out.insert(out.end(), {(4u << 16) | OpConstant, f32, zero, 0u});
+            if (v4) out.insert(out.end(), {(7u << 16) | OpConstantComposite, v4, zeros, zero, zero, zero, zero});
+            placed = true;
+        }
+        if (op == OpFunction) in_func = true;
+        if (op == OpFunctionEnd) in_func = false;
+        if ((op == OpAccessChain || op == OpInBoundsAccessChain) && len >= 4)
+            if (auto c = var_class.find(w[3]); c != var_class.end()) var_class[w[2]] = c->second;
+        bool input_load = in_func && placed && op == OpLoad && len >= 4 && (w[1] == f32 || (v4 && w[1] == v4)) &&
+                          var_class.count(w[3]) && var_class[w[3]] == StorageInput;
+        if (input_load) {
+            const uint32_t type = w[1], result = w[2], raw = bound++, nan = bound++;
+            out.insert(out.end(), in.begin() + i, in.begin() + i + len);
+            out[out.size() - len + 2] = raw;  // the load now makes `raw`
+            out.insert(out.end(), {(4u << 16) | OpIsNan, type == f32 ? b : v4b, nan, raw});
+            out.insert(out.end(), {(6u << 16) | OpSelect, type, result, nan, type == f32 ? zero : zeros, raw});
+            any = true;
+        } else {
+            out.insert(out.end(), in.begin() + i, in.begin() + i + len);
+        }
+        i += len;
+    }
+    if (!any) return false;
+    out[3] = bound;
+    return true;
+}
+
 std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, uint32_t unwritten, bool* int_inputs) {
     std::vector<uint32_t> code = s->spirv, next;  // each pass reads `code` and leaves its result in `next`
     bool is_int = kinds && patch_int_inputs(code, kinds, next);
@@ -779,6 +844,7 @@ std::vector<uint32_t> patched_spirv(const ShaderInfo* s, const uint8_t* kinds, u
     } else if (fs_nan && s->stage == ShaderStage::Fragment && mark_nan_outputs(code, fs_nan == 2, next)) {
         code.swap(next);
     }
+    if (fs_nan == 2 && s->stage == ShaderStage::Fragment && zero_nan_inputs(code, next)) code.swap(next);
     return code;
 }
 
