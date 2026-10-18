@@ -343,6 +343,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         draw_end_rendering(cb, 1);
     }
 
+    probe_fill(t, fs);  // NX_PROBE_FILL (nvn_draw_trace.cpp)
     build_sets(cb, *shaders, layout);
     // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
     // (nvn_written.cpp), which cannot be recorded inside a pass.

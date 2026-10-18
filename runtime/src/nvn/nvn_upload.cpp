@@ -108,6 +108,16 @@ bool staging_wanted(uint64_t size) {
     return always || !ring || frame_upload_used() + size > ring / 4 || size > ring / 8;
 }
 
+// Room for a texture's texels on their way to the image. PS4: 1 MB and up get a staging buffer of their own, whatever
+// the path: the ring is 64 MB there, and the glyph cache's first upload alone (16 MB of R8 widened to RGBA8) is 64 MiB.
+// It wrapped the ring over the uploads before it in the same submit at course loads.
+Upload texel_alloc(uint64_t size, uint64_t align) {
+#if defined(__ORBIS__)
+    if (size >= (1u << 20)) return staging_alloc(size);
+#endif
+    return upload_alloc(size, align);
+}
+
 }  // namespace
 
 // NX_1D_IMAGES=1: NVN 1D textures as Vulkan 1D images again (they are 2D of height 1: Ryujinx samples 1D as 2D, G8).
@@ -161,7 +171,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         if (was_uploaded && layers == 1 && !full_upload() && hi != UINT64_MAX)
             y0 = std::min(rows, lo / t.stride), y1 = std::min(rows, (hi + t.stride - 1) / t.stride);
         if (y1 <= y0) return;
-        Upload u = upload_alloc((y1 - y0) * img.width * 4, 16);
+        Upload u = texel_alloc((y1 - y0) * img.width * 4, 16);
         for (uint64_t y = y0; y < y1; y++) {
             const uint8_t* s = src + y * t.stride;
             uint32_t* d = reinterpret_cast<uint32_t*>(u.ptr + (y - y0) * img.width * 4);
@@ -198,7 +208,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
             uint64_t n = rows * layers, have = std::min<uint64_t>(n, t.storage_size / t.stride);
             uint64_t texels = std::min<uint64_t>(img.width, t.stride / 4);
             staged = n * img.width * 8;
-            u = upload_alloc(staged, 16);
+            u = texel_alloc(staged, 16);
             std::memset(u.ptr, 0, staged);
             for (uint64_t y = 0; y < have; y++) widen_r11g11b10(src + y * t.stride, u.ptr + y * img.width * 8, texels);
         } else {
@@ -210,7 +220,8 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
                 r.imageExtent = {img.width, uint32_t(y1 - y0), 1};
             }
             staged = uint64_t(t.stride) * (y1 - y0) * layers;
-            u = upload(reinterpret_cast<const uint8_t*>(t.memory) + y0 * t.stride, staged, 16);
+            u = texel_alloc(staged, 16);
+            std::memcpy(u.ptr, reinterpret_cast<const uint8_t*>(t.memory) + y0 * t.stride, staged);
             r.bufferRowLength = t.stride / bytes * bw;
         }
         r.bufferOffset = u.offset;
@@ -230,7 +241,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         uint32_t tb = bc_decoded_bytes(t.format), slices = img.view_type == VK_IMAGE_VIEW_TYPE_3D ? layers : img.layers;
         uint64_t total = 0;
         for (const auto& l : levels) total += uint64_t(l.width) * l.height * slices * tb;
-        Upload u = upload_alloc(total, 16);
+        Upload u = texel_alloc(total, 16);
         uint64_t at = 0;
         for (uint32_t k = 0; k < levels.size(); k++) {
             bc_decode(t.format, linear.data() + levels[k].offset, levels[k].width, levels[k].height, slices, u.ptr + at);
@@ -254,7 +265,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     uint64_t scale = widen ? 2 : 1;
     Upload u;
     if (widen) {
-        u = upload_alloc(linear.size() * 2, 16);
+        u = texel_alloc(linear.size() * 2, 16);
         widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
     } else if (linear.size() >= (1u << 20) && !std::getenv("NX_STAGING_RING") && staging_wanted(linear.size())) {
         // 1 MB and up: a staging buffer of its own, so a scene load cannot wrap the ring over itself (DEBUG-2 #72).

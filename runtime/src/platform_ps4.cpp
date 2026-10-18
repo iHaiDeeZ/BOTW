@@ -577,9 +577,26 @@ uint64_t read_at(FILE* f, int64_t off, void* buf, uint64_t size) {
     lazy::prefault(reinterpret_cast<uint64_t>(buf), size);  // the kernel writes there: no faults to map it
     int fd = fileno(f);
     uint64_t done = 0;
+    bool touched = false;
     while (done < size) {
         ssize_t n = pread(fd, static_cast<uint8_t*>(buf) + done, size_t(size - done), off + int64_t(done));
         if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EFAULT && !touched) {
+            // A page the kernel cannot write: one a write watch keeps read-only (write_watch.cpp, 16 KiB pages here,
+            // so a watched texture's neighbours too). Storing what is there makes the watch's fault handler give the
+            // page back; the read overwrites it anyway.
+            touched = true;
+            auto* p = static_cast<volatile uint8_t*>(buf) + done;
+            for (uint64_t k = 0; k < size - done; k += 0x4000 - (reinterpret_cast<uintptr_t>(p + k) & 0x3FFF)) p[k] = p[k];
+            p[size - done - 1] = p[size - done - 1];
+            continue;
+        }
+        if (n < 0) {
+            static std::atomic<int> logged{0};
+            if (logged++ < 20)
+                log("fs: read of %llu bytes at %lld into %p failed after %llu bytes (errno %d)", (unsigned long long)size,
+                    (long long)off, buf, (unsigned long long)done, errno);
+        }
         if (n <= 0) break;
         done += uint64_t(n);
     }

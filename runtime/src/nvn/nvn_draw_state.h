@@ -152,6 +152,9 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
 bool raster_command(const Cmd& c);
 void raster_dynamic(VkCommandBuffer cb, bool slack);  // slack: equal_slack_pass (nvn.h)
 
+// NX_PROBE_FILL=1 (a test): a light probe drawn with all-zero sky and ground colours gets grey ones instead.
+void probe_fill(const Targets& t, const ShaderInfo* fs);
+
 void trace_compute_once(const ShaderInfo* cs, uint32_t x, uint32_t y, uint32_t z);
 
 // NX_TRACE_SKIN: skinned draws' inputs, vertex uniform blocks and the bone rows they select.

@@ -89,6 +89,34 @@ void trace_cube_draw(const Targets& t, const ShaderInfo* vs, const ShaderInfo* f
 
 }  // namespace
 
+// NX_PROBE_FILL=1, a test: the course's light probes (64x64 cubes, all 6 faces at once from a direction map) whose
+// colour uniforms c5[16] (ground) and c5[17] (sky) are all zero get grey ones, written into guest memory before the
+// draw's uniforms are uploaded. On the PS4 the lit models of a course are black; this tells whether that comes from
+// those probes (the game gave them no colours) or from somewhere else.
+void probe_fill(const Targets& t, const ShaderInfo* fs) {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_PROBE_FILL");
+        return e && e[0] == '1';
+    }();
+    if (!on || !fs || t.color_count != 6) return;
+    static const char* const kProbes[] = {"00ac777b25b4b6fa", "e414e1ef1482c2da", "4a6dc3d30cdb07bf",
+                                          "205d2f47b1ab3dfc", "4e1313181efe0f0d", "11b509fb5bb7b39d"};
+    if (std::none_of(std::begin(kProbes), std::end(kProbes), [&](const char* h) { return fs->hash == h; })) return;
+    const Range& u = g_state.uniforms[1][2];  // fs c5
+    if (!u.address || u.size < 18 * 16) return;
+    auto* f = const_cast<float*>(reinterpret_cast<const float*>(guest_bytes(u.address)));
+    if (!f) return;
+    for (int k = 0; k < 3; k++)
+        if (f[16 * 4 + k] != 0.0f || f[17 * 4 + k] != 0.0f) return;
+    const float ground[4] = {0.3f, 0.3f, 0.3f, 1.0f}, sky[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::memcpy(f + 16 * 4, ground, sizeof ground);
+    std::memcpy(f + 17 * 4, sky, sizeof sky);
+    dedup_invalidate(reinterpret_cast<const uint8_t*>(f), u.size);
+    static uint64_t filled = 0;
+    if (++filled == 1 || filled % 100 == 0)
+        log("probe fill: %llu probe draws given grey colours (fs %s)", (unsigned long long)filled, fs->hash.c_str());
+}
+
 namespace {
 std::map<uint64_t, std::string> g_nan_writers;  // storage address -> the last compute shader bound to it
 bool trace_nan_on() {
