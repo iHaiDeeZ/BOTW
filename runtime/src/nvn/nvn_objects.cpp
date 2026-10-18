@@ -543,9 +543,18 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
     static std::map<uint64_t, uint64_t> counts;
     std::lock_guard lk(objects_lock());
     uint64_t n = ++counts[c.x[0]];
-    if (n == 1 || n == 100 || n == 1000)
-        log("nvn: WriteTexels #%llu into %llx (%ux%u fmt %#x): %ux%ux%u at %u,%u,%u level %u", (unsigned long long)n,
-            (unsigned long long)c.x[0], t->width, t->height, t->format, w.w, w.h, w.d, w.x, w.y, w.z, w.level);
+    if (n == 1 || n == 100 || n == 1000) {
+        // How much of what the game hands over is non-zero, and its first words (PS4: the light probes' direction
+        // map and table, written this way, were sampled as all zeros).
+        uint64_t nonzero = 0;
+        for (uint8_t b : w.data) nonzero += b != 0;
+        uint32_t first[4] = {};
+        std::memcpy(first, w.data.data(), std::min<size_t>(sizeof first, w.data.size()));
+        log("nvn: WriteTexels #%llu into %llx (%ux%u fmt %#x): %ux%ux%u at %u,%u,%u level %u, %llu of %zu bytes non-zero, "
+            "first %08x %08x %08x %08x", (unsigned long long)n, (unsigned long long)c.x[0], t->width, t->height,
+            t->format, w.w, w.h, w.d, w.x, w.y, w.z, w.level, (unsigned long long)nonzero, w.data.size(), first[0],
+            first[1], first[2], first[3]);
+    }
     t->writes.push_back(std::move(w));
     t->has_writes.store(true, std::memory_order_release);
 }
