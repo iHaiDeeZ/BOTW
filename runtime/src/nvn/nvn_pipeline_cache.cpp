@@ -3,10 +3,12 @@
 // stutters when new objects come in (16-42 ms replays on the RTX 3050). The driver checks the cache header itself
 // (vendor, device, driver build): a stale file is ignored. Saved every 600 presents when it grew.
 // NX_PIPELINE_CACHE=0: no cache (bisecting, or to measure first-run stutter).
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
+#include "nvn_pipeline.h"
 #include "nvn_vk.h"
 #include "platform.h"
 
@@ -20,7 +22,8 @@ VkPipelineCache g_cache = VK_NULL_HANDLE;
 bool g_tried = false;
 size_t g_saved_size = 0;
 std::string g_path;
-uint64_t g_pipelines = 0, g_pipeline_ns = 0, g_astc = 0, g_astc_ns = 0;
+std::atomic<uint64_t> g_pipelines{0}, g_pipeline_ns{0};  // the pipeline workers count too (nvn_pipeline.cpp)
+uint64_t g_astc = 0, g_astc_ns = 0;
 
 }  // namespace
 
@@ -73,11 +76,13 @@ void note_astc_decoded(uint64_t ns) { g_astc++, g_astc_ns += ns; }
 
 // One line per timing window (nvn_vk.cpp log_timing): what the replay created, and the time it took.
 void creation_log(uint64_t frames) {
-    if (g_pipelines || g_astc)
-        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms)",
-            (unsigned long long)frames, (unsigned long long)g_pipelines, double(g_pipeline_ns) / 1e6,
-            (unsigned long long)g_astc, double(g_astc_ns) / 1e6);
-    g_pipelines = g_pipeline_ns = g_astc = g_astc_ns = 0;
+    uint64_t deferred = deferred_draws_take();
+    if (g_pipelines || g_astc || deferred)
+        log("nvn/vk: created over %llu frames: %llu pipelines (%.1f ms), %llu ASTC textures decoded (%.1f ms), %llu draws "
+            "skipped while their pipeline compiled",
+            (unsigned long long)frames, (unsigned long long)g_pipelines.load(), double(g_pipeline_ns.load()) / 1e6,
+            (unsigned long long)g_astc, double(g_astc_ns) / 1e6, (unsigned long long)deferred);
+    g_pipelines = 0, g_pipeline_ns = 0, g_astc = g_astc_ns = 0;
     static uint64_t windows = 0;
     if (++windows % 10 == 0) pipeline_cache_save();
 }

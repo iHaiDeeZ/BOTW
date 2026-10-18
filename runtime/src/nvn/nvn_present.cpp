@@ -214,6 +214,9 @@ struct Pass {
 } g;
 
 bool fsr_on() {
+    bool live = false;
+    float sharp = 0;
+    if (plat::live_fsr(live, sharp)) return live;
     static const bool on = [] {
         const char* e = std::getenv("NX_FSR");
         return e && e[0] == '1';
@@ -222,6 +225,9 @@ bool fsr_on() {
 }
 
 float fsr_sharpness() {  // stops of sharpening: 0 the most, 2 none (FSR's own default is 0.2)
+    bool live = false;
+    float sharp = 0;
+    if (plat::live_fsr(live, sharp)) return std::max(0.0f, std::min(2.0f, sharp));
     static const float v = [] {
         const char* e = std::getenv("NX_FSR_SHARP");
         return e ? std::max(0.0f, std::min(2.0f, float(std::atof(e)))) : 0.2f;
@@ -512,7 +518,7 @@ bool present_pass_record(VkCommandBuffer cb, GpuImage& src, const int32_t* crop,
     // FSR 1: upscale the shown part into `inter` (the picture's size on the target), then sharpen it in the main pass.
     uint32_t out_w = uint32_t(bw * tw + 0.5f), out_h = uint32_t(bh * th + 0.5f);
     VkDescriptorSet rcas_set = VK_NULL_HANDLE;
-    if (g.easu && g.rcas && r == 0 && out_w > cw * 1.01f && out_h > ch * 1.01f && fsr_inter(out_w, out_h)) {
+    if (fsr_on() && g.easu && g.rcas && r == 0 && out_w > cw * 1.01f && out_h > ch * 1.01f && fsr_inter(out_w, out_h)) {
         if (!g.fsr_logged)
             log("nvn/vk: FSR 1: %.0fx%.0f -> %ux%u (sharpness %.2f stops)", cw, ch, out_w, out_h, fsr_sharpness()),
                 g.fsr_logged = true;

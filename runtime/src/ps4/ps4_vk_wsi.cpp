@@ -13,6 +13,7 @@
 // replaced it), and the flip runs on the GPU behind the frame's commands.
 #include "ps4_vk_wsi.h"
 #include "ps4_boot_screen.h"
+#include "ps4_menu.h"
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -57,6 +58,8 @@ struct Swapchain {
     int first_buffer = 0;
     uint32_t next_image = 0;
     uint32_t flip_mode = ORBIS_VIDEO_OUT_FLIP_VSYNC;
+    uint8_t* pixels[kMaxImages]{};  // CPU addresses (the quick menu reads the frame on screen)
+    uint32_t pitch = 0;
 };
 
 VkInstance g_instance = VK_NULL_HANDLE;
@@ -307,7 +310,9 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateSwapchainKHR(VkDevice device, const VkSwapc
         VkSubresourceLayout layout;
         layout_of(device, sc->images[k], &sub, &layout);
         addresses[k] = base + offset + layout.offset;
+        sc->pixels[k] = static_cast<uint8_t*>(addresses[k]);
         pitch = uint32_t(layout.rowPitch / 4);
+        sc->pitch = pitch;
     }
     OrbisVideoOutBufferAttribute attribute;
     sceVideoOutSetBufferAttribute(&attribute, ORBIS_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB,
@@ -444,6 +449,11 @@ VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInf
             if (n == 1) sceSystemServiceHideSplashScreen();
             if (n <= 3) log("ps4/wsi: flip %llu of buffer %u (%s)", (unsigned long long)n, buffer,
                             gpu_flip ? "GPU-side" : "CPU wait");
+            // L3 + R3: the quick menu (ps4_menu.cpp), over this frame once the GPU has drawn it. The game waits here.
+            if (menu_requested()) {
+                device_fn<PFN_vkQueueWaitIdle>(sc->device, "vkQueueWaitIdle")(queue);
+                menu_run(sc->pixels[info->pImageIndices[k]], sc->pitch, g_video, int(buffer), int64_t(n));
+            }
         }
         if (info->pResults) info->pResults[k] = r < 0 ? VK_ERROR_SURFACE_LOST_KHR : VK_SUCCESS;
     }

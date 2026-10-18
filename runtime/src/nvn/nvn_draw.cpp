@@ -384,7 +384,17 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
     key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
-    VkPipeline pipeline = graphics_pipeline(key, layout);
+    // A new pipeline may be made in the background while this draw is skipped, if the draw is into the frame's own
+    // targets (redrawn every frame): a 2D colour target of at least 256x144, or a depth-only pass. Light probes (cube
+    // faces), arrays and small targets (LUTs, rendered once or rarely) wait for theirs.
+    bool may_defer = true;
+    for (uint32_t k = 0; k < t.color_count && may_defer; k++) {
+        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+        if (img && (img->view_type != VK_IMAGE_VIEW_TYPE_2D || img->layers > 1 || img->width < 256 || img->height < 144))
+            may_defer = false;
+    }
+    if (!t.color_count && !dimg) may_defer = false;
+    VkPipeline pipeline = graphics_pipeline(key, layout, may_defer);
     if (!pipeline) {
         g_stats.no_pipeline++;
         return false;

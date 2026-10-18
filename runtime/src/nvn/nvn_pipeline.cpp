@@ -1,6 +1,10 @@
 // Pipelines and sampled resources (nvn_pipeline.h). Everything is cached for the life of the process: layouts by
 // their bindings, pipelines by their full state, samplers by their state, views by (image, type).
 #include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -65,6 +69,8 @@ VkShaderStageFlags stage_bit(ShaderStage s) {
 // `kinds`: per vertex input location, 0 float or the integer kind of its attribute format (vertex_int_kind).
 // `unwritten`: fragment input locations the vertex stage does not write (default_unwritten_inputs).
 VkShaderModule module_of(const ShaderInfo* s, const uint8_t* kinds = nullptr, uint32_t unwritten = 0) {
+    static std::mutex lock;  // the pipeline workers (graphics_pipeline) make modules too
+    std::lock_guard lk(lock);
     static std::map<std::tuple<const ShaderInfo*, std::string, uint32_t>, VkShaderModule> cache;
     // The integer-vertex-input patch (skinned models' bone indices; without it Metal refuses every character's
     // pipeline, DEBUG.md #25/#26). NX_INT_ATTRIBS=0 turns it off.
@@ -250,17 +256,10 @@ const ProgramLayout& program_layout(const std::vector<const ShaderInfo*>& stages
 
 // ---- graphics pipelines ---------------------------------------------------------------------------------------------
 
-VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout) {
-    // By the key's bytes, as before, but hashed (nvn_pipeline.h) instead of a ~700-byte std::string built and
-    // compared down a tree per draw; and the last entry first: consecutive draws mostly share their state.
-    using Key = ByteKey<sizeof(PipelineKey)>;
-    static std::unordered_map<Key, VkPipeline, ByteKeyHash> cache;
-    static const std::pair<const Key, VkPipeline>* last = nullptr;  // entries are never erased
-    if (last && std::memcmp(&key, last->first.b, sizeof key) == 0) return last->second;
-    Key k;
-    std::memcpy(k.b, &key, sizeof key);
-    if (auto it = cache.find(k); it != cache.end()) return (last = &*it)->second;
+namespace {
 
+// A graphics pipeline made from its key, on the replay thread or a pipeline worker (below).
+VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, size_t made_before) {
     VkPipelineShaderStageCreateInfo stages[2]{};
     uint32_t nstages = 0;
     uint8_t int_kinds[16] = {};
@@ -438,7 +437,104 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
     if (made != VK_SUCCESS)
         log("nvn/vk: pipeline for %s + %s failed", key.vs ? key.vs->hash.c_str() : "-", key.fs ? key.fs->hash.c_str() : "-");
     else if (g_trace)
-        log("nvn/vk: pipeline %zu: %s + %s", cache.size() + 1, key.vs ? key.vs->hash.c_str() : "-", key.fs ? key.fs->hash.c_str() : "-");
+        log("nvn/vk: pipeline %zu: %s + %s", made_before + 1, key.vs ? key.vs->hash.c_str() : "-", key.fs ? key.fs->hash.c_str() : "-");
+    return p;
+}
+
+// Pipelines made in the background (NX_ASYNC_PIPELINES, on by default on the PS4): a draw whose pipeline is new is
+// skipped while two workers compile it, instead of the frame waiting 10-100 ms for the compiler (the course's
+// stutters as new objects come in). Only draws the caller says may wait a frame or two (into the frame's own big
+// targets); light probes and other targets drawn once always get theirs at once.
+using Key = ByteKey<sizeof(PipelineKey)>;
+struct Job {
+    Key k;
+    PipelineKey key;
+    const ProgramLayout* layout;  // program_layout's entries are never erased
+};
+std::mutex g_async_lock;
+std::condition_variable g_async_cv, g_async_done;
+std::deque<Job> g_jobs;
+std::unordered_map<Key, VkPipeline, ByteKeyHash> g_finished, g_pending;  // g_pending: the value is unused
+uint64_t g_deferred_draws = 0;
+
+bool async_pipelines() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_ASYNC_PIPELINES");
+#if defined(__ORBIS__)
+        bool v = !e || e[0] != '0';
+#else
+        bool v = e && e[0] == '1';
+#endif
+        if (v && render_pass_objects()) v = false;  // compatible_render_pass is not for other threads
+        if (v) {
+            pipeline_cache();  // made here, before the workers use it
+            for (int n = 0; n < 2; n++)
+                std::thread([] {
+                    for (;;) {
+                        Job job;
+                        {
+                            std::unique_lock lk(g_async_lock);
+                            g_async_cv.wait(lk, [] { return !g_jobs.empty(); });
+                            job = g_jobs.front();
+                            g_jobs.pop_front();
+                        }
+                        VkPipeline p = create_pipeline(job.key, *job.layout, 0);
+                        std::lock_guard lk(g_async_lock);
+                        g_finished[job.k] = p;
+                        g_pending.erase(job.k);
+                        g_async_done.notify_all();
+                    }
+                }).detach();
+            log("nvn/vk: pipelines compile in the background (2 workers); new draws wait a frame or two");
+        }
+        return v;
+    }();
+    return on;
+}
+
+}  // namespace
+
+uint64_t deferred_draws_take() {
+    std::lock_guard lk(g_async_lock);
+    uint64_t n = g_deferred_draws;
+    g_deferred_draws = 0;
+    return n;
+}
+
+VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout, bool may_defer) {
+    // By the key's bytes, as before, but hashed (nvn_pipeline.h) instead of a ~700-byte std::string built and
+    // compared down a tree per draw; and the last entry first: consecutive draws mostly share their state.
+    static std::unordered_map<Key, VkPipeline, ByteKeyHash> cache;
+    static const std::pair<const Key, VkPipeline>* last = nullptr;  // entries are never erased
+    if (last && std::memcmp(&key, last->first.b, sizeof key) == 0) return last->second;
+    Key k;
+    std::memcpy(k.b, &key, sizeof key);
+    if (auto it = cache.find(k); it != cache.end()) return (last = &*it)->second;
+    if (async_pipelines()) {
+        std::unique_lock lk(g_async_lock);
+        if (auto it = g_finished.find(k); it != g_finished.end()) {
+            VkPipeline p = it->second;
+            g_finished.erase(it);
+            return (last = &*cache.emplace(k, p).first)->second;
+        }
+        bool pending = g_pending.count(k) != 0;
+        if (may_defer) {
+            if (!pending) {
+                g_pending[k] = VK_NULL_HANDLE;
+                g_jobs.push_back({k, key, &layout});
+                g_async_cv.notify_one();
+            }
+            g_deferred_draws++;
+            return VK_NULL_HANDLE;
+        }
+        if (pending) {  // a draw that cannot wait, for a pipeline being made: wait for that one
+            g_async_done.wait(lk, [&] { return g_finished.count(k) != 0; });
+            VkPipeline p = g_finished[k];
+            g_finished.erase(k);
+            return (last = &*cache.emplace(k, p).first)->second;
+        }
+    }
+    VkPipeline p = create_pipeline(key, layout, cache.size());
     return (last = &*cache.emplace(k, p).first)->second;
 }
 

@@ -72,6 +72,9 @@ void read_pad(PadState& p);  // player 1
 bool read_extra_pad(int player, PadState& p);
 // A storyboard of the next frame was asked for (PS4: L3 + R3 held a second; nvn_debug.cpp diag_*). Once per ask.
 bool take_diag_request();
+// The present step's FSR 1 settings as they are now (the PS4's quick menu changes them while the game runs): false
+// where the environment's NX_FSR / NX_FSR_SHARP stay in charge.
+bool live_fsr(bool& on, float& sharpness);
 // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
 // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
 struct OverlayShape {

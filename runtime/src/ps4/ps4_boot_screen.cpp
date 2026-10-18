@@ -24,6 +24,7 @@
 #include <nx/runtime.h>
 
 #include "ps4_boot_draw.h"
+#include "ps4_menu.h"
 
 extern "C" {
 int32_t ps4bs_allocate_direct(off_t start, off_t end, size_t len, size_t align, int32_t type, off_t* phys) __asm__(
@@ -51,6 +52,8 @@ OrbisKernelEqueue g_flip_queue;
 std::atomic<bool> g_stop{false}, g_running{false}, g_graphics{false};
 std::atomic<uint64_t> g_bytes{0};
 std::thread g_thread;
+uint8_t* g_buffers[2] = {};  // kept after the game starts: the quick menu draws on them (ps4_menu.cpp)
+bool g_registered = false;
 std::once_flag g_stopped;
 std::chrono::steady_clock::time_point g_start;
 
@@ -119,6 +122,8 @@ int video_out() {
 }
 
 void* video_out_flip_queue() { return &g_flip_queue; }
+uint8_t* boot_buffer(int k) { return g_registered && k >= 0 && k < 2 ? g_buffers[k] : nullptr; }
+int boot_buffer_index(int k) { return kFirstBuffer + k; }
 
 void boot_note_bytes(uint64_t bytes) { g_bytes.fetch_add(bytes, std::memory_order_relaxed); }
 void boot_note_graphics() { g_graphics = true; }
@@ -138,6 +143,7 @@ void boot_screen_start() {
         return;
     }
     static uint8_t* buffers[2] = {static_cast<uint8_t*>(base), static_cast<uint8_t*>(base) + kBufferSize};
+    g_buffers[0] = buffers[0], g_buffers[1] = buffers[1];
     void* addresses[2] = {buffers[0], buffers[1]};
     OrbisVideoOutBufferAttribute attribute;
     sceVideoOutSetBufferAttribute(&attribute, ORBIS_VIDEO_OUT_PIXEL_FORMAT_A8B8G8R8_SRGB,
@@ -147,6 +153,7 @@ void boot_screen_start() {
         trace("boot screen: sceVideoOutRegisterBuffers failed: %x", unsigned(set));
         return;
     }
+    g_registered = true;
     g_running = true;
     g_thread = std::thread([] { draw_loop(buffers); });
     trace("boot screen: drawing");

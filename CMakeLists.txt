@@ -185,6 +185,7 @@ if(NX_PS4)
     # VideoOut (runtime/src/ps4/ps4_vk_wsi.cpp), ScePad, sceAudioOut. -> <build>/<game>_eboot/eboot.bin
     add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_ps4.cpp runtime/src/memguard_ps4.cpp
         runtime/src/ps4/ps4_vk_wsi.cpp runtime/src/ps4/ps4_boot_screen.cpp runtime/src/ps4/ps4_boot_draw.cpp
+        runtime/src/ps4/ps4_menu.cpp
         ${PS4_RUNTIME_SOURCES})
     target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
     target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -ffp-contract=off)

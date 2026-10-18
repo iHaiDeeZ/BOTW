@@ -60,6 +60,7 @@
 #include "kernel.h"
 #include "platform.h"
 #include "ps4/ps4_boot_screen.h"
+#include "ps4/ps4_menu.h"
 #include "ps4/ps4_vk_wsi.h"
 
 // libkernel, declared by hand: several OpenOrbis prototypes are wrong or take no parameters.
@@ -704,28 +705,23 @@ static bool read_player(const Player& pl, PadState& p) {
     OrbisPadData d{};
     if (pl.handle < 0 || scePadReadState(pl.handle, &d) != 0 || !d.connected) return false;
     {
-        // Nintendo's A is the right face button and B the bottom one. By default Cross is A (confirm, as on every
-        // PS4 menu) and Circle B; NX_BUTTONS=nintendo keeps the positions (Circle A, Cross B).
+        // The Switch buttons from the quick menu's mapping (ps4_menu.cpp). By default Cross is A (confirm, as on every
+        // PS4 menu) and Circle B; NX_BUTTONS=nintendo keeps the positions (Circle A, Cross B). L2/R2 count from a
+        // light pull of the trigger.
         uint32_t b = d.buttons;
-        uint64_t bottom = g_cross_confirms ? kA : kB, right = g_cross_confirms ? kB : kA;
-        uint64_t left = kY, top = kX;
+        if (d.analogButtons.l2 > 48) b |= ORBIS_PAD_BUTTON_L2;
+        if (d.analogButtons.r2 > 48) b |= ORBIS_PAD_BUTTON_R2;
+        static const uint64_t npad[ps4::kNxCount] = {kA, kB, kX, kY, kL, kR, kZL, kZR, kPlus, kMinus, kStickL, kStickR};
+        for (int k = 0; k < ps4::kNxCount; k++)
+            if (b & ps4::settings_ds4_for(k)) p.buttons |= npad[k];
         struct Map {
             uint32_t bit;
             uint64_t npad;
         };
-        const Map map[] = {
-            {ORBIS_PAD_BUTTON_CROSS, bottom},     {ORBIS_PAD_BUTTON_CIRCLE, right},
-            {ORBIS_PAD_BUTTON_SQUARE, left},      {ORBIS_PAD_BUTTON_TRIANGLE, top},
-            {ORBIS_PAD_BUTTON_L1, kL},            {ORBIS_PAD_BUTTON_R1, kR},
-            {ORBIS_PAD_BUTTON_OPTIONS, kPlus},    {ORBIS_PAD_BUTTON_TOUCH_PAD, kMinus},
-            {ORBIS_PAD_BUTTON_L3, kStickL},       {ORBIS_PAD_BUTTON_R3, kStickR},
-            {ORBIS_PAD_BUTTON_LEFT, kLeft},       {ORBIS_PAD_BUTTON_UP, kUp},
-            {ORBIS_PAD_BUTTON_RIGHT, kRight},     {ORBIS_PAD_BUTTON_DOWN, kDown},
-        };
-        for (const Map& m : map)
+        const Map dpad[] = {{ORBIS_PAD_BUTTON_LEFT, kLeft}, {ORBIS_PAD_BUTTON_UP, kUp},
+                            {ORBIS_PAD_BUTTON_RIGHT, kRight}, {ORBIS_PAD_BUTTON_DOWN, kDown}};
+        for (const Map& m : dpad)
             if (b & m.bit) p.buttons |= m.npad;
-        if (d.analogButtons.l2 > 48 || (b & ORBIS_PAD_BUTTON_L2)) p.buttons |= kZL;
-        if (d.analogButtons.r2 > 48 || (b & ORBIS_PAD_BUTTON_R2)) p.buttons |= kZR;
         p.lx = stick(d.leftStick.x, false);
         p.ly = stick(d.leftStick.y, true);  // DS4: down is positive; Horizon: up is positive
         p.rx = stick(d.rightStick.x, false);
@@ -737,22 +733,51 @@ static bool read_player(const Player& pl, PadState& p) {
 static void sample_input() {
     static int ticks = 0;
     if (ticks++ % 500 == 0) scan_players();  // every 2 s: sign-ins, sign-outs, controllers turned on
+    uint32_t raw = 0;  // player 1's buttons as they are (the menu's own mapping does not apply to L3 + R3)
     for (int k = 0; k < kPlayers; k++) {
         PadState p;
         bool on = read_player(g_players[k], p);
+        if (k == 0 && on) {
+            OrbisPadData d{};
+            if (scePadReadState(g_players[0].handle, &d) == 0) raw = d.buttons;
+        }
         std::lock_guard lk(g_pad_lock);
         if (on != g_players[k].connected) trace("pad: player %d %s", k + 1, on ? "connected" : "disconnected");
         g_players[k].connected = on;
         g_players[k].state = p;
     }
-    // L3 + R3 held a second on player 1's controller: a storyboard of the next frame (nvn_debug.cpp, diag/).
+    // L3 + R3 held 0.4 s on player 1's controller: the quick menu (ps4_menu.cpp; its own item takes a storyboard).
+    // While it is open, and until every button is let go after it, the game reads no buttons.
     static int held = 0;
-    bool both = (g_players[0].state.buttons & (kStickL | kStickR)) == (kStickL | kStickR);
+    bool both = (raw & (ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3)) == (ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3);
     held = both ? held + 1 : 0;
-    if (held == 250) {
-        g_diag_requested = true;
-        trace("diag: storyboard asked for (L3 + R3)");
+    if (held == 100) {
+        ps4::menu_request();
+        trace("menu: asked for (L3 + R3)");
     }
+    if (ps4::menu_blocks_input(raw)) {
+        std::lock_guard lk(g_pad_lock);
+        for (Player& pl : g_players) pl.state = PadState();
+    }
+}
+
+namespace ps4 {
+bool menu_pad(uint32_t& buttons, uint8_t& left_y) {
+    OrbisPadData d{};
+    if (g_players[0].handle < 0 || scePadReadState(g_players[0].handle, &d) != 0 || !d.connected) return false;
+    buttons = d.buttons;
+    if (d.analogButtons.l2 > 48) buttons |= ORBIS_PAD_BUTTON_L2;
+    if (d.analogButtons.r2 > 48) buttons |= ORBIS_PAD_BUTTON_R2;
+    left_y = d.leftStick.y;
+    return true;
+}
+void request_diag() { g_diag_requested = true; }
+}  // namespace ps4
+
+bool live_fsr(bool& on, float& sharpness) {
+    on = ps4::settings_fsr();
+    sharpness = ps4::settings_fsr_sharpness();
+    return true;
 }
 
 bool take_diag_request() { return g_diag_requested.exchange(false); }
@@ -1021,6 +1046,7 @@ int main() {
     if (access("/data/SMW/profile.txt", F_OK) == 0) ps4_sampler_start();
     detect_cores();
     g_cross_confirms = !(std::getenv("NX_BUTTONS") && std::strcmp(std::getenv("NX_BUTTONS"), "nintendo") == 0);
+    ps4::settings_load(g_cross_confirms);  // the quick menu's settings (ps4_menu.cpp): button mapping, FSR
     install_fault_handler();
     register_thread();
     // The host stacks' range (the guest's are reserved by nx::memory_init, on the game thread started below).
