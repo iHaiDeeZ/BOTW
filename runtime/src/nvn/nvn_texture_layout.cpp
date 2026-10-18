@@ -82,6 +82,42 @@ Layout compute(CPU& c, uint64_t builder) {
     return l;
 }
 
+// nvnTextureGetViewOffset(texture, view): where the view's first level and layer start in the texture's storage,
+// in the layout compute() sizes (each layer holds every level, block-aligned). Tears of the Kingdom streams texture
+// mips (TexToGo) into pool memory at these offsets; the SDK driver cannot answer (its device is never initialized).
+void GetViewOffset(CPU& c) {
+    Texture* t = c.x[0] ? get<Texture>(c.x[0]) : nullptr;
+    ViewInfo v = read_view(c, c.x[1]);
+    if (!t || (!v.base_level && !v.min_layer)) {
+        c.x[0] = 0;
+        return;
+    }
+    FormatInfo f = format_info(t->format);
+    uint32_t width = std::max(1u, t->width), height = std::max(1u, t->height);
+    uint32_t levels = std::max(1u, t->levels);
+    if (t->stride) {  // linear: one level, layers one after another
+        c.x[0] = uint64_t(v.min_layer) * t->stride * div_up(height, f.block_h);
+        return;
+    }
+    bool is3d = t->target == 2;  // NVN_TEXTURE_TARGET_3D: levels hold all their slices
+    uint32_t depth = is3d ? std::max(1u, t->depth) : 1;
+    uint32_t bh0 = t->block_height_gobs ? t->block_height_gobs : block_height_gobs(div_up(height, f.block_h));
+    uint64_t at = 0, level_offset = 0, layer = 0;
+    for (uint32_t level = 0; level < levels; level++) {
+        if (level == v.base_level) level_offset = at;
+        uint32_t w = std::max(1u, width >> level), h = std::max(1u, height >> level);
+        uint32_t d = std::max(1u, depth >> level);
+        uint32_t cols = div_up(w, f.block_w), rows = div_up(h, f.block_h);
+        uint32_t bh = std::min(bh0, block_height_gobs(rows));
+        uint64_t pitch = (uint64_t(cols) * f.bytes + 63) & ~63ull;
+        uint64_t tall = (uint64_t(rows) + 8 * bh - 1) / (8 * bh) * (8 * bh);
+        at += pitch * tall * d;
+    }
+    uint64_t block = 512ull * bh0;
+    layer = (at + block - 1) / block * block;
+    c.x[0] = level_offset + (is3d ? 0 : uint64_t(v.min_layer) * layer);
+}
+
 void GetStorageSize(CPU& c) { c.x[0] = compute(c, c.x[0]).size; }            // size_t (const NVNtextureBuilder*)
 void GetStorageAlignment(CPU& c) { c.x[0] = compute(c, c.x[0]).alignment; }  // size_t (const NVNtextureBuilder*)
 void GetStorageClass(CPU& c) { c.x[0] = 0; }  // NVNstorageClass: only matters for compression / sparse tiles
@@ -96,6 +132,7 @@ void format_block(uint32_t format, uint32_t& block_w, uint32_t& block_h, uint32_
 }
 
 NX_HLE("nvnTextureBuilderGetStorageSize", GetStorageSize);
+NX_HLE("nvnTextureGetViewOffset", GetViewOffset);
 NX_HLE("nvnTextureBuilderGetStorageAlignment", GetStorageAlignment);
 NX_HLE("nvnTextureBuilderGetStorageClass", GetStorageClass);
 NX_HLE("nvnTextureBuilderGetRawStorageClass", GetStorageClass);

@@ -989,7 +989,7 @@ void load_config() {
     std::fclose(f);
     // svc_am.cpp only asks whether NX_HANDHELD exists: NX_HANDHELD=0 means docked, so it must go (as on Android).
     if (const char* h = std::getenv("NX_HANDHELD"); h && h[0] == '0') unsetenv("NX_HANDHELD");
-    nx::plat::trace("config: %d settings from /data/SMW/config.txt", n);
+    nx::plat::trace("config: %d settings from " NX_PS4_DATA "/config.txt", n);
 }
 
 void game_thread(void*) {
