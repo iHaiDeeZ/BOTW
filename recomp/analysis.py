@@ -285,6 +285,19 @@ def _jump_table(an, f, br):
                     break
                 continue
             out.append(t)
+        # Past a bound: entries that still land on this function's instructions are taken too, up to the first that
+        # does not. A bound read from the wrong cmp came out one short (Tears of the Kingdom's main+4da6d0: 12 tables
+        # share one index, the call went to entry 15 of 0..15), and extra cases only fire on their exact targets.
+        if count is not None:
+            for k in range(count, 256):
+                p = table + k * size
+                if p + size > len(m.image):
+                    break
+                v = int.from_bytes(m.image[p:p + size], "little", signed=signed)
+                t = anchor + (v << shift)
+                if not (f.start <= t < f.end) or t not in an.insns:
+                    break
+                out.append(t)
         return out, misses
 
     table = _const(an, f, a_ld, base_reg)
