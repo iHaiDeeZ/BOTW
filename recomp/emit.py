@@ -226,6 +226,7 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
     def function(self, f):
         self.labels = set()
         self.setjmp_sites = []
+        self.dispatch = []  # jump-table targets of this function, served by one switch (i_br)
         body = []
         code = bytes(self.m.image[f.start:f.end])
         insns = {}
@@ -261,6 +262,8 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
         out = [f"{'static ' if traced else ''}void {name}(nx::CPU& NX_RESTRICT c) {{"]
         if traced or needs_trace_decl:  # declared here, not in nx/cpu.h: only files holding traced code change
             out.insert(0, "namespace nx { void guest_trace(CPU& c, uint64_t addr, int exit); }")
+        if self.dispatch:
+            out.append("    uint64_t jt_ = 0;")
         sj = self.setjmp_sites
         if sj:
             # Functions that call setjmp run inside a try: a longjmp on one of their buffers resumes after the call.
@@ -276,6 +279,10 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
             # Falls off the end: continue into whatever follows.
             out.append("    " + (f"{self.fn(f.end)}(c);" if f.end in self.entries else
                                  f"nx::call(c, {B} + {f.end:#x}ull);"))
+        if self.dispatch:  # the jump tables' br: a target of this function, or a tail call
+            out.append("    return;")
+            cases = " ".join(f"case {B} + {t:#x}ull: goto L_{t:X};" for t in self.dispatch)
+            out.append(f"L_jt_:; switch (jt_) {{ {cases} default: nx::call(c, jt_); return; }}")
         if sj:
             out.append("    return;")
             out.append("    } catch (const nx::LongJmp& e_) {")
@@ -329,11 +336,13 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
             # Every jump-table target of the function, not only this table's: a table's bound can come out short
             # (Tears of the Kingdom's main+13c6c5c reached main+13c72f0, in another of its tables, through this br),
             # and a case only fires on its exact target, which is where the guest's br goes anyway.
-            targets = sorted({t for a, ts in jt.items() if f.start <= a < f.end for t in ts})
-            cases = " ".join(f"case {B} + {t:#x}ull: goto L_{t:X};" for t in targets)
-            for t in targets:
-                self.labels.add(t)
-            return f"switch ({r.r()}) {{ {cases} default: nx::call(c, {r.r()}); return; }}"
+            # One switch per function (L_jt_), not one per br: Tears of the Kingdom's main+4d9ba0 has 12 tables over
+            # ~245 shared targets, and twelve copies of that switch took clang past 7 GB.
+            if not self.dispatch:
+                self.dispatch = sorted({t for a, ts in jt.items() if f.start <= a < f.end for t in ts})
+                for t in self.dispatch:
+                    self.labels.add(t)
+            return f"{{ jt_ = {r.r()}; goto L_jt_; }}"
         return f"{{ nx::call(c, {r.r()}); return; }}"
 
     def i_ret(self, f, i, ops):
