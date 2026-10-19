@@ -234,6 +234,7 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
             insns[a] = got[0] if got else None
         jt = self.an.jump_tables
         last_term = False
+        needs_trace_decl = False
         for a in range(f.start, f.end, 4):
             i = insns[a]
             if i is None:
@@ -250,12 +251,15 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
                 stmt = f"nx::unimpl(c, {B} + {a:#x}ull, \"{txt}\"); // {e}"
             if f.start in self.trace_sp and ("sp" in i.op_str.split(",")[0] or "[sp" in i.op_str and i.writeback):
                 stmt += f" nx::trace_sp(c, {B} + {a:#x}ull);"
+            if a in self.trace and a != f.start:  # --trace with an address inside a function: x0..x3 there
+                stmt = f"nx::guest_trace(c, {B} + {a:#x}ull, 2); " + stmt
+                needs_trace_decl = True
             body.append((a, f"{stmt} // {i.mnemonic} {i.op_str}"))
             last_term = i.mnemonic in ("b", "br", "ret", "udf", "brk") or stmt.endswith("return; }")
         traced = f.start in self.trace
         name = self.fn(f.start) + ("_body" if traced else "")
         out = [f"{'static ' if traced else ''}void {name}(nx::CPU& NX_RESTRICT c) {{"]
-        if traced:  # declared here, not in nx/cpu.h: only the files holding traced functions change
+        if traced or needs_trace_decl:  # declared here, not in nx/cpu.h: only files holding traced code change
             out.insert(0, "namespace nx { void guest_trace(CPU& c, uint64_t addr, int exit); }")
         sj = self.setjmp_sites
         if sj:

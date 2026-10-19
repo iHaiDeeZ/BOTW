@@ -79,6 +79,12 @@ Layout compute(CPU& c, uint64_t builder) {
     layer = (layer + block - 1) / block * block;
     l.size = layer * depth * samples;
     l.alignment = block;
+    if (l.size >= (32ull << 20)) {  // the big ones (Tears of the Kingdom's MaterialAlb array): checked against the game's
+        static std::atomic<int> logged{0};
+        if (logged++ < 40)
+            log("nvn: storage size %llu (layer %llu, block height %u GOBs) for %ux%ux%u, %u levels, format %#x, %u samples",
+                (unsigned long long)l.size, (unsigned long long)layer, bh0, width, height, depth, levels, format, samples);
+    }
     return l;
 }
 

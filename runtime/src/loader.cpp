@@ -285,17 +285,24 @@ void load_modules(const ModuleInfo* const* mods, size_t count, const std::string
 
 namespace nx {
 
-// --trace (recomp/__main__.py): entry and return of chosen guest functions, the first 400 of each, then every 1000th.
+// --trace (recomp/__main__.py): entry (exit 0) and return (1) of chosen guest functions, or an instruction inside one
+// (2: the registers there); the first 3000 of each, then every 1000th.
 void guest_trace(CPU& c, uint64_t addr, int exit) {
     static std::mutex m;
     static std::map<uint64_t, uint64_t> counts;
     uint64_t n;
     {
         std::lock_guard lk(m);
-        n = exit ? counts[addr] : ++counts[addr];
+        n = exit == 1 ? counts[addr] : ++counts[addr];
     }
-    if (n > 400 && n % 1000) return;
-    if (!exit)
+    if (n > 3000 && n % 1000) return;
+    if (exit == 2)
+        log("trace @ %s #%llu x0 %llx x1 %llx x2 %llx x3 %llx x8 %llx x19 %llx x20 %llx x25 %llx x26 %llx",
+            describe(addr).c_str(), (unsigned long long)n, (unsigned long long)c.x[0], (unsigned long long)c.x[1],
+            (unsigned long long)c.x[2], (unsigned long long)c.x[3], (unsigned long long)c.x[8],
+            (unsigned long long)c.x[19], (unsigned long long)c.x[20], (unsigned long long)c.x[25],
+            (unsigned long long)c.x[26]);
+    else if (!exit)
         log("trace > %s #%llu (%llx, %llx, %llx, %llx) lr %s", describe(addr).c_str(), (unsigned long long)n,
             (unsigned long long)c.x[0], (unsigned long long)c.x[1], (unsigned long long)c.x[2],
             (unsigned long long)c.x[3], describe(c.x[30]).c_str());
