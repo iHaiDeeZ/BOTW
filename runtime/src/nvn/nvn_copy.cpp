@@ -10,13 +10,19 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
+#include "nvn_draw_state.h"
 #include "nvn_pipeline.h"
 #include "nvn_vk.h"
 
 namespace nx::nvn {
 
 using namespace vk;
+
+std::recursive_mutex& gpu_lock();  // nvn_vk.cpp
+VkQueue vk_queue();
+uint32_t vk_queue_family();
 
 namespace {
 
@@ -148,6 +154,182 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     dst->rendered = true;  // GPU-written from now on
 }
 
+// ---- GPU texels to the CPU ---------------------------------------------------------------------------------------
+// nvnCommandBufferCopyTextureToBuffer(cmd, texture, view, region, NVNbufferAddress dst, flags) and
+// nvnTextureReadTexels(texture, view, region, void* dst) / ...Strided(..., rowStride, imageStride): Tears of the
+// Kingdom reads GPU results back every frame (main+11c9d44, main+103bbe0); both were stubs that left the game's
+// memory untouched. Texels come out as tight rows of the NVN format's blocks, which the host image keeps as long as
+// its texel size is the NVN format's (a widened or re-packed host format is not copied: logged).
+
+namespace {
+
+struct ToBufferInfo {
+    ViewInfo view;
+    int32_t region[6] = {};
+    uint32_t flags = 0;
+};
+
+void CopyTextureToBuffer(CPU& c) {
+    ToBufferInfo info;
+    info.view = read_view(c, c.x[2]);
+    for (int k = 0; k < 6; k++) info.region[k] = c.x[3] ? ld<int32_t>(c.x[3] + 4ull * k) : 0;
+    info.flags = uint32_t(c.x[5]);
+    Cmd cmd{Cmd::CopyTextureToBuffer};
+    cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
+    record(c.x[0], cmd, &info, sizeof info);
+}
+
+// The copy of the view's region of `img` as tight rows of blocks; false when the host texels are not the NVN ones.
+bool readback_region(const Texture& t, const GpuImage& img, const ViewInfo& v, const int32_t* r, VkBufferImageCopy& out,
+                     uint64_t& bytes) {
+    uint32_t bw = 1, bh = 1, nb = 4;
+    format_block(t.format, bw, bh, nb);
+    if (!(img.aspect & VK_IMAGE_ASPECT_COLOR_BIT) || vk_block_bytes(img.format) != nb) return false;
+    bool is3d = img.view_type == VK_IMAGE_VIEW_TYPE_3D;
+    uint32_t level = std::min(v.base_level, img.levels - 1);
+    uint32_t w = uint32_t(std::max(r[3], 1)), h = uint32_t(std::max(r[4], 1)), d = uint32_t(std::max(r[5], 1));
+    uint32_t layer = is3d ? 0 : std::min<uint32_t>(uint32_t(std::max(r[2], 0)) + v.min_layer, img.layers - 1);
+    uint32_t layers = is3d ? 1 : std::clamp<uint32_t>(d, 1, img.layers - layer);
+    out = {};
+    out.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, layers};
+    out.imageOffset = {r[0], r[1], is3d ? r[2] : 0};
+    out.imageExtent = {w, h, is3d ? d : 1u};
+    bytes = uint64_t((w + bw - 1) / bw) * ((h + bh - 1) / bh) * nb * (is3d ? d : layers);
+    return true;
+}
+
+void log_skipped(const char* what, uint64_t texture, const Texture* t, const GpuImage* img) {
+    static int logged = 0;
+    if (logged++ < 10)
+        log("nvn: %s of %llx skipped (%s, NVN format %#x, host format %d)", what, (unsigned long long)texture,
+            !t ? "unknown texture" : !img ? "no image" : "texel size or aspect differs", t ? t->format : 0,
+            img ? int(img->format) : -1);
+}
+
+void ReadTexelsStrided(CPU& c) {  // (texture, view, region, void* dst, ptrdiff_t row, ptrdiff_t image)
+    uint64_t texture = c.x[0], dst = c.x[3];
+    int64_t row = int64_t(c.x[4]), image = int64_t(c.x[5]);
+    ViewInfo v = read_view(c, c.x[1]);
+    int32_t r[6];
+    for (int k = 0; k < 6; k++) r[k] = c.x[2] ? ld<int32_t>(c.x[2] + 4ull * k) : 0;
+    std::lock_guard lk(gpu_lock());
+    Texture* t = get<Texture>(texture);
+    GpuImage* img = t ? image_of(texture) : nullptr;
+    VkBufferImageCopy copy;
+    uint64_t bytes = 0;
+    if (!t || !img || !img->image || img->layout == VK_IMAGE_LAYOUT_UNDEFINED || !dst ||
+        !readback_region(*t, *img, v, r, copy, bytes)) {
+        log_skipped("ReadTexels", texture, t, img);
+        return;
+    }
+    // Everything queued so far may write the texture: wait for it, then copy on a command buffer of our own.
+    frame_wait_all();
+    VkDevice d = vk_device();
+    static VkCommandPool pool = VK_NULL_HANDLE;
+    static VkCommandBuffer cb = VK_NULL_HANDLE;
+    static VkFence fence = VK_NULL_HANDLE;
+    static VkBuffer buffer = VK_NULL_HANDLE;
+    static VkDeviceMemory memory = VK_NULL_HANDLE;
+    static uint64_t capacity = 0;
+    static void* mapped = nullptr;
+    if (!pool) {
+        VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        pi.queueFamilyIndex = vk_queue_family();
+        p_vkCreateCommandPool(d, &pi, nullptr, &pool);
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = 1;
+        p_vkAllocateCommandBuffers(d, &ai, &cb);
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        p_vkCreateFence(d, &fi, nullptr, &fence);
+    }
+    if (bytes > capacity) {  // a host-visible buffer, grown as needed and kept
+        if (buffer) p_vkDestroyBuffer(d, buffer, nullptr), p_vkFreeMemory(d, memory, nullptr);
+        buffer = VK_NULL_HANDLE, memory = VK_NULL_HANDLE, mapped = nullptr, capacity = 0;
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size = std::max<uint64_t>(bytes, 1 << 20);
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return;
+        VkMemoryRequirements req{};
+        p_vkGetBufferMemoryRequirements(d, buffer, &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex =
+            memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (p_vkAllocateMemory(d, &ai, nullptr, &memory) != VK_SUCCESS || p_vkBindBufferMemory(d, buffer, memory, 0) ||
+            p_vkMapMemory(d, memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+            p_vkDestroyBuffer(d, buffer, nullptr);
+            if (memory) p_vkFreeMemory(d, memory, nullptr);
+            buffer = VK_NULL_HANDLE, memory = VK_NULL_HANDLE, mapped = nullptr;
+            return;
+        }
+        capacity = bi.size;
+    }
+    p_vkResetCommandBuffer(cb, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    p_vkBeginCommandBuffer(cb, &bi);
+    VkImageLayout back = img->layout;
+    transition(cb, *img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    p_vkCmdCopyImageToBuffer(cb, img->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &copy);
+    transition(cb, *img, back);
+    p_vkEndCommandBuffer(cb);
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1, si.pCommandBuffers = &cb;
+    p_vkResetFences(d, 1, &fence);
+    if (p_vkQueueSubmit(vk_queue(), 1, &si, fence) != VK_SUCCESS ||
+        p_vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        return;
+    // Tight rows on our side; the game's strides (0: tight) on its side.
+    uint32_t bw = 1, bh = 1, nb = 4;
+    format_block(t->format, bw, bh, nb);
+    uint64_t tight_row = uint64_t((copy.imageExtent.width + bw - 1) / bw) * nb;
+    uint64_t rows = (copy.imageExtent.height + bh - 1) / bh;
+    uint64_t slices = std::max(copy.imageExtent.depth, copy.imageSubresource.layerCount);
+    uint64_t drow = row ? uint64_t(row) : tight_row, dimage = image ? uint64_t(image) : drow * rows;
+    const uint8_t* from = static_cast<const uint8_t*>(mapped);
+    for (uint64_t z = 0; z < slices; z++)
+        for (uint64_t y = 0; y < rows; y++)
+            std::memcpy(reinterpret_cast<void*>(dst + z * dimage + y * drow), from + (z * rows + y) * tight_row,
+                        tight_row);
+}
+
+void ReadTexels(CPU& c) {  // (texture, view, region, void* dst): tight rows
+    c.x[4] = 0, c.x[5] = 0;
+    ReadTexelsStrided(c);
+}
+
+}  // namespace
+
+void replay_copy_to_buffer(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
+    if (c.blob >= list.blobs.size() || list.blobs[c.blob].size() != sizeof(ToBufferInfo)) return;
+    ToBufferInfo info;
+    std::memcpy(&info, list.blobs[c.blob].data(), sizeof info);
+    Texture* t = get<Texture>(c.a[0]);
+    GpuImage* src = t ? ensure_contents(cb, c.a[0]) : nullptr;
+    uint64_t off = 0;
+    MemoryPool* pool = pool_at_gpu(c.a[1], &off);
+    uint8_t* to = pool ? reinterpret_cast<uint8_t*>(pool_host(*pool, off)) : nullptr;
+    VkBufferImageCopy r;
+    uint64_t bytes = 0;
+    if (!src || !to || !readback_region(*t, *src, info.view, info.region, r, bytes)) {
+        log_skipped("CopyTextureToBuffer", c.a[0], t, src);
+        return;
+    }
+    Upload u = upload_alloc(bytes, 16);
+    r.bufferOffset = u.offset;
+    transition(cb, *src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    p_vkCmdCopyImageToBuffer(cb, src->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, u.buffer, 1, &r);
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0,
+                           nullptr);
+    replay::separate_write_backs().push_back({u.ptr, to, bytes, nullptr});  // to the game's memory after the fence
+}
+
 NX_HLE("nvnCommandBufferCopyTextureToTexture", CopyTextureToTexture);
+NX_HLE("nvnCommandBufferCopyTextureToBuffer", CopyTextureToBuffer);
+NX_HLE("nvnTextureReadTexels", ReadTexels);
+NX_HLE("nvnTextureReadTexelsStrided", ReadTexelsStrided);
 
 }  // namespace nx::nvn

@@ -316,6 +316,7 @@ struct Cmd {
         BindVertexAttribs, BindVertexStreams, BindBlendState, BindColorState, BindChannelMaskState,
         BindDepthStencilState, BindPolygonState, SetBlendColor, UpdateUniformBuffer, SetTexturePool, SetSamplerPool,
         DrawArrays, DrawElements, ReportCounter, SetRasterizerDiscard, SetRenderEnable, CopyTextureToTexture,
+        CopyTextureToBuffer,
         BindImage, DispatchCompute,
         SetStencilRef, SetStencilMask, SetStencilValueMask, SetPolygonOffsetClamp, SetDepthBounds, SetDepthClamp,
         BindDeferred,  // mask: 0 textures, 1 images, 2 uniform buffers, 3 storage buffers; a[0] the guest array
