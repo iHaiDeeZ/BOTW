@@ -326,8 +326,12 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
     def i_br(self, f, i, ops, jt):
         r = self.regop(i, ops[0])
         if i.address in jt:
-            cases = " ".join(f"case {B} + {t:#x}ull: goto L_{t:X};" for t in jt[i.address])
-            for t in jt[i.address]:
+            # Every jump-table target of the function, not only this table's: a table's bound can come out short
+            # (Tears of the Kingdom's main+13c6c5c reached main+13c72f0, in another of its tables, through this br),
+            # and a case only fires on its exact target, which is where the guest's br goes anyway.
+            targets = sorted({t for a, ts in jt.items() if f.start <= a < f.end for t in ts})
+            cases = " ".join(f"case {B} + {t:#x}ull: goto L_{t:X};" for t in targets)
+            for t in targets:
                 self.labels.add(t)
             return f"switch ({r.r()}) {{ {cases} default: nx::call(c, {r.r()}); return; }}"
         return f"{{ nx::call(c, {r.r()}); return; }}"

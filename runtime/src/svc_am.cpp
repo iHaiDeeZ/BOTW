@@ -130,12 +130,23 @@ std::shared_ptr<Service> application_functions() {
     });
 }
 
+// The expected master volumes: full. Unanswered they read 0 (Tears of the Kingdom asks for both at boot).
+std::shared_ptr<Service> audio_controller() {
+    return svc("IAudioController", [](Service& s) {
+        s.cmds[0] = [](IpcCtx&) { return 0u; };                       // SetExpectedMasterVolume
+        s.cmds[1] = [](IpcCtx& c) { c.push(1.0f); return 0u; };       // GetMainAppletExpectedMasterVolume
+        s.cmds[2] = [](IpcCtx& c) { c.push(1.0f); return 0u; };       // GetLibraryAppletExpectedMasterVolume
+        s.cmds[3] = [](IpcCtx&) { return 0u; };                       // ChangeMainAppletMasterVolume
+        s.cmds[4] = [](IpcCtx&) { return 0u; };                       // SetTransparentVolumeRate
+    });
+}
+
 std::shared_ptr<Service> application_proxy() {
     return svc("IApplicationProxy", [](Service& s) {
         s.cmds[0] = [](IpcCtx& c) { c.push_object(common_state_getter()); return 0u; };
         s.cmds[1] = [](IpcCtx& c) { c.push_object(self_controller()); return 0u; };
         s.cmds[2] = [](IpcCtx& c) { c.push_object(window_controller()); return 0u; };
-        s.cmds[3] = [](IpcCtx& c) { c.push_object(std::make_shared<Service>("IAudioController")); return 0u; };
+        s.cmds[3] = [](IpcCtx& c) { c.push_object(audio_controller()); return 0u; };
         s.cmds[4] = [](IpcCtx& c) { c.push_object(std::make_shared<Service>("IDisplayController")); return 0u; };
         s.cmds[10] = [](IpcCtx& c) { c.push_object(std::make_shared<Service>("IProcessWindingController")); return 0u; };
         s.cmds[11] = [](IpcCtx& c) { c.push_object(std::make_shared<Service>("ILibraryAppletCreator")); return 0u; };
