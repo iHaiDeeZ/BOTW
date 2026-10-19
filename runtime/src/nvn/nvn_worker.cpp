@@ -9,6 +9,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <system_error>
 #include <thread>
 
 #include "nvn.h"
@@ -60,18 +61,28 @@ uint64_t worker_run(std::function<void()> job) {
         job();
         return 0;
     }
-    uint64_t serial;
+    uint64_t serial = 0;
     {
         std::lock_guard lk(g_lock);
         if (!g_started) {
-            g_started = true;
-            std::thread(run).detach();
+            try {
+                std::thread(run).detach();
+                g_started = true;
+            } catch (const std::system_error&) {
+                // No thread to be had (the PS4 out of memory): the job runs here, and the start is tried again next time.
+            }
         }
-        serial = ++g_enqueued;
-        g_jobs.push_back({serial, std::move(job)});
+        if (g_started) {
+            serial = ++g_enqueued;
+            g_jobs.push_back({serial, std::move(job)});
+        }
     }
-    g_cv.notify_one();
-    return serial;
+    if (serial) {
+        g_cv.notify_one();
+        return serial;
+    }
+    job();  // worker_wait(0) returns at once
+    return 0;
 }
 
 void worker_wait(uint64_t serial) {

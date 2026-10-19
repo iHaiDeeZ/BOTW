@@ -8,6 +8,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <system_error>
 #include <thread>
 
 #include "nvn_vk.h"
@@ -51,15 +52,24 @@ bool janitor_on() {
 }
 
 void janitor_run(std::function<void()> job) {
+    bool queued;
     {
         std::lock_guard lk(g_lock);
         if (!g_started) {
-            g_started = true;
-            std::thread(run).detach();
+            try {
+                std::thread(run).detach();
+                g_started = true;
+            } catch (const std::system_error&) {
+                // No thread to be had (the PS4 out of memory): the job runs here, and the start is tried again next time.
+            }
         }
-        g_jobs.push_back(std::move(job));
+        queued = g_started;
+        if (queued) g_jobs.push_back(std::move(job));
     }
-    g_cv.notify_one();
+    if (queued)
+        g_cv.notify_one();
+    else
+        job();
 }
 
 void janitor_wait(const std::atomic<bool>& done) {

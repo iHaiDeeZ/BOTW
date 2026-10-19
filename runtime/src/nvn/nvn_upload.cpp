@@ -14,6 +14,9 @@
 #include <vector>
 
 #include "nvn_astc.h"
+#define STB_DXT_STATIC
+#define STB_DXT_IMPLEMENTATION
+#include "stb_dxt.h"
 #include "nvn_pipeline.h"
 #include "nvn_tiling.h"
 #include "platform.h"
@@ -70,7 +73,23 @@ bool copies_fit(const Texture& t, const VkBufferImageCopy* r, uint32_t n, uint64
     return false;
 }
 
-// ASTC on a GPU without it (nvn_format.cpp): the untiled blocks of every level become RGBA8 texels, and the levels
+// One level layer of RGBA8 texels (w x h, rows back to back) as BC3 blocks (DXT5: 16 bytes per 4x4), the edge blocks
+// padded with their last row and column. stb_dxt (public domain), normal quality: ~4 ms a megatexel on a Jaguar core.
+void encode_bc3(const uint8_t* rgba, uint32_t w, uint32_t h, uint8_t* out) {
+    uint8_t block[64];
+    for (uint32_t by = 0; by < h; by += 4)
+        for (uint32_t bx = 0; bx < w; bx += 4) {
+            for (uint32_t y = 0; y < 4; y++)
+                for (uint32_t x = 0; x < 4; x++)
+                    std::memcpy(block + (y * 4 + x) * 4,
+                                rgba + (uint64_t(std::min(by + y, h - 1)) * w + std::min(bx + x, w - 1)) * 4, 4);
+            stb_compress_dxt_block(out, block, 1, STB_DXT_NORMAL);
+            out += 16;
+        }
+}
+
+// ASTC on a GPU without it (nvn_format.cpp): the untiled blocks of every level become RGBA8 texels (and on the PS4
+// then BC3 blocks, astc_bc3), and the levels
 // are re-laid out for them (each level's layers back to back, 16-byte aligned). Logged every 200 textures: count,
 // bytes and CPU time, the cost of the decoder at load.
 void decode_astc(uint32_t format, std::vector<uint8_t>& linear, std::vector<LinearLevel>& levels, uint32_t layers,
@@ -91,6 +110,24 @@ void decode_astc(uint32_t format, std::vector<uint8_t>& linear, std::vector<Line
         if (levels[k].offset + levels[k].layer_size * layers <= linear.size())
             invalid += astc_decode_image(linear.data() + levels[k].offset, levels[k].width, levels[k].height, layers,
                                          bw, bh, srgb, rgba.data() + out[k].offset);
+    if (astc_bc3()) {  // the texels -> BC3 blocks, every level and layer (nvn_format.cpp astc_bc3)
+        std::vector<LinearLevel> bc = out;
+        uint64_t bat = 0;
+        for (LinearLevel& l : bc) {
+            l.offset = bat;
+            l.width_blocks = (l.width + 3) / 4, l.height_blocks = (l.height + 3) / 4;
+            l.layer_size = uint64_t(l.width_blocks) * l.height_blocks * 16;
+            bat += (l.layer_size * layers + 15) & ~15ull;
+        }
+        std::vector<uint8_t> blocks(bat);
+        for (size_t k = 0; k < out.size(); k++)
+            for (uint32_t z = 0; z < layers; z++)
+                encode_bc3(rgba.data() + out[k].offset + out[k].layer_size * z, out[k].width, out[k].height,
+                           blocks.data() + bc[k].offset + bc[k].layer_size * z);
+        rgba.swap(blocks);
+        out.swap(bc);
+        at = bat;
+    }
     linear.swap(rgba);
     levels.swap(out);
     const uint64_t spent = plat::monotonic_ns() - t0;
@@ -376,9 +413,12 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
                                  copies.data());
         return;
     }
-    if (astc_decoded(t.format)) {  // RGBA8 texels from here on
+    if (astc_decoded(t.format)) {  // RGBA8 texels from here on, or BC3 blocks (astc_bc3)
         if (!predecoded) decode_astc(t.format, linear, levels, layers, bw, bh);
-        bw = bh = 1, bytes = host_bytes = 4;
+        if (astc_bc3())
+            bw = bh = 4, bytes = host_bytes = 16;
+        else
+            bw = bh = 1, bytes = host_bytes = 4;
     }
     // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).
     uint64_t scale = widen ? 2 : 1;

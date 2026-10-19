@@ -102,11 +102,28 @@ bool astc_decoded(uint32_t f) {
 
 bool native_r11g11b10();  // nvn_caps.cpp
 
+// PS4 (no ASTC on GCN): the decoded texels are re-packed as BC3 (DXT5, 8 bits per texel) instead of kept as RGBA8 (32):
+// a quarter of the memory. A session of the world map and courses decoded 1.7 GB of RGBA8 textures and ran the 4.6 GB
+// of direct memory out (vkAllocateMemory failed, then a thread could not start and the app ended). NX_ASTC_BC=0: RGBA8.
+bool astc_bc3() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_ASTC_BC");
+#if defined(__ORBIS__)
+        return !e || e[0] != '0';
+#else
+        return e && e[0] == '1';
+#endif
+    }();
+    return on;
+}
+
 VkFormat vk_format(uint32_t f) {
     if (f == 0x3f && native_r11g11b10()) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;  // nvn_caps.cpp
     if (f < sizeof kFormats / sizeof kFormats[0]) return kFormats[f].vk;
-    if (f >= 0x79 && f <= 0x86) return astc_decoded(f) ? VK_FORMAT_R8G8B8A8_UNORM : kAstc[f - 0x79];
-    if (f >= 0x87 && f <= 0x94) return astc_decoded(f) ? VK_FORMAT_R8G8B8A8_SRGB : kAstcSrgb[f - 0x87];
+    if (f >= 0x79 && f <= 0x86)
+        return astc_decoded(f) ? (astc_bc3() ? VK_FORMAT_BC3_UNORM_BLOCK : VK_FORMAT_R8G8B8A8_UNORM) : kAstc[f - 0x79];
+    if (f >= 0x87 && f <= 0x94)
+        return astc_decoded(f) ? (astc_bc3() ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_R8G8B8A8_SRGB) : kAstcSrgb[f - 0x87];
     switch (f) {
         case 0x95: return VK_FORMAT_B5G6R5_UNORM_PACK16;
         case 0x96:
