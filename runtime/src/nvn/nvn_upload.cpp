@@ -99,34 +99,41 @@ void decode_astc(uint32_t format, std::vector<uint8_t>& linear, std::vector<Line
     const bool srgb = format >= 0x87;
     std::vector<LinearLevel> out = levels;
     uint64_t at = 0;
-    for (LinearLevel& l : out) {
-        l.offset = at;
-        l.layer_size = uint64_t(l.width) * l.height * 4;
-        l.width_blocks = l.width, l.height_blocks = l.height;
-        at += (l.layer_size * layers + 15) & ~15ull;
-    }
-    std::vector<uint8_t> rgba(at);
-    for (size_t k = 0; k < levels.size(); k++)
-        if (levels[k].offset + levels[k].layer_size * layers <= linear.size())
-            invalid += astc_decode_image(linear.data() + levels[k].offset, levels[k].width, levels[k].height, layers,
-                                         bw, bh, srgb, rgba.data() + out[k].offset);
-    if (astc_bc3()) {  // the texels -> BC3 blocks, every level and layer (nvn_format.cpp astc_bc3)
-        std::vector<LinearLevel> bc = out;
-        uint64_t bat = 0;
-        for (LinearLevel& l : bc) {
-            l.offset = bat;
+    std::vector<uint8_t> rgba;
+    if (astc_bc3()) {
+        // BC3 blocks (nvn_format.cpp astc_bc3), one level layer at a time through a scratch of RGBA8 texels: the whole
+        // texture as RGBA8 first was 677 MB for Tears of the Kingdom's MaterialAlb (1024x1024x121, 11 levels, ASTC
+        // 8x8), and the allocation failed (std::bad_alloc); this way the peak is the BC3 result plus one layer.
+        for (LinearLevel& l : out) {
+            l.offset = at;
             l.width_blocks = (l.width + 3) / 4, l.height_blocks = (l.height + 3) / 4;
             l.layer_size = uint64_t(l.width_blocks) * l.height_blocks * 16;
-            bat += (l.layer_size * layers + 15) & ~15ull;
+            at += (l.layer_size * layers + 15) & ~15ull;
         }
-        std::vector<uint8_t> blocks(bat);
-        for (size_t k = 0; k < out.size(); k++)
-            for (uint32_t z = 0; z < layers; z++)
-                encode_bc3(rgba.data() + out[k].offset + out[k].layer_size * z, out[k].width, out[k].height,
-                           blocks.data() + bc[k].offset + bc[k].layer_size * z);
-        rgba.swap(blocks);
-        out.swap(bc);
-        at = bat;
+        rgba.resize(at);
+        std::vector<uint8_t> texels;
+        for (size_t k = 0; k < levels.size(); k++) {
+            if (levels[k].offset + levels[k].layer_size * layers > linear.size()) continue;
+            texels.resize(uint64_t(levels[k].width) * levels[k].height * 4);
+            for (uint32_t z = 0; z < layers; z++) {
+                invalid += astc_decode_image(linear.data() + levels[k].offset + levels[k].layer_size * z,
+                                             levels[k].width, levels[k].height, 1, bw, bh, srgb, texels.data());
+                encode_bc3(texels.data(), levels[k].width, levels[k].height,
+                           rgba.data() + out[k].offset + out[k].layer_size * z);
+            }
+        }
+    } else {
+        for (LinearLevel& l : out) {
+            l.offset = at;
+            l.layer_size = uint64_t(l.width) * l.height * 4;
+            l.width_blocks = l.width, l.height_blocks = l.height;
+            at += (l.layer_size * layers + 15) & ~15ull;
+        }
+        rgba.resize(at);
+        for (size_t k = 0; k < levels.size(); k++)
+            if (levels[k].offset + levels[k].layer_size * layers <= linear.size())
+                invalid += astc_decode_image(linear.data() + levels[k].offset, levels[k].width, levels[k].height,
+                                             layers, bw, bh, srgb, rgba.data() + out[k].offset);
     }
     linear.swap(rgba);
     levels.swap(out);
