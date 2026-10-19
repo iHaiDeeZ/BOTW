@@ -112,7 +112,7 @@ void MemoryPoolInitialize(CPU& c) {
 }
 
 void MemoryPoolFinalize(CPU& c) {
-    wait_submits_so_far(kWaitInvalidate);  // a submit replayed on another thread may still read it
+    wait_submits_so_far(kWaitFinalize);  // a submit replayed on another thread may still read it
     worker_finish();                    // the replay thread may still read it
     gpu_wait(gpu_write_back_serial());  // NX_ASYNC_GPU: no compute result lands in freed memory
     if (auto* p = get<MemoryPool>(c.x[0])) pool_unregister(p), command_memory_released(p->gpu, p->size);
@@ -191,8 +191,17 @@ void MemoryPoolFlushMappedRange(CPU& c) {
     }
 }
 // The CPU is about to read what the GPU wrote: with NX_ASYNC_GPU, compute results still in flight are waited for.
+// NX_INVALIDATE_WAIT=0 (Tears of the Kingdom's default, games/totk/game.cpp): no wait. On the console this is a cache
+// operation, and a game that needs a result waits on its sync first (nvnSyncWait waits for the submit and its
+// write-backs). TOTK invalidates ~10 times a frame, and waiting for the submits so far each time put its main thread
+// behind the whole replay: 30-57 ms a frame (v00.15).
 void MemoryPoolInvalidateMappedRange(CPU&) {
-    wait_submits_so_far(kWaitFinalize);  // a submit replayed on another thread: its results first (nvn_queue.cpp)
+    static const bool wait = [] {
+        const char* e = std::getenv("NX_INVALIDATE_WAIT");
+        return !e || e[0] != '0';
+    }();
+    if (!wait) return;
+    wait_submits_so_far(kWaitInvalidate);  // a submit replayed on another thread: its results first (nvn_queue.cpp)
     worker_finish();  // compute results reach guest memory when their submit is replayed and done
     gpu_wait(gpu_write_back_serial());
 }

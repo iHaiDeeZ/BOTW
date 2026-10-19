@@ -417,6 +417,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                 log("  vs c3 @%llx: %g %g %g %g | %g %g %g %g", (unsigned long long)u.address, f[0], f[1], f[2], f[3], f[4],
                     f[5], f[6], f[7]);
+        for (int blk = 0; blk < 4; blk++)  // the binding sizes: a read past one gives 0 on the PS4 (bounds checks)
+            if (const Range& u = g_state.uniforms[1][blk]; u.address)
+                log("  fs uniform block %d (c%d) @%llx size %llu", blk, blk + 3, (unsigned long long)u.address,
+                    (unsigned long long)u.size);
         if (const Range& u = g_state.uniforms[1][0]; u.address)
             if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                 for (uint64_t k = 0; k < std::min<uint64_t>(u.size / 16, 8); k++)
