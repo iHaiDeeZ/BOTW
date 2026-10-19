@@ -5,6 +5,8 @@
 #include <memory>
 #include <set>
 #include <tuple>
+#include <unordered_map>
+#include <vector>
 
 #include "nvn_vk.h"
 
@@ -119,10 +121,11 @@ GpuImage* image_of(uint64_t guest) {
                 o.samples, other->rendered ? " rendered" : "");
         }
     }
-    if ((t->image = reuse_image(*t))) return t->image.get();
+    if ((t->image = reuse_image(*t))) return t->image->guest_memory = t->memory, t->image.get();
     auto img = std::make_shared<GpuImage>();
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
     img->nvn_format = t->format;
+    img->guest_memory = t->memory;
     if (t->format == 0x1 && t->pool_swizzle == 0x02010101u) {
         img->format = VK_FORMAT_R8G8B8A8_UNORM;
         img->alpha_from_r = true;
@@ -234,6 +237,92 @@ GpuImage* image_of(uint64_t guest) {
     t->image = img;
     if (t->memory) g_live_images[key] = img;
     return img.get();
+}
+
+// ---- alias sync ----------------------------------------------------------------------------------------------
+// Tears of the Kingdom renders a target in one format and samples the same memory through a texture of another
+// format of the same texel size (R32F or RG16F read as RGBA8, layer 0 of an R11G11B10F array read as a 2D texture):
+// on the Switch that is one memory; here they are two images, and the reader saw a cleared one (the lighting
+// composite read zero shadow, AO and depth-derived inputs: a black world). The reader gets a copy of the newest
+// contents (vkCmdCopyImage copies bits between formats of one texel size). NX_ALIAS_SYNC=0: off (bisecting).
+namespace {
+uint64_t g_content_serial = 0;
+std::unordered_map<uint64_t, uint64_t> g_memory_newest;  // guest memory -> newest content_at of an image over it
+bool alias_sync_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_ALIAS_SYNC");
+        return !e || e[0] != 0;
+    }();
+    return on;
+}
+uint32_t texel_bytes(const GpuImage& img) {  // 0: not a plain colour format
+    if (img.aspect != VK_IMAGE_ASPECT_COLOR_BIT || img.alpha_from_r || bc_host_decode(img.nvn_format)) return 0;
+    if (vk_format(img.nvn_format) != img.format) return 0;  // substituted: another texel size on the host
+    uint32_t bw = 1, bh = 1, bytes = 0;
+    format_block(img.nvn_format, bw, bh, bytes);
+    return bw == 1 && bh == 1 ? bytes : 0;
+}
+bool alias_compatible(const GpuImage& a, const GpuImage& b) {
+    if (a.width != b.width || a.height != b.height || a.depth != 1 || b.depth != 1) return false;
+    if (a.view_type == VK_IMAGE_VIEW_TYPE_3D || b.view_type == VK_IMAGE_VIEW_TYPE_3D) return false;
+    uint32_t n = texel_bytes(a);
+    return n && n == texel_bytes(b);
+}
+}  // namespace
+
+void image_written(GpuImage& img) {
+    img.content_at = ++g_content_serial;
+    if (img.guest_memory) g_memory_newest[img.guest_memory] = img.content_at;
+}
+
+bool alias_pending(const GpuImage& img) {
+    if (!img.guest_memory || !alias_sync_on()) return false;
+    auto it = g_memory_newest.find(img.guest_memory);
+    return it != g_memory_newest.end() && it->second > img.content_at && it->second > img.alias_checked;
+}
+
+bool sync_alias(VkCommandBuffer cb, GpuImage& img) {
+    if (!alias_pending(img)) return false;
+    img.alias_checked = g_memory_newest[img.guest_memory];
+    std::shared_ptr<GpuImage> best;
+    for (auto it = g_live_images.lower_bound(StorageKey{img.guest_memory});
+         it != g_live_images.end() && it->first.memory == img.guest_memory; ++it) {
+        auto other = it->second.lock();
+        if (!other || other.get() == &img || !other->image || !other->rendered || other->content_at <= img.content_at)
+            continue;
+        if (best && other->content_at <= best->content_at) continue;
+        if (alias_compatible(img, *other)) best = other;
+    }
+    if (!best) return false;
+    GpuImage& src = *best;
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, nullptr,
+                           0, nullptr);
+    transition(cb, src, VK_IMAGE_LAYOUT_GENERAL);
+    transition(cb, img, VK_IMAGE_LAYOUT_GENERAL);
+    uint32_t levels = std::min(src.levels, img.levels), layers = std::min(src.layers, img.layers);
+    std::vector<VkImageCopy> regions(levels);
+    for (uint32_t l = 0; l < levels; l++) {
+        VkImageCopy& r = regions[l];
+        r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, layers};
+        r.dstSubresource = r.srcSubresource;
+        r.extent = {std::max(1u, img.width >> l), std::max(1u, img.height >> l), 1};
+    }
+    p_vkCmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_GENERAL, img.image, VK_IMAGE_LAYOUT_GENERAL, levels, regions.data());
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, nullptr,
+                           0, nullptr);
+    img.rendered = img.uploaded = true;
+    img.content_at = src.content_at;  // the same contents: the source does not copy them back
+    static uint64_t copies = 0;
+    if (++copies <= 60 || copies % 5000 == 0)
+        log("nvn/vk: alias sync #%llu at %llx: %ux%u fmt %#x (%u levels, %u layers) <- fmt %#x (%u levels, %u layers)",
+            (unsigned long long)copies, (unsigned long long)img.guest_memory, img.width, img.height, img.nvn_format,
+            img.levels, img.layers, src.nvn_format, src.levels, src.layers);
+    return true;
 }
 
 void transition(VkCommandBuffer cb, GpuImage& img, VkImageLayout to) {

@@ -132,6 +132,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
         GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
         g_pass_images[k] = img;
         if (!img) continue;
+        sync_alias(cb, *img);  // drawn over: what an alias rendered into this memory first
         if (img->layout == VK_IMAGE_LAYOUT_UNDEFINED && !load_undefined) fresh |= 1u << k;
         transition(cb, *img, VK_IMAGE_LAYOUT_GENERAL);  // rendered images stay GENERAL (sampled while rendered)
         img->rendered = true;
@@ -619,7 +620,7 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     g_pass_serial++;
     for (uint32_t k = 0; k < 9; k++)  // this pass's targets only (the other slots may name freed images)
         if ((k < g_pass.color_count || (k == 8 && g_pass.depth)) && g_pass_images[k])
-            g_pass_images[k]->rendered_at = g_pass_serial;
+            g_pass_images[k]->rendered_at = g_pass_serial, image_written(*g_pass_images[k]);
     gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
 }
 void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)

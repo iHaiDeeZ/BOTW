@@ -32,6 +32,10 @@ struct GpuImage {
     // without swizzle. MoltenVK returned alpha 0 for that view swizzle on a 2D-array view, so all text was invisible.
     bool alpha_from_r = false;
     uint32_t nvn_format = 0;  // the texture's NVN format
+    // Images over one guest memory in another format or shape (nvn_image.cpp, alias sync): the guest address, the
+    // serial of this image's newest contents (its own write, or a copy from an alias) and the newest alias write
+    // already looked at.
+    uint64_t guest_memory = 0, content_at = 0, alias_checked = 0;
 };
 
 VkDevice vk_device();
@@ -49,6 +53,12 @@ GpuImage* image_of(uint64_t texture);
 // default they are 2D / 2D-array images of height 1, which the translated shaders (1D sampled as 2D) can view (G8).
 bool vk_1d_images();
 void transition(VkCommandBuffer cb, GpuImage& img, VkImageLayout to);
+// Alias sync (nvn_image.cpp): the GPU (or an upload) gave this image new contents.
+void image_written(GpuImage& img);
+// Another live image over the same guest memory (same size, same texel size, another format or layer count) holds
+// newer contents than this one: alias_pending says so (cheap, per draw), sync_alias copies them (outside passes).
+bool alias_pending(const GpuImage& img);
+bool sync_alias(VkCommandBuffer cb, GpuImage& img);
 // nvn_present.cpp: the window texture drawn into the swapchain (rotated, fit, alpha 1) instead of blitted.
 bool present_pass_wanted();
 bool present_pass_targets(VkFormat format, const std::vector<VkImage>& images, VkExtent2D extent,

@@ -152,6 +152,7 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     }
     if (same) general_barrier(cb, *dst);
     dst->rendered = true;  // GPU-written from now on
+    image_written(*dst);
 }
 
 // ---- GPU texels to the CPU ---------------------------------------------------------------------------------------

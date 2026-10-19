@@ -152,6 +152,7 @@ bool clears_transfer(VkCommandBuffer cb, const Targets& t) {
         if (!img) continue;
         transition(cb, *img, VK_IMAGE_LAYOUT_GENERAL);  // as begin_rendering: rendered images stay GENERAL
         img->rendered = true;
+        image_written(*img);
         uint32_t level = std::min<uint32_t>(t.views.level[k], img->levels - 1);
         uint32_t layer = std::min<uint32_t>(t.views.layer[k], img->layers - 1);
         if (k < 8) {

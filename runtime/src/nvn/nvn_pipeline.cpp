@@ -585,6 +585,7 @@ bool sampled_ready(uint64_t texture) {
     if (t->dirty && !t->image->rendered) return g_not_ready[1]++, false;
     if (t->has_writes.load(std::memory_order_acquire)) return g_not_ready[2]++, false;  // no lock (nvn.h)
     const GpuImage& img = *t->image;
+    if (alias_pending(img)) return false;  // a copy from an alias first (sync_alias): outside the pass
     bool ok = img.rendered ? img.layout == VK_IMAGE_LAYOUT_GENERAL
                            : img.uploaded && img.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     if (!ok) g_not_ready[img.rendered ? 3 : !img.uploaded ? 4 : 5]++;
@@ -623,6 +624,7 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
     Texture* t = get<Texture>(texture);
     GpuImage* img = t ? image_of(texture) : nullptr;
     if (!img) return nullptr;
+    sync_alias(cb, *img);  // newer contents in another image over this memory (nvn_image.cpp)
     bool dirty = t->dirty.exchange(false);
     uint64_t dirty_lo = t->dirty_lo.exchange(UINT64_MAX), dirty_hi = t->dirty_hi.exchange(0);
     if (dirty_hi <= dirty_lo) dirty_lo = 0, dirty_hi = UINT64_MAX;  // marked without a range: all of it
@@ -641,7 +643,10 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
         }
     }
     // A texture already on the GPU that the CPU wrote part of: only those bytes go again (the glyph cache).
-    if (upload) upload_texture(cb, *t, *img, img->uploaded && dirty ? dirty_lo : 0, img->uploaded && dirty ? dirty_hi : UINT64_MAX);
+    if (upload) {
+        upload_texture(cb, *t, *img, img->uploaded && dirty ? dirty_lo : 0, img->uploaded && dirty ? dirty_hi : UINT64_MAX);
+        image_written(*img);
+    }
     apply_texel_writes(cb, *t, *img);
     if (img->layout == VK_IMAGE_LAYOUT_UNDEFINED) {  // never written: black, not garbage
         transition(cb, *img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -721,6 +726,7 @@ VkImageView storage_view(VkCommandBuffer cb, uint64_t texture, const ImageShape&
     if (img && img->storage) {
         transition(cb, *img, VK_IMAGE_LAYOUT_GENERAL);
         img->rendered = true;  // the shader may write it
+        image_written(*img);
         ViewInfo v = view ? *view : ViewInfo{};
         v.levels = 1, v.swizzle = 0;  // storage views: one level, identity
         if (VkImageView iv = view_of(*img, view_type(shape), v)) return iv;
