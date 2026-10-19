@@ -297,11 +297,11 @@ void guest_trace(CPU& c, uint64_t addr, int exit) {
     }
     if (n > 3000 && n % 1000) return;
     if (exit == 2)
-        log("trace @ %s #%llu x0 %llx x1 %llx x2 %llx x3 %llx x8 %llx x19 %llx x20 %llx x25 %llx x26 %llx",
+        log("trace @ %s #%llu x0 %llx x1 %llx x2 %llx x3 %llx x8 %llx (%s) x19 %llx x20 %llx x25 %llx x26 %llx",
             describe(addr).c_str(), (unsigned long long)n, (unsigned long long)c.x[0], (unsigned long long)c.x[1],
             (unsigned long long)c.x[2], (unsigned long long)c.x[3], (unsigned long long)c.x[8],
-            (unsigned long long)c.x[19], (unsigned long long)c.x[20], (unsigned long long)c.x[25],
-            (unsigned long long)c.x[26]);
+            describe(c.x[8]).c_str(), (unsigned long long)c.x[19], (unsigned long long)c.x[20],
+            (unsigned long long)c.x[25], (unsigned long long)c.x[26]);
     else if (!exit)
         log("trace > %s #%llu (%llx, %llx, %llx, %llx) lr %s", describe(addr).c_str(), (unsigned long long)n,
             (unsigned long long)c.x[0], (unsigned long long)c.x[1], (unsigned long long)c.x[2],

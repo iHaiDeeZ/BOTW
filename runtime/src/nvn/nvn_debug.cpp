@@ -576,6 +576,13 @@ void diag_frame_boundary(uint64_t presents) {
         log("diag: storyboard of frame %llu: %d pictures in %s/diag", (unsigned long long)presents, g_diag_seq,
             plat::data_root().c_str());
     }
+    // NX_DIAG_EVERY=<presents>: a storyboard every that many presents (each replaces the last), for a scene that is
+    // hard to reach with the menu open (Tears of the Kingdom's black world).
+    static const uint64_t every = [] {
+        const char* e = std::getenv("NX_DIAG_EVERY");
+        return e ? std::strtoull(e, nullptr, 10) : 0ull;
+    }();
+    if (every && presents && presents % every == 0) g_diag_armed = true;
     if (presents % 60 == 0) {  // the file request
         std::string req = plat::data_root() + "/diag_now";
         if (FILE* f = plat::fopen_utf8(req, "rb")) {
