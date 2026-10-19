@@ -306,16 +306,30 @@ def _jump_table(an, f, br):
         # flow brings x13 = 0x37d9ded from an adrp/add, and jumped to main+22205a4, a target that table lacked.
         return any(seg[0] <= addr < seg[0] + seg[1] for seg in (m.ro, m.data))
 
+    # Byte tables: every target a byte entry can reach in this function is taken (at most 256). Tears of the
+    # Kingdom's main+221ff6c picks its byte tables at run time through one register (x13: adrp/add, then reused for
+    # other values), and no table the analysis could read held main+22205f8, where the game went (v00.11).
+    byte_targets = set()
+    if size == 1:
+        for v in (range(-128, 128) if signed else range(256)):
+            t = anchor + (v << shift)
+            if f.start <= t < f.end and t in an.insns:
+                byte_targets.add(t)
+
+    def finish(found):
+        found = set(found) | byte_targets
+        return sorted(found) if found else None
+
     table = _const(an, f, a_ld, base_reg)
     if table is not None and in_tables(table):
         out, _ = entries(table)
-        return sorted(set(out)) if out else None
+        return finish(out)
     # The base register's last definition in address order is not a constant (control flow reaches the load from
     # another path: Wonder's main+28b3bc takes x24 from an adrp/add 0x5000 bytes earlier, the linear search found an
     # unrelated movk). With a known bound, try every constant the function puts in that register and keep one whose
     # entries all land on instructions of this function.
     if count is None:
-        return None
+        return finish(())
     candidates = []
     a = f.start
     while a < f.end:
@@ -333,7 +347,7 @@ def _jump_table(an, f, br):
         out, misses = entries(c)
         if out and misses == 0:
             found.update(out)
-    return sorted(found) if found else None
+    return finish(found)
 
 
 def _bound(an, f, before, idx):
