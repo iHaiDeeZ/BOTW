@@ -244,6 +244,13 @@ bool all_write_backs() {  // NX_WRITE_BACK_ALL=1: every compute storage binding,
     static const bool on = std::getenv("NX_WRITE_BACK_ALL") != nullptr;
     return on;
 }
+bool graphics_write_backs() {  // storage that vertex / fragment shaders write goes back too; NX_GRAPHICS_WRITE_BACK=0: off
+    static const bool on = [] {
+        const char* e = std::getenv("NX_GRAPHICS_WRITE_BACK");
+        return !e || e[0] != '0';
+    }();
+    return on;
+}
 
 // guest: the bytes are guest memory (a copy is shared by later draws of the submit); host scratch data (the support
 // buffer, c[0]: on the stack, at the same address for every draw) is copied every time (docs/nvn/DEBUG.md #30).
@@ -475,6 +482,22 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     const uint8_t* p;
                     uint64_t size;
                     bool written = storage(s, b, st, p, size);
+                    // A vertex or fragment shader that writes storage (Tears of the Kingdom's deferred-lighting
+                    // quads store a feedback word per tile that the next frame's tile classification reads; lost,
+                    // every tile read "nothing to light" and the world was black; MacNativeGames hit the same):
+                    // a copy of its own, and after the submit what the GPU changed in it goes back to guest memory.
+                    // Inside a render pass, so no GPU-side merging as for compute (nvn_written.cpp).
+                    if (!written && s->stage != ShaderStage::Compute && p && size && b.binding < 64 &&
+                        (written_storage_bindings(s) >> b.binding & 1) && graphics_write_backs()) {
+                        uint64_t n = std::max<uint64_t>((size + 15) & ~15ull, 0x10000);
+                        Upload u = upload_alloc(n, 256);
+                        std::memset(u.ptr, 0, n);
+                        std::memcpy(u.ptr, p, size);
+                        auto before = std::make_shared<std::vector<uint8_t>>(p, p + size);
+                        g_write_backs.push_back({u.ptr, const_cast<uint8_t*>(p), size, std::move(before)});
+                        info = {u.buffer, u.offset, n};
+                        break;
+                    }
                     if (!written && s->stage != ShaderStage::Compute && written_overlaps(p, size)) written_count_bind();
                     // At least 64 KB: Metal does not bound-check, and a shader writing past a small or missing
                     // buffer overwrote the next data in the upload buffer (garbage everywhere after a compute).
