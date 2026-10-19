@@ -106,6 +106,15 @@ uint64_t g_staging_count = 0, g_staging_bytes = 0;  // staging_alloc's buffers, 
 VkBuffer g_ring = VK_NULL_HANDLE;
 uint8_t* g_ring_ptr = nullptr;
 uint64_t g_ring_size = 0, g_head = 0, g_tail = 0, g_begin = 0;
+// A submit whose uploads outgrow the ring (a scene load: Tears of the Kingdom staged 216 MB in one) takes the rest
+// from spill buffers of its own, freed once it is retired (as staging_alloc's), instead of wrapping the ring over its
+// own data, which the GPU had not read yet (wrong vertices and uniforms; the GPU hung).
+struct Spill {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    uint8_t* ptr = nullptr;
+    uint64_t size = 0, used = 0;
+} g_spill;
+uint64_t g_spill_count = 0, g_spill_bytes = 0;
 
 // Images of destroyed textures, with the serial of the last submit that may still use them.
 std::mutex g_grave_lock;
@@ -370,6 +379,7 @@ VkCommandBuffer frame_begin(bool replay) {
     s.pool_used = true;
     g_next = (g_next + 1) % g_slot_count;
     g_begin = g_head;
+    g_spill = {};
     s.replay = replay, s.part = s.queued = s.waited = 0, s.split_part = -1, s.ok = true;
     s.begin_ns = plat::monotonic_ns();
     g_plan_dispatches = g_seen_dispatches = 0;
@@ -525,6 +535,46 @@ void frame_log(uint64_t frames) {
     g_stats = {};
 }
 
+// Room in this submit's spill buffer (64 MB each, or the upload's size), a new one when it is full. {} if the
+// allocation fails (the caller then wraps the ring as before).
+Upload spill_alloc(uint64_t size, uint64_t align) {
+    uint64_t at = (g_spill.used + align - 1) & ~(align - 1);
+    if (!g_spill.buffer || at + size > g_spill.size) {
+        VkDevice d = vk_device();
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size = std::max<uint64_t>(64ull << 20, (size + 0xFFFF) & ~0xFFFFull);
+        bi.usage = kUploadUsage;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return {};
+        VkMemoryRequirements req{};
+        p_vkGetBufferMemoryRequirements(d, buffer, &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex = upload_memory_type(req.memoryTypeBits);
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* p = nullptr;
+        if (p_vkAllocateMemory(d, &ai, nullptr, &memory) != VK_SUCCESS || p_vkBindBufferMemory(d, buffer, memory, 0) ||
+            p_vkMapMemory(d, memory, 0, VK_WHOLE_SIZE, 0, &p) != VK_SUCCESS) {
+            p_vkDestroyBuffer(d, buffer, nullptr);
+            if (memory) p_vkFreeMemory(d, memory, nullptr);
+            log("nvn/vk: no memory for a %llu MB upload spill buffer", (unsigned long long)(bi.size >> 20));
+            return {};
+        }
+        {
+            std::lock_guard lk(g_grave_lock);
+            g_staging.push_back({g_submitted + 1, buffer, memory});
+        }
+        if (g_spill_count++ % 16 == 0)
+            log("nvn/vk: upload ring full: spill buffer #%llu of %llu MB for the rest of the submit",
+                (unsigned long long)g_spill_count, (unsigned long long)(bi.size >> 20));
+        g_spill = {buffer, static_cast<uint8_t*>(p), bi.size, 0};
+        at = 0;
+    }
+    g_spill.used = at + size;
+    g_spill_bytes += size;
+    return {g_spill.buffer, at, g_spill.ptr + at};
+}
+
 Upload frame_upload_alloc(uint64_t size, uint64_t align) {
     uint64_t at = (g_head + align - 1) & ~(align - 1);
     if (at % g_ring_size + size > g_ring_size) at += g_ring_size - at % g_ring_size;  // never split: the next lap
@@ -536,6 +586,7 @@ Upload frame_upload_alloc(uint64_t size, uint64_t align) {
                 wait_fences(fences, queued_fences(*g_current, g_current->part, fences));
                 g_current->waited = g_current->part;
             }
+            if (Upload u = spill_alloc(size, align); u.buffer) return u;
             log("nvn/vk: upload buffer full (%llu bytes in this submit)", (unsigned long long)(at + size - g_begin));
             g_tail = at + size - g_ring_size;  // this submit wraps over its own first data, as the synchronous path
             replay::dedup_reset();
