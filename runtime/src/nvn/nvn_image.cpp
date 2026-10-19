@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <map>
 #include <memory>
+#include <set>
 #include <tuple>
 
 #include "nvn_vk.h"
@@ -100,6 +101,24 @@ GpuImage* image_of(uint64_t guest) {
                 t->image = shared;
                 return shared.get();
             }
+    // A live image over the same memory that the key kept apart (Tears of the Kingdom: the lighting read empty shadow
+    // and depth-derived buffers; MacNativeGames shares across formats of one texel size). Logged once per pair of
+    // keys: what differs.
+    if (share && t->memory) {
+        static std::set<std::pair<StorageKey, StorageKey>> seen;
+        static int logged = 0;
+        for (auto it = g_live_images.lower_bound(StorageKey{t->memory}); it != g_live_images.end() && it->first.memory == t->memory; ++it) {
+            auto other = it->second.lock();
+            if (!other || !other->image || logged >= 200 || !seen.insert({key, it->first}).second) continue;
+            const StorageKey& o = it->first;
+            logged++;
+            log("nvn/vk: no image share at %llx: this %ux%ux%u fmt %#x levels %u target %u samples %u%s; live %ux%ux%u fmt %#x "
+                "levels %u target %u samples %u%s",
+                (unsigned long long)t->memory, key.width, key.height, key.depth, key.format, key.levels, key.target,
+                key.samples, widened ? " (widened R8)" : "", o.width, o.height, o.depth, o.format, o.levels, o.target,
+                o.samples, other->rendered ? " rendered" : "");
+        }
+    }
     if ((t->image = reuse_image(*t))) return t->image.get();
     auto img = std::make_shared<GpuImage>();
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
