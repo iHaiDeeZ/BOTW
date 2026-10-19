@@ -300,8 +300,14 @@ def _jump_table(an, f, br):
                 out.append(t)
         return out, misses
 
+    def in_tables(addr):
+        # Jump tables are read-only (or data) bytes. A constant elsewhere is the register's value on another path:
+        # Tears of the Kingdom's br main+22205a0 found "mov w13, #0x30" (a table at 0x30, in the header) where control
+        # flow brings x13 = 0x37d9ded from an adrp/add, and jumped to main+22205a4, a target that table lacked.
+        return any(seg[0] <= addr < seg[0] + seg[1] for seg in (m.ro, m.data))
+
     table = _const(an, f, a_ld, base_reg)
-    if table is not None and m.in_image(table):
+    if table is not None and in_tables(table):
         out, _ = entries(table)
         return sorted(set(out)) if out else None
     # The base register's last definition in address order is not a constant (control flow reaches the load from
@@ -317,7 +323,7 @@ def _jump_table(an, f, br):
         ops = _ops(op)
         if mn in ("adrp", "adr", "add") and ops and _regno(ops[0]) == base_reg:
             c = _const(an, f, a + 4, base_reg)
-            if c is not None and m.in_image(c) and c not in candidates:
+            if c is not None and in_tables(c) and c not in candidates:
                 candidates.append(c)
         a += 4
     # Several constants can pass that test (main+28b3bc: an add x24, x23, #0x90 as well as the real adrp/add), and
