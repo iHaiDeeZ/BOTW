@@ -119,6 +119,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/hle_audio.cpp
     runtime/src/hle_pl.cpp
     runtime/src/hle_nfp.cpp
+    runtime/src/hle_opus.cpp
     runtime/src/input_script.cpp
     runtime/src/touch_layout.cpp
     runtime/src/perf_hint.cpp
@@ -224,6 +225,13 @@ if(NX_PS4)
     target_compile_definitions(${NX_GAME} PRIVATE NX_PS4_APP_NAME=${NX_PS4_APP})
     target_link_libraries(${NX_GAME} PRIVATE ${NX_GAME_LIBS})
     ps4_link_mesa(${NX_GAME})
+    # nn::codec hardware Opus (runtime/src/hle_opus.cpp): PacBrew's libopus. Only that file sees its headers (a link
+    # to usr/include/opus in the build directory): the rest of PacBrew's usr/include must not shadow the sysroot.
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/opus-include")
+    file(CREATE_LINK "${OPENORBIS}/usr/include/opus" "${CMAKE_BINARY_DIR}/opus-include/opus" SYMBOLIC)
+    set_source_files_properties(runtime/src/hle_opus.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${CMAKE_BINARY_DIR}/opus-include" COMPILE_DEFINITIONS NX_HAS_OPUS)
+    target_link_libraries(${NX_GAME} PRIVATE ${OPENORBIS}/usr/lib/libopus.a)
     # The network library's shares (port/ps4_netfs.cpp, inert unless a /net path is opened) and the system libraries.
     target_link_libraries(${NX_GAME} PRIVATE ${PS4_SYSROOT}/lib/libnfs.a ${PS4_SYSROOT}/lib/libsmb2.a
         ${PS4_SYSROOT}/lib/libz.a SceSysmodule SceSystemService SceUserService SceVideoOut SceAudioOut ScePad SceNet)
