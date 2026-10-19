@@ -179,8 +179,16 @@ void CreateAudioRendererManagerByHipc(CPU& c) {
 // the frame's commands and runs the sdk's own DSP command processor on the calling thread, and its render system
 // (impl + 0x60) signals its own event, which has no kernel object in process. A guest thread of ours renders every
 // 5 ms and signals the game's event itself, then sends the frame's final mix to the host device.
-constexpr uint64_t kRendererVtable = 0xd04910;     // sdk: vtable of the sf object wrapping AudioRendererImpl
-constexpr uint64_t kExecuteRendering = 0x20cac8;   // sdk: AudioRendererImpl::ExecuteAudioRendererRendering
+// Both by name: their addresses move with the SDK (Wonder's SDK 16.2: sdk+0xd04910 and sdk+0x20cac8; Tears of the
+// Kingdom's: the vtable at sdk+0xcd2180).
+// sdk: vtable of the sf object wrapping AudioRendererImpl
+constexpr const char* kRendererVtable =
+    "_ZTVN2nn2sf6detail38ObjectImplFactoryWithStatefulAllocatorINS0_13InterfaceInfoINS_5audio6detail14IAudioRendererEE4_"
+    "tABINS7_5_tO2NINS4_6server24AudioRendererManagerImpl17AudioRendererImplEE4typeES6_E4typeENS0_24StatefulAllocation"
+    "PolicyINS0_16ExpHeapAllocatorEEEE6ObjectE";
+// sdk: AudioRendererImpl::ExecuteAudioRendererRendering
+constexpr const char* kExecuteRendering =
+    "_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv";
 
 // The in-process render system hands the client a readable handle of 0 for the renderer's event (there is no
 // kernel event behind it), so the SystemEvent the game waits on is ours: an InterProcessEventType keeps its
@@ -190,18 +198,12 @@ std::shared_ptr<EventState> g_audio_frame = std::make_shared<EventState>();
 std::mutex g_renderers_lock;
 std::vector<uint64_t> g_renderers;  // AudioRendererImpl*
 
-uint64_t sdk_base() {
-    static uint64_t base = [] {
-        const LoadedModule* m = module_at(find_symbol("nvnBootstrapLoader"));
-        return m ? m->base : 0;
-    }();
-    return base;
-}
-
 // The AudioRendererImpl behind an AudioRendererHandle: an sf object whose vtable pointer is that one, within two
 // pointer hops of the handle.
 uint64_t find_renderer(uint64_t handle) {
-    uint64_t vptr = sdk_base() + kRendererVtable + 0x10;
+    static const uint64_t vtable = find_symbol(kRendererVtable);
+    if (!vtable) return 0;
+    uint64_t vptr = vtable + 0x10;
     auto valid = [](uint64_t p) { return p >= kModuleBase && p < kKernelBase + kKernelSize && (p & 7) == 0; };
     for (uint64_t a = 0; a < 0x40; a += 8) {
         uint64_t p = ld<uint64_t>(handle + a);
@@ -401,6 +403,8 @@ void render_submit() {
 
 void audio_render_thread(CPU& c) {
     log("audio: render thread running");
+    static const uint64_t execute_rendering = find_symbol(kExecuteRendering);
+    if (!execute_rendering) fatal("AudioRendererImpl::ExecuteAudioRendererRendering not found");
     uint64_t next = plat::monotonic_ns();
     for (;;) {
         next += 5'000'000;
@@ -418,7 +422,7 @@ void audio_render_thread(CPU& c) {
             std::memcpy(saved, c.x, sizeof saved);
             c.x[0] = impl;
             std::lock_guard lk(g_render_system);
-            call(c, sdk_base() + kExecuteRendering);
+            call(c, execute_rendering);
             last_rc = c.x[0];
             std::memcpy(c.x, saved, sizeof saved);
             std::lock_guard pk(g_pace_lock);  // counted under the render lock (AudioRenderSystemUpdate)
