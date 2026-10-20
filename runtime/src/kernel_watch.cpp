@@ -14,9 +14,24 @@
 #include "kernel_state.h"
 #include "platform.h"
 
+#if defined(__ORBIS__)
+extern "C" void ps4_dump_thread_stacks(const char* path, const char* reason);  // port/ps4_sampler.cpp
+#endif
+
 namespace nx {
 
 using namespace kstate;
+
+// The host side of a hang: every host thread's stack and the mutex it sleeps on (PS4: port/ps4_sampler.cpp), into
+// <data root>/hang.log. The guest report alone could not tell who held the lock everyone waited for (v00.38: writers
+// and readers of objects_lock and the allocator's lock all waiting, the holder unsampled).
+static void dump_host_threads(const char* reason) {
+#if defined(__ORBIS__)
+    ps4_dump_thread_stacks((plat::data_root() + "/hang.log").c_str(), reason);
+#else
+    (void)reason;
+#endif
+}
 
 static uint32_t load32(uint64_t a) { return __atomic_load_n(reinterpret_cast<uint32_t*>(a), __ATOMIC_SEQ_CST); }
 // Guest call stack from the AArch64 frame records (x29 -> [prev x29, lr]).
@@ -130,6 +145,7 @@ static void watchdog(void*) {
         if (f && !reported && now - since > 5'000'000'000ull) {
             reported = true;
             log("hang: no frame for 5 s after frame %llu; threads (two samples, 1 s apart):", (unsigned long long)f);
+            dump_host_threads("hang: no frame for 5 s");
             report_threads();
             plat::sleep_ns(1'000'000'000);
             log("hang: second sample");

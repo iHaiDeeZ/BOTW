@@ -471,10 +471,10 @@ static void* thread_entry(void* p) {
     t_stack_slot = s.slot;
     register_thread();
     if (profile_requested()) {  // guest threads sampled too, named by start order (port/ps4_sampler.cpp)
-        // The first 40: the sampler has 48 slots, and the replay thread and the game's main thread register later
+        // The first 60: the sampler has 64 slots, and the replay thread and the game's main thread register later
         // (v00.30's 48 guests left them out).
         static std::atomic<int> started{0};
-        if (int n = started++; n < 40) {
+        if (int n = started++; n < 60) {
             char* name = new char[16];
             std::snprintf(name, 16, "guest %d", n);
             ps4_sampler_register_thread(name);
