@@ -537,6 +537,11 @@ NX_HLE("_ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi", ListA
 NX_HLE("_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE", GetActiveAudioOutputDeviceName);
 NX_HLE("_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", zero);
 NX_HLE("_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", two);
+// The same calls under SDK 7's names (Breath of the Wild): they went to the audio device service, which is not
+// served (AcquireAudioDeviceSwitchNotification aborted).
+NX_HLE("_ZN2nn5audio36AcquireAudioDeviceSwitchNotificationEPNS_2os11SystemEventE", AcquireAudioDeviceNotificationForOutput);
+NX_HLE("_ZN2nn5audio19ListAudioDeviceNameEPNS0_15AudioDeviceNameEi", ListAudioOutputDeviceName);
+NX_HLE("_ZN2nn5audio21GetActiveChannelCountEv", two);
 NX_HLE("_ZN2nn5audio27InitializeAudioOutParameterEPNS0_17AudioOutParameterE", InitializeAudioOutParameter);
 NX_HLE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", OpenDefaultAudioOut);
 NX_HLE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", StartAudioOut);
