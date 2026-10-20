@@ -114,6 +114,7 @@ class Stage:
         self.code_size = code_size
         self.ctrl_off = ctrl_off
         self.ctrl_size = ctrl_size
+        self.data = data            # the buffer the offsets are in (a Yaz0 member of a SARC has its own)
         code = bytes(data[code_off:code_off + code_size])
         self.hash = hashlib.sha1(code).hexdigest()[:16]
         ctrl = data[ctrl_off:ctrl_off + ctrl_size]
@@ -135,7 +136,9 @@ def check_stage(st, data):
         return ["out of file"]
     magic = u32(data, st.code_off)
     want = CODE_MAGIC_COMPUTE if st.kind == "compute" else CODE_MAGIC_GRAPHICS
-    if magic != want:
+    # Older BNSH (Breath of the Wild, 2.1.x) has no NVN header in front of the program: it starts at 0 (ctrl+0x708).
+    headerless = st.ctrl_size >= 0x710 and st.start == 0
+    if magic != want and not headerless:
         bad.append(f"code magic {magic:#x}")
     if u32(data, st.ctrl_off) != CONTROL_MAGIC:
         bad.append("control magic")
@@ -151,7 +154,7 @@ def check_stage(st, data):
         elif any(data[c + end:c + st.const_off]) or any(data[c + st.const_off + st.const_size:c + st.code_size]):
             bad.append("padding not zero")
     if st.kind != "compute":
-        sph = u32(data, st.code_off + 0x30)
+        sph = u32(data, st.code_off + (0 if headerless else 0x30))
         if SPH_TYPE.get((sph >> 10) & 0xF) != st.kind:
             bad.append(f"SPH type {(sph >> 10) & 0xF}")
     return bad
@@ -452,8 +455,25 @@ def open_blob(d, base, size, path, reflect=False):
             if sub:
                 c.children.append(sub)
         return c if c.children else None
+    if magic[:4] == b"Yaz0":
+        # A compressed member (Breath of the Wild's Bootup_Graphics.pack: Shader/*.sbfsha): opened in a buffer of its
+        # own, so its stages' offsets are into that buffer (Stage.data).
+        sub = yaz0(bytes(d[base:base + size]))
+        return open_blob(sub, 0, len(sub), path, reflect)
     if magic == b"FSHA    ":
-        return parse_fsha(d, base, path, reflect)
+        try:
+            return parse_fsha(d, base, path, reflect)
+        except (ValueError, struct.error, IndexError) as e:
+            # An older FSHA (Breath of the Wild's uking_*.sbfsha) lays its shading models out differently. Its BNSH
+            # files are self-contained (offsets from their own start): take each one found by its magic.
+            c = Container("FSHA", path, base, u32(d, base + 0x1C))
+            c.info.append(f"version {u32(d, base + 8):#x}: shading models not parsed ({e}); BNSH found by magic")
+            for m in re.finditer(re.escape(b"BNSH\0\0\0\0"), bytes(d[base:base + c.size])):
+                try:
+                    c.children.append(parse_bnsh(d, base + m.start(), f"{path}/BNSH@{m.start():#x}", reflect))
+                except (ValueError, struct.error, IndexError) as e2:
+                    c.info.append(f"BNSH at {m.start():#x} not parsed: {e2}")
+            return c if c.children else None
     if magic == b"BNSH\0\0\0\0":
         return parse_bnsh(d, base, path, reflect)
     if magic == b"VFXB    ":
@@ -601,8 +621,8 @@ def extract(c, outdir, data, unique=False):
         m.write("id\tstage\tcode_off\tcode_size\tctrl_off\tctrl_size\tprogram_start\tprogram_bytes\tconst_off\t"
                 "const_size\tcode_sha1_16\tcode_file\tctrl_file\n")
         for s in all_stages(c):
-            code = data[s.code_off:s.code_off + s.code_size]
-            ctrl = data[s.ctrl_off:s.ctrl_off + s.ctrl_size]
+            code = s.data[s.code_off:s.code_off + s.code_size]
+            ctrl = s.data[s.ctrl_off:s.ctrl_off + s.ctrl_size]
             if unique:
                 code_file = f"code_{s.hash}.bin"
                 ctrl_file = f"ctrl_{hashlib.sha1(bytes(ctrl)).hexdigest()[:16]}.bin"
@@ -651,7 +671,7 @@ def inventory(paths):
             kinds[s.kind] += 1
             total["layout check failures"] += bool(s.problems)
             blocks[s.hash] = s.code_size
-            ctrls[hashlib.sha1(bytes(data[s.ctrl_off:s.ctrl_off + s.ctrl_size])).hexdigest()] = s.ctrl_size
+            ctrls[hashlib.sha1(bytes(s.data[s.ctrl_off:s.ctrl_off + s.ctrl_size])).hexdigest()] = s.ctrl_size
         for k, n in conts.items():
             total["container " + k] += n
         total["files with shaders"] += 1
