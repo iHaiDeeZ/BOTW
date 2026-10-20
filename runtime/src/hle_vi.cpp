@@ -49,12 +49,14 @@ std::shared_ptr<EventState> g_vsync = std::make_shared<EventState>();
 // the game takes the first. At 30 fps the game waits for two vsyncs a frame, and a frame a little over 33 ms (the PS4
 // outside the cave) found the first one latched and the second lost, then waited up to 16.7 ms for the next: frames
 // snapped from 34 ms to 50 (20.0 fps where 29 was possible). The game times its frames itself (it picks its present
-// interval from them), so a late frame is not made later. NX_VSYNC_CATCHUP=0: missed vsyncs are lost, as on the Switch.
+// interval from them), so a late frame is not made later. Off by default (NX_VSYNC_CATCHUP=1: on): v00.37 crashed in
+// the game's font engine (FSS_get_advance on a null state) during the opening's subtitles, likely a race the extra
+// vsyncs open between game threads that wait on the same event; missed vsyncs are lost, as on the Switch.
 void vsync_thread() {
     plat::set_thread_name("vsync");
     static const bool catchup = [] {
         const char* e = std::getenv("NX_VSYNC_CATCHUP");
-        return !(e && e[0] == '0');
+        return e && e[0] == '1';
     }();
     uint64_t next = plat::monotonic_ns();
     int owed = 0;
