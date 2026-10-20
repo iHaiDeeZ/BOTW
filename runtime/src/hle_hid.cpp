@@ -295,5 +295,17 @@ NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vib
 NX_HLE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
 NX_HLE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", noop);
 NX_HLE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", zero);
+NX_HLE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", noop);
+NX_HLE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", noop);
+NX_HLE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", zero);  // Result only: success
+// The console's own motion sensor (Breath of the Wild, SDK 7): the SDK's version maps hid shared memory through the
+// hid service, which this runtime does not serve (null pointer in SharedMemoryAccessor::Activate). No sensor: no
+// states.
+NX_HLE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", zero);
+NX_HLE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", zero);
+NX_HLE("_ZN2nn3hid23StartSevenSixAxisSensorEv", zero);
+NX_HLE("_ZN2nn3hid22StopSevenSixAxisSensorEv", zero);
+NX_HLE("_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv", zero);
+NX_HLE("_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi", zero);
 
 }  // namespace nx
