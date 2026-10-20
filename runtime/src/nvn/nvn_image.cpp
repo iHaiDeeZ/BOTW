@@ -244,7 +244,7 @@ GpuImage* image_of(uint64_t guest) {
 // format of the same texel size (R32F or RG16F read as RGBA8, layer 0 of an R11G11B10F array read as a 2D texture):
 // on the Switch that is one memory; here they are two images, and the reader saw a cleared one (the lighting
 // composite read zero shadow, AO and depth-derived inputs: a black world). The reader gets a copy of the newest
-// contents (vkCmdCopyImage copies bits between formats of one texel size). NX_ALIAS_SYNC=0: off (bisecting).
+// contents (through a buffer: the bits, as the Switch's one memory holds them). NX_ALIAS_SYNC=0: off (bisecting).
 namespace {
 uint64_t g_content_serial = 0;
 std::unordered_map<uint64_t, uint64_t> g_memory_newest;  // guest memory -> newest content_at of an image over it
@@ -283,6 +283,11 @@ bool alias_pending(const GpuImage& img) {
 
 bool sync_alias(VkCommandBuffer cb, GpuImage& img) {
     if (!alias_pending(img)) return false;
+    if (pass_open()) {  // no transfer inside a render pass: the caller ends it first (sampled_ready said not ready)
+        static uint64_t inside = 0;
+        if (inside++ < 20) log("nvn/vk: alias sync at %llx skipped: a render pass is open", (unsigned long long)img.guest_memory);
+        return false;
+    }
     img.alias_checked = g_memory_newest[img.guest_memory];
     std::shared_ptr<GpuImage> best;
     for (auto it = g_live_images.lower_bound(StorageKey{img.guest_memory});
@@ -295,6 +300,22 @@ bool sync_alias(VkCommandBuffer cb, GpuImage& img) {
     }
     if (!best) return false;
     GpuImage& src = *best;
+    // Through a buffer (image -> buffer -> image, the paths uploads and readbacks take): v00.19 copied image to image
+    // across formats (vkCmdCopyImage) and the console killed the game two frames into gameplay.
+    const uint32_t bytes = texel_bytes(img);
+    uint32_t levels = std::min(src.levels, img.levels), layers = std::min(src.layers, img.layers);
+    std::vector<VkBufferImageCopy> regions(levels);
+    uint64_t size = 0;
+    for (uint32_t l = 0; l < levels; l++) {
+        VkBufferImageCopy& r = regions[l];
+        r.bufferOffset = size;
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, layers};
+        r.imageExtent = {std::max(1u, img.width >> l), std::max(1u, img.height >> l), 1};
+        size += (uint64_t(r.imageExtent.width) * r.imageExtent.height * layers * bytes + 255) & ~uint64_t(255);
+    }
+    Upload u = size < (1u << 20) ? upload_alloc(size, 256) : staging_alloc(size);
+    if (!u.buffer) return false;
+    for (auto& r : regions) r.bufferOffset += u.offset;
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -302,15 +323,12 @@ bool sync_alias(VkCommandBuffer cb, GpuImage& img) {
                            0, nullptr);
     transition(cb, src, VK_IMAGE_LAYOUT_GENERAL);
     transition(cb, img, VK_IMAGE_LAYOUT_GENERAL);
-    uint32_t levels = std::min(src.levels, img.levels), layers = std::min(src.layers, img.layers);
-    std::vector<VkImageCopy> regions(levels);
-    for (uint32_t l = 0; l < levels; l++) {
-        VkImageCopy& r = regions[l];
-        r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, layers};
-        r.dstSubresource = r.srcSubresource;
-        r.extent = {std::max(1u, img.width >> l), std::max(1u, img.height >> l), 1};
-    }
-    p_vkCmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_GENERAL, img.image, VK_IMAGE_LAYOUT_GENERAL, levels, regions.data());
+    p_vkCmdCopyImageToBuffer(cb, src.image, VK_IMAGE_LAYOUT_GENERAL, u.buffer, levels, regions.data());
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, nullptr, 0,
+                           nullptr);
+    p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_GENERAL, levels, regions.data());
     mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, nullptr,
