@@ -1,0 +1,3 @@
+memory: direct memory 4608 MiB (4592 MiB free), flexible 404 MiB free
+memory: commit 4000000000+0 is outside the lazy space
+FATAL: cannot commit module main
