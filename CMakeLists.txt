@@ -122,6 +122,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/hle_audio.cpp
     runtime/src/hle_pl.cpp
     runtime/src/hle_nfp.cpp
+    runtime/src/hle_oe.cpp
     runtime/src/hle_opus.cpp
     runtime/src/input_script.cpp
     runtime/src/touch_layout.cpp

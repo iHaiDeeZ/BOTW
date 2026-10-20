@@ -649,6 +649,7 @@ NX_HLE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", FlushFile);
 NX_HLE("_ZN2nn2fs25EnableGlobalFileDataCacheEPvm", EnableGlobalFileDataCache);
 NX_HLE("_ZN2nn2fs26DisableGlobalFileDataCacheEv", DisableGlobalFileDataCache);
 NX_HLE("_ZN2nn2fs6CommitEPKc", Commit);
+NX_HLE("_ZN2nn2fs14CommitSaveDataEPKc", Commit);  // SDK 7 name (Breath of the Wild)
 NX_HLE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", OpenDirectory);
 NX_HLE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", ReadDirectory);
 NX_HLE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", CloseDirectory);
