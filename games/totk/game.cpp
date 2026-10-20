@@ -6,6 +6,14 @@
 #include <nx/game.h>
 #include <nx/runtime.h>
 
+#ifdef _WIN32
+// The Windows C library has no setenv: the same rule (a value already set stays unless overwrite) through _putenv_s.
+static int setenv(const char* name, const char* value, int overwrite) {
+    if (!overwrite && std::getenv(name)) return 0;
+    return _putenv_s(name, value);
+}
+#endif
+
 namespace nx {
 
 const game::Info game::kInfo = {"totk", "The Legend of Zelda: Tears of the Kingdom", 0x0100F2C0115B6000ull,

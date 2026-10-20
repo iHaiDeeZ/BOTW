@@ -95,6 +95,9 @@ foreach(mod ${NX_GAME_MODULES})
         # Linux x86-64: AVX2/FMA/BMI as the Windows build (/arch:AVX2); no FMA contraction, so a guest fmul + fadd
         # rounds twice, as on the Switch.
         target_compile_options(game_${mod} PRIVATE -O2 -fvisibility=hidden -march=x86-64-v3 -ffp-contract=off)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Windows (clang-cl, /arch:AVX2): no FMA contraction either, as on the PS4 and Linux.
+        target_compile_options(game_${mod} PRIVATE /clang:-ffp-contract=off)
     endif()
 endforeach()
 
@@ -283,5 +286,13 @@ else()
         # Keep host allocations low so the guest ranges (0x40_0000_0000..0x70_0000_0000) are always free; a big
         # main-thread stack (recompiled calls nest deeply); a link map for tools/symbolize.py.
         target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
+    endif()
+    # nn::codec hardware Opus (runtime/src/hle_opus.cpp), needed by TOTK: a static libopus built with the same compiler
+    # (include/opus/opus.h, lib/opus.lib under NX_OPUS_DIR).
+    set(NX_OPUS_DIR "" CACHE PATH "libopus install prefix (Windows)")
+    if(NX_OPUS_DIR)
+        set_source_files_properties(runtime/src/hle_opus.cpp PROPERTIES
+            INCLUDE_DIRECTORIES "${NX_OPUS_DIR}/include" COMPILE_DEFINITIONS NX_HAS_OPUS)
+        target_link_libraries(${NX_GAME} PRIVATE "${NX_OPUS_DIR}/lib/opus.lib")
     endif()
 endif()
