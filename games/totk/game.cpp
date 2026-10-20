@@ -17,6 +17,9 @@ void game::after_init() {
     // nvnMemoryPoolInvalidateMappedRange without waiting for the submits so far (nvn_objects.cpp): TOTK calls it ~10
     // times a frame, and the wait kept its main thread behind the whole replay (30-57 ms a frame).
     setenv("NX_INVALIDATE_WAIT", "0", 0);
+    // Storage that fragment shaders write (v00.17) went back to guest memory with a wait for every submit: 20 -> 9 fps,
+    // and the world stayed black without it too. Off until it can apply without waiting.
+    setenv("NX_GRAPHICS_WRITE_BACK", "0", 0);
 }
 void game::renderer_start() {}
 void game::first_frame() {}
