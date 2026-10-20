@@ -85,6 +85,7 @@ void ps4_boot_trace(const char* line);       // port/ps4_crashlog.cpp
 void ps4_watch_thread(const char* name);     // port/ps4_sampler.cpp
 void ps4_sampler_start();                    // port/ps4_sampler.cpp
 void ps4_sampler_register_thread(const char* name);  // port/ps4_sampler.cpp
+bool profile_requested();                    // /data/<app>/profile.txt (below)
 void ps4_boost_thread();                     // port/ps4_runtime.cpp: priority 650 (default 700)
 extern int ac_ps4_flush_all_draws;           // RADV (Crema's Mesa): after every draw write back and invalidate every
                                              // GPU cache (a diagnostic: NX_PS4_GPU_FLUSH=1)
@@ -468,6 +469,12 @@ static void* thread_entry(void* p) {
     delete static_cast<ThreadStart*>(p);
     t_stack_slot = s.slot;
     register_thread();
+    if (profile_requested()) {  // every guest thread sampled too, named by start order (port/ps4_sampler.cpp)
+        static std::atomic<int> started{0};
+        char* name = new char[16];
+        std::snprintf(name, 16, "guest %d", started++);
+        ps4_sampler_register_thread(name);
+    }
     s.fn(s.arg);
     forget_thread();
     if (s.slot >= 0) g_stack_slots[s.slot].state = 2;
