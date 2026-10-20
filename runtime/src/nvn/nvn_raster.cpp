@@ -71,12 +71,20 @@ float equal_slack_units() {
 // is visible. With the two vertex shaders a few ulps apart it passed over the whole player (a flat purple figure, no
 // Luigi). The same bias toward the camera makes those ties fail. Off unless NX_GREATER_SLACK=1: it did not bring the
 // player back (the map composites it from its own target, issue #50), so it stays an experiment.
+bool equal_exact() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_EQUAL_EXACT");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+
 bool equal_slack_pass(const DepthStencilInfo& d) {
     static const bool greater = [] {
         const char* e = std::getenv("NX_GREATER_SLACK");
         return e && e[0] == '1';
     }();
-    if (d.depth_write || equal_slack_units() == 0.0f) return false;
+    if (d.depth_write || equal_slack_units() == 0.0f || equal_exact()) return false;
     return d.depth_func == 3 || (d.depth_func == 5 && greater);
 }
 

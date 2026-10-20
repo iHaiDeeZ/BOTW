@@ -368,7 +368,10 @@ VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, 
     // EQUAL after a depth pre-pass (the colour pass does not write depth) needs both passes to compute bit-identical
     // depth; two translated shaders compiled separately by Metal do not, and Wonder's whole course colour pass was
     // discarded (only the sky showed). LESS_OR_EQUAL keeps what EQUAL keeps for opaque geometry after a pre-pass.
-    if (key.depth.depth_func == 3 && !key.depth.depth_write) ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    // NX_EQUAL_EXACT=1 (Tears of the Kingdom's default, games/totk/game.cpp): EQUAL stays EQUAL. Its deferred lighting
+    // writes a material ID as depth (FragDepth) and draws each material's light quad with EQUAL: loosened, the quads
+    // missed or crossed materials (a black world).
+    if (key.depth.depth_func == 3 && !key.depth.depth_write && !equal_exact()) ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     ds.stencilTestEnable = has_depth && key.depth.stencil_test;
     VkStencilOpState* faces[2] = {&ds.front, &ds.back};
     for (int f = 0; f < 2; f++) {

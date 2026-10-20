@@ -208,6 +208,13 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     if (color) {
         a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = c.n;
         std::memcpy(a.clearValue.color.float32, c.f, 16);
+        if (diag_active()) {
+            char b[200];
+            std::snprintf(b, sizeof b, "  clear colour %u %llx (%ux%u vk%d) to %g %g %g %g (bits %08x) mask %x", c.n,
+                          (unsigned long long)guest, img->width, img->height, int(img->format), double(c.f[0]),
+                          double(c.f[1]), double(c.f[2]), double(c.f[3]), a.clearValue.color.uint32[0], c.mask);
+            diag_line(b);
+        }
     } else {
         if ((c.mask & 1) && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) a.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
         if ((c.mask >> 8 & 0xFF) && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) a.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
