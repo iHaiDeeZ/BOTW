@@ -1059,6 +1059,10 @@ extern "C" void ps4_crash_guest_info() {
     n = std::snprintf(line, sizeof line, "guest lr: %s\n", lr.c_str());
     write(fd, line, size_t(n));
     close(fd);
+    // The guest call stack from the frame records (x29 chain), into nx.log: the lr alone does not say which caller
+    // led there (Breath of the Wild's first crash was three virtual calls deep).
+    nx::log("guest call stack at the crash:");
+    nx::backtrace(c);
 }
 
 int main() {
