@@ -213,6 +213,13 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
         if ((c.mask >> 8 & 0xFF) && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)) a.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
         if (!a.aspectMask) return;
         a.clearValue.depthStencil = {c.f[0], uint32_t(c.i[0])};
+        if (diag_active()) {
+            char b[160];
+            std::snprintf(b, sizeof b, "  clear depth %llx (%ux%u vk%d) to %g stencil %d mask %x layer %u",
+                          (unsigned long long)guest, img->width, img->height, int(img->format), double(c.f[0]), c.i[0],
+                          c.mask, t.views.layer[8]);
+            diag_line(b);
+        }
     }
     uint32_t level = color ? t.views.level[c.n] : t.views.level[8];
     VkExtent2D full{std::max(1u, img->width >> level), std::max(1u, img->height >> level)};
