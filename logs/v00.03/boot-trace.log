@@ -1,0 +1,16 @@
+static init (text at 0x400000)
+[   0.000] [botw] heap: flexible memory available 231 MiB (0x0)
+[   0.005] [botw] heap: kernel pthread objects live around 0x8800007e0
+[   0.114] [botw] heap: dlmalloc on 256 MiB of system flexible memory at 0x1000004000
+[   0.176] BOTW 00.03 starting (The Legend of Zelda: Breath of the Wild)
+[   0.176] config: 0 settings from /data/BOTW/config.txt
+[   0.320] threads: first creator's cores 0x7f, new threads get 0x3f; stack 2048 KiB by default, at least 4096 KiB
+[   0.322] boot screen: drawing
+[   0.322] cores: 7, the 7th granted (main thread had 0x7f), balanced: guest threads on 0x7d (pinned: guest cores 0/1/2 on 0/2/3), replay+present on 1, the rest on 0x70
+[   0.323] pad: player 1 is user 15d45a57 (handle 56755456)
+[   0.323] pad: player 2 is user 15d45a55 (handle 56820993)
+[   0.324] memory: direct memory 4608 MiB (4592 MiB free), flexible 224 MiB free
+[   0.345] game thread
+[   0.345] pad: player 1 connected
+crashed (see crash.log)
+PSP CPU state written to crash.log

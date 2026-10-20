@@ -1025,7 +1025,7 @@ index 64b5beb..a94a357 100644
      std::string s;
      char buf[65536];
 diff --git a/runtime/src/hle_hid.cpp b/runtime/src/hle_hid.cpp
-index 72a883b..6d6fa54 100644
+index 72a883b..aa9e8a4 100644
 --- a/runtime/src/hle_hid.cpp
 +++ b/runtime/src/hle_hid.cpp
 @@ -1,5 +1,6 @@
@@ -1195,6 +1195,24 @@ index 72a883b..6d6fa54 100644
      st<uint32_t>(c.x[0] + 4, 0);  // selected npad id: No1
      c.x[0] = 0;
  }
+@@ -238,5 +295,17 @@ NX_HLE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14Vib
+ NX_HLE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", noop);
+ NX_HLE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", noop);
+ NX_HLE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", zero);
++NX_HLE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", noop);
++NX_HLE("_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj", noop);
++NX_HLE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", zero);  // Result only: success
++// The console's own motion sensor (Breath of the Wild, SDK 7): the SDK's version maps hid shared memory through the
++// hid service, which this runtime does not serve (null pointer in SharedMemoryAccessor::Activate). No sensor: no
++// states.
++NX_HLE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", zero);
++NX_HLE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", zero);
++NX_HLE("_ZN2nn3hid23StartSevenSixAxisSensorEv", zero);
++NX_HLE("_ZN2nn3hid22StopSevenSixAxisSensorEv", zero);
++NX_HLE("_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv", zero);
++NX_HLE("_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi", zero);
+ 
+ }  // namespace nx
 diff --git a/runtime/src/hle_nfp.cpp b/runtime/src/hle_nfp.cpp
 new file mode 100644
 index 0000000..d70dc59
