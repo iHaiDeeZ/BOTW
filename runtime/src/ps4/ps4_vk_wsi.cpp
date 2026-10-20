@@ -395,12 +395,16 @@ void wait_off_screen(uint32_t images) {
 // The label is drawn by the CPU into a host-visible buffer (one per swapchain image) and copied into the image's top
 // right corner by a small submit behind the frame's commands, before the flip: no CPU wait for the GPU.
 constexpr uint32_t kLabelW = 340, kLabelH = 56, kLabelX = 1920 - kLabelW - 24, kLabelY = 24;
+// Its submits go round a ring of their own, deeper than the swapchain: one per swapchain image made each present wait
+// for the GPU to finish the label's copy from the image's last use (7% of the replay thread in the cave, v00.33).
+constexpr uint32_t kCounterRing = 8;
 struct Counter {
     bool tried = false, ok = false;
     VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer cb[kMaxImages]{};
-    VkFence fence[kMaxImages]{};
-    bool in_flight[kMaxImages]{};
+    VkCommandBuffer cb[kCounterRing]{};
+    VkFence fence[kCounterRing]{};
+    bool in_flight[kCounterRing]{};
+    uint64_t submits = 0;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     uint8_t* ptr = nullptr;
@@ -417,13 +421,13 @@ bool counter_init(VkDevice d) {
     pi.queueFamilyIndex = 0;
     if (device_fn<PFN_vkCreateCommandPool>(d, "vkCreateCommandPool")(d, &pi, nullptr, &c.pool) != VK_SUCCESS) return false;
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool = c.pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = kMaxImages;
+    ai.commandPool = c.pool, ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, ai.commandBufferCount = kCounterRing;
     if (device_fn<PFN_vkAllocateCommandBuffers>(d, "vkAllocateCommandBuffers")(d, &ai, c.cb) != VK_SUCCESS) return false;
     VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     for (VkFence& f : c.fence)
         if (device_fn<PFN_vkCreateFence>(d, "vkCreateFence")(d, &fi, nullptr, &f) != VK_SUCCESS) return false;
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bi.size = VkDeviceSize(kLabelW) * kLabelH * 4 * kMaxImages;
+    bi.size = VkDeviceSize(kLabelW) * kLabelH * 4 * kCounterRing;
     bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     if (device_fn<PFN_vkCreateBuffer>(d, "vkCreateBuffer")(d, &bi, nullptr, &c.buffer) != VK_SUCCESS) return false;
     VkMemoryRequirements req;
@@ -454,12 +458,13 @@ void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
     double ms = span ? std::chrono::duration<double, std::milli>(now - c.times[(c.presents - 1 - span) % 64]).count() /
                            double(span)
                      : 0.0;
-    if (c.in_flight[slot]) {
-        device_fn<PFN_vkWaitForFences>(d, "vkWaitForFences")(d, 1, &c.fence[slot], VK_TRUE, 100'000'000ull);
-        device_fn<PFN_vkResetFences>(d, "vkResetFences")(d, 1, &c.fence[slot]);
-        c.in_flight[slot] = false;
+    const uint32_t ring = uint32_t(c.submits++ % kCounterRing);
+    if (c.in_flight[ring]) {
+        device_fn<PFN_vkWaitForFences>(d, "vkWaitForFences")(d, 1, &c.fence[ring], VK_TRUE, 100'000'000ull);
+        device_fn<PFN_vkResetFences>(d, "vkResetFences")(d, 1, &c.fence[ring]);
+        c.in_flight[ring] = false;
     }
-    const VkDeviceSize offset = VkDeviceSize(kLabelW) * kLabelH * 4 * slot;
+    const VkDeviceSize offset = VkDeviceSize(kLabelW) * kLabelH * 4 * ring;
     // The values shown change twice a second, and a slot's label is drawn only when its text differs from what that
     // slot's buffer holds: drawing the glyphs on the CPU at every present was 2.2% of the replay thread (TOTK v00.28).
     static auto shown_at = now;
@@ -470,14 +475,14 @@ void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
     std::snprintf(key, sizeof key, "%d %d %.1f", settings_frame_counter(), shown_fps, shown_ms);
     // Drawn once per text and copied to each slot that shows another (the glyphs were drawn per slot: 0.9% of the
     // replay thread in the cave, v00.31).
-    static std::string drawn[kMaxImages], label_text;
+    static std::string drawn[kCounterRing], label_text;
     static std::vector<uint8_t> label(size_t(kLabelW) * kLabelH * 4);
-    if (drawn[slot] != key) {
+    if (drawn[ring] != key) {
         if (label_text != key) counter_label(label.data(), kLabelW, kLabelH, double(shown_fps), shown_ms), label_text = key;
         std::memcpy(c.ptr + offset, label.data(), label.size());
-        drawn[slot] = key;
+        drawn[ring] = key;
     }
-    VkCommandBuffer cb = c.cb[slot];
+    VkCommandBuffer cb = c.cb[ring];
     device_fn<PFN_vkResetCommandBuffer>(d, "vkResetCommandBuffer")(cb, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -503,8 +508,8 @@ void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
     device_fn<PFN_vkEndCommandBuffer>(d, "vkEndCommandBuffer")(cb);
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1, si.pCommandBuffers = &cb;
-    if (device_fn<PFN_vkQueueSubmit>(d, "vkQueueSubmit")(queue, 1, &si, c.fence[slot]) == VK_SUCCESS)
-        c.in_flight[slot] = true;
+    if (device_fn<PFN_vkQueueSubmit>(d, "vkQueueSubmit")(queue, 1, &si, c.fence[ring]) == VK_SUCCESS)
+        c.in_flight[ring] = true;
 }
 
 // Until VideoOut shows flip `arg` (the GPU has written the frame out by then), at most ~100 ms.
