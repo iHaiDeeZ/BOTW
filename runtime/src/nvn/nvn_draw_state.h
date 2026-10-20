@@ -81,6 +81,14 @@ namespace nx::nvn::replay {
 
 // nvn_dedup.cpp: one copy per submit of the same guest bytes (padded to `padded` with zeros).
 Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align);
+// What the next uploads are for (dedup_log counts the bytes copied per kind): 0 other, 1 vertex, 2 index, 3 uniform,
+// 4 storage.
+extern int g_upload_kind;
+// The next upload may be served by a longer copy of the same address (its first bytes): set around a uniform bind
+// shortened to what the shader reads (nvn_sets.cpp), whose tail nothing reads.
+extern bool g_upload_prefix_ok;
+uint64_t dedup_copied_bytes();
+extern uint64_t g_vertex_by_pool[8], g_uniform_by_pool[8];
 void dedup_reset();                                     // at each submit
 void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay
 void dedup_log();
@@ -92,6 +100,10 @@ bool written_graphics_bind(const uint8_t* p, uint64_t size, uint64_t padded, Upl
 // Bytes read by later work: the written copy when [p, p + size) meets one (may end the render pass), else false.
 bool written_read(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out);
 Upload read_upload(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align);  // or dedup
+// nvn_vcache.cpp: vertex data of CPU_CACHED pools kept from frame to frame.
+bool vcache_bind(const uint8_t* p, uint64_t size, uint64_t padded, Upload& out);
+void vcache_begin_submit();
+void vcache_log();
 bool written_overlaps(const uint8_t* p, uint64_t size);
 // A draw's storage binding over a written region (it may write the copy): counted as written_bind calls are, so a
 // pipelined split (nvn_frames.cpp) does not copy the region back before that draw ran.

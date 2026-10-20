@@ -188,6 +188,9 @@ uint64_t gpu_alloc(uint64_t size);
 MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset);
 void pool_register(MemoryPool* pool);
 void pool_unregister(MemoryPool* pool);
+// nvn_vcache.cpp: guest memory that may have changed (any thread): vertex data kept from earlier frames is dropped
+// (size 0: all of it).
+void vcache_dirty(const void* p, uint64_t size);
 
 // ---- textures and windows ---------------------------------------------------------------------------------------
 

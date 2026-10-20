@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <cstdio>
+#include <string>
 
 #include "nvn_draw_state.h"
 
@@ -23,6 +25,7 @@ struct Entry {
 // By host address; several sizes of one address are rare, so the latest one is kept.
 std::map<const uint8_t*, Entry> g_copies;
 uint64_t g_saved = 0, g_copied = 0;
+uint64_t g_kind_copied[5] = {}, g_kind_saved[5] = {}, g_kind_calls[5] = {};
 
 // In front of the map (a tree walk per bound buffer of every draw, and most are hits): a slot per address hash with a
 // copy of that address's entry in g_copies. A slot of the current generation always equals the map's entry: both are
@@ -53,8 +56,11 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
         f = {p, g_generation, it->second};
         e = &f.entry;
     }
-    if (e && e->size == size && e->padded == padded && e->upload.offset % align == 0) {
-        g_saved += padded;
+    const int kind = g_upload_kind >= 0 && g_upload_kind < 5 ? g_upload_kind : 0;
+    g_kind_calls[kind]++;
+    if (e && (e->size == size || (g_upload_prefix_ok && e->size > size)) &&
+        (e->padded == padded || (g_upload_prefix_ok && e->padded > padded)) && e->upload.offset % align == 0) {
+        g_saved += padded, g_kind_saved[kind] += padded;
         return e->upload;
     }
     Upload u = upload_alloc(padded, align);
@@ -62,7 +68,7 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
     if (padded > size) std::memset(u.ptr + size, 0, padded - size);
     g_copies[p] = {size, padded, u};
     f = {p, g_generation, {size, padded, u}};
-    g_copied += padded;
+    g_copied += padded, g_kind_copied[kind] += padded;
     return u;
 }
 
@@ -105,9 +111,32 @@ std::array<uint8_t, 0x1000> driver_constants(ShaderStage stage, int st) {
     return c0;
 }
 
+int g_upload_kind = 0;
+bool g_upload_prefix_ok = false;
+uint64_t dedup_copied_bytes() { return g_copied; }
+uint64_t g_vertex_by_pool[8] = {}, g_uniform_by_pool[8] = {};  // vertex bytes copied, by pool flags & 7 (draw_inputs)
+
 void dedup_log() {
     if (g_copied + g_saved)
         log("nvn: uploads copied %.1f MB, reused %.1f MB", double(g_copied) / 1e6, double(g_saved) / 1e6);
+    static const char* names[5] = {"other", "vertex", "index", "uniform", "storage"};
+    std::string line;
+    for (int k = 0; k < 5; k++) {
+        char b[96];
+        std::snprintf(b, sizeof b, " %s %.1f/%.1f MB %llu calls,", names[k], double(g_kind_copied[k]) / 1e6,
+                      double(g_kind_saved[k]) / 1e6, (unsigned long long)g_kind_calls[k]);
+        line += b;
+        g_kind_copied[k] = g_kind_saved[k] = g_kind_calls[k] = 0;
+    }
+    log("nvn: uploads by kind (copied/reused):%s", line.c_str());
+    log("nvn: vertex copied by pool CPU access: none %.1f MB, uncached %.1f MB, cached %.1f MB, other %.1f MB",
+        double(g_vertex_by_pool[1]) / 1e6, double(g_vertex_by_pool[2]) / 1e6, double(g_vertex_by_pool[4]) / 1e6,
+        double(g_vertex_by_pool[0] + g_vertex_by_pool[3] + g_vertex_by_pool[5] + g_vertex_by_pool[6] + g_vertex_by_pool[7]) / 1e6);
+    for (uint64_t& v : g_vertex_by_pool) v = 0;
+    log("nvn: uniform copied by pool CPU access: none %.1f MB, uncached %.1f MB, cached %.1f MB, other %.1f MB",
+        double(g_uniform_by_pool[1]) / 1e6, double(g_uniform_by_pool[2]) / 1e6, double(g_uniform_by_pool[4]) / 1e6,
+        double(g_uniform_by_pool[0] + g_uniform_by_pool[3] + g_uniform_by_pool[5] + g_uniform_by_pool[6] + g_uniform_by_pool[7]) / 1e6);
+    for (uint64_t& v : g_uniform_by_pool) v = 0;
     g_copied = g_saved = 0;
 }
 

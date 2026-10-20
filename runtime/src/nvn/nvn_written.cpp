@@ -236,7 +236,16 @@ bool draw_inputs(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const C
         const Range& r = g_state.vertex_buffers[s];
         const uint8_t* p = r.address ? guest_bytes(r.address) : nullptr;
         uint64_t size = p ? std::min<uint64_t>(r.size, 64ull << 20) : 0;
-        in.vertex[s] = read_upload(cb, p, size, std::max<uint64_t>((size + 15) & ~15ull, 16), 16);
+        const uint64_t padded = std::max<uint64_t>((size + 15) & ~15ull, 16);
+        uint64_t off = 0;
+        MemoryPool* pool = p ? pool_at_gpu(r.address, &off) : nullptr;
+        // Kept from earlier frames (nvn_vcache.cpp): CPU_NO_ACCESS (1) and CPU_CACHED (4) pools, whose changes are seen.
+        if (pool && (pool->flags & 5) && !written_overlaps(p, size) && vcache_bind(p, size, padded, in.vertex[s])) continue;
+        g_upload_kind = 1;
+        const uint64_t before = dedup_copied_bytes();
+        in.vertex[s] = read_upload(cb, p, size, padded, 16);
+        g_upload_kind = 0;
+        if (uint64_t copied = dedup_copied_bytes() - before) g_vertex_by_pool[pool ? pool->flags & 7 : 0] += copied;
     }
     if (!indexed) return true;
     uint32_t count = uint32_t(c.i[0]);
@@ -309,6 +318,7 @@ void check_vertex_ranges(const ShaderInfo* vs, const ShaderInfo* fs, bool indexe
 }
 
 void written_cpu_write(const uint8_t* p, uint64_t size) {
+    vcache_dirty(p, size);
     // UpdateUniformBuffer / ReportCounter into a range a dispatch of this submit writes: the copy misses the bytes
     // (they reach guest memory at replay time) and the write-back replaces them. Not handled: logged.
     static int logs = 0;
@@ -343,6 +353,7 @@ namespace nx::nvn {
 // exploded into beams and a band of stretched triangles at the horizon, for the rest of the run (DEBUG.md #56). Only
 // the words the GPU changed go back. NX_WRITE_BACK_WHOLE=1: the old whole-range copy.
 void apply_write_back(const WriteBack& w) {
+    vcache_dirty(w.to, w.size);
     static const bool whole = std::getenv("NX_WRITE_BACK_WHOLE") != nullptr;
     if (whole || !w.before || w.before->size() < w.size) {
         std::memcpy(w.to, w.from, w.size);

@@ -475,7 +475,20 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     // Banks the shader indexes with a computed value (clamped to 64 KB, nvn_spirv_patch.cpp): all
                     // 64 KB, so every read past the data returns 0 as on Maxwell.
                     bool indexed = b.set == 0 && b.binding < 64 && (dynamic_uniform_bindings(s) >> b.binding & 1);
-                    info = buffer_of(cb, p, p ? std::min<uint64_t>(r.size, 0x10000) : 0, padding(indexed ? 0x10000 : 0x1000));
+                    g_upload_kind = 3;
+                    const uint64_t copied_before = dedup_copied_bytes();
+                    uint64_t size = p ? std::min<uint64_t>(r.size, 0x10000) : 0;
+                    // Only what the shader can read (uniform_read_extents): an earlier, longer copy of the same
+                    // bytes serves too (g_upload_prefix_ok).
+                    const uint32_t reads = b.set == 0 && b.binding < 64 && !indexed ? s->uniform_bytes[b.binding] : 0;
+                    if (reads && reads < size) size = reads, g_upload_prefix_ok = true;
+                    info = buffer_of(cb, p, size, padding(indexed ? 0x10000 : 0x1000));
+                    g_upload_kind = 0, g_upload_prefix_ok = false;
+                    if (uint64_t copied = dedup_copied_bytes() - copied_before) {
+                        uint64_t off = 0;
+                        MemoryPool* pool = r.address ? pool_at_gpu(r.address, &off) : nullptr;
+                        g_uniform_by_pool[pool ? pool->flags & 7 : 0] += copied;
+                    }
                     break;
                 }
                 case NvnSource::StorageBuffer: {
@@ -517,7 +530,9 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     if (!written && s->stage != ShaderStage::Compute && written_overlaps(p, size)) written_count_bind();
                     // At least 64 KB: Metal does not bound-check, and a shader writing past a small or missing
                     // buffer overwrote the next data in the upload buffer (garbage everywhere after a compute).
+                    g_upload_kind = 4;
                     info = buffer_of(cb, p, size, written ? 0x10000 : padding(0x10000), written);
+                    g_upload_kind = 0;
                     break;
                 }
                 case NvnSource::DriverConstants: {
@@ -702,7 +717,12 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, 
     if (!p) return false;
     in.index_type = vk_index_type(c.mask);
     uint64_t bytes = uint64_t(uint32_t(c.i[0])) * index_size(c.mask);
+    uint64_t off = 0;  // kept from earlier frames as vertex data is (nvn_vcache.cpp)
+    MemoryPool* pool = pool_at_gpu(c.a[0], &off);
+    if (pool && (pool->flags & 5) && !written_overlaps(p, bytes) && vcache_bind(p, bytes, bytes, in.index)) return true;
+    g_upload_kind = 2;
     if (!written_read(cb, p, bytes, bytes, index_size(c.mask), in.index)) in.index = dedup_upload(p, bytes, bytes, 16);
+    g_upload_kind = 0;
     return true;
 }
 

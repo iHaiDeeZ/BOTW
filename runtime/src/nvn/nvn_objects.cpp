@@ -115,7 +115,10 @@ void MemoryPoolFinalize(CPU& c) {
     wait_submits_so_far(kWaitFinalize);  // a submit replayed on another thread may still read it
     worker_finish();                    // the replay thread may still read it
     gpu_wait(gpu_write_back_serial());  // NX_ASYNC_GPU: no compute result lands in freed memory
-    if (auto* p = get<MemoryPool>(c.x[0])) pool_unregister(p), command_memory_released(p->gpu, p->size);
+    if (auto* p = get<MemoryPool>(c.x[0])) {
+        pool_unregister(p), command_memory_released(p->gpu, p->size);
+        vcache_dirty(p->memory ? reinterpret_cast<const void*>(p->memory) : nullptr, p->memory ? p->size : 0);
+    }
     destroy(c.x[0]);
 }
 
@@ -177,6 +180,8 @@ std::map<uint64_t, std::set<uint64_t>>& pool_textures() {
 // (NVNmemoryPool*, ptrdiff_t offset, size_t size)
 void MemoryPoolFlushMappedRange(CPU& c) {
     uint64_t pool = c.x[0], off = c.x[1], size = c.x[2];
+    if (auto* p = get<MemoryPool>(pool))  // vertex data kept from earlier frames (nvn_vcache.cpp); virtual pools: all
+        vcache_dirty(p->memory ? reinterpret_cast<const void*>(p->memory + off) : nullptr, p->memory ? size : 0);
     std::lock_guard lk(objects_lock());
     auto it = pool_textures().find(pool);
     if (it == pool_textures().end()) return;
@@ -254,7 +259,9 @@ void BufferGetMemoryOffset(CPU& c) {
     c.x[0] = b ? b->offset : 0;
 }
 
-void BufferFlushMappedRange(CPU&) {}
+void BufferFlushMappedRange(CPU& c) {  // (NVNbuffer*, ptrdiff_t offset, size_t size): see MemoryPoolFlushMappedRange
+    if (auto* b = get<Buffer>(c.x[0]); b && b->memory) vcache_dirty(reinterpret_cast<const void*>(b->memory + c.x[1]), c.x[2]);
+}
 void BufferInvalidateMappedRange(CPU&) {}
 
 // ---- textures ---------------------------------------------------------------------------------------------------

@@ -220,7 +220,13 @@ struct ShaderInfo {
     // on use, as before.
     bool masks_known = false;
     uint64_t dynamic_uniforms = 0, written_storage = 0;
+    // uniform_read_extents (nvn_spirv_patch.cpp): per set-0 binding below 64, the bytes of the uniform block the shader
+    // can read (its highest constant vec4 index + 1, times 16); 0: all of it (indexed with a computed value, or not
+    // known). A bind copies no more than that: TOTK binds whole blocks of up to 64 KB and reads a few hundred bytes.
+    uint32_t uniform_bytes[64] = {};
 };
+// Fills uniform_bytes (above) from the SPIR-V.
+void uniform_read_extents(ShaderInfo& s);
 
 // Builds a ShaderInfo from a code block, its control section and the SPIR-V words (no I/O). `resources` = the
 // block's results.tsv resources column, or null (storage buffer c[0] offsets then stay -1).

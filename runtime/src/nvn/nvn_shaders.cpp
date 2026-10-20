@@ -299,6 +299,7 @@ const ShaderInfo* shader_for(uint64_t code_host, uint64_t control) {
             uint32_t(info->constants.size()));
     info->dynamic_uniforms = dynamic_uniform_bindings(info.get());
     info->written_storage = written_storage_bindings(info.get());
+    uniform_read_extents(*info);
     info->masks_known = true;
     slot = std::move(info);
     return slot.get();

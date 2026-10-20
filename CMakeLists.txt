@@ -156,6 +156,7 @@ set(NX_RUNTIME_SOURCES
     runtime/src/nvn/nvn_image.cpp
     runtime/src/nvn/nvn_frames.cpp
     runtime/src/nvn/nvn_dedup.cpp
+    runtime/src/nvn/nvn_vcache.cpp
     runtime/src/nvn/nvn_written.cpp
     runtime/src/nvn/nvn_replay.cpp
     runtime/src/nvn/nvn_debug.cpp

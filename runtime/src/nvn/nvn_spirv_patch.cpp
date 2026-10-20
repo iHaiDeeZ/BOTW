@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 
 #include "nvn_pipeline.h"
@@ -859,6 +860,47 @@ uint64_t dynamic_uniform_bindings(const ShaderInfo* s) {
     uint64_t mask = 0;
     clamp_uniform_indices(s->spirv, unused, &mask);
     return cache[s] = mask;
+}
+
+void uniform_read_extents(ShaderInfo& s) {
+    static const bool off = std::getenv("NX_UNIFORM_FULL") != nullptr;  // bisecting: whole blocks, as before
+    for (uint32_t& b : s.uniform_bytes) b = 0;
+    if (off) return;
+    const std::vector<uint32_t>& in = s.spirv;
+    std::map<uint32_t, uint32_t> binding, set, constant;  // variable -> binding / set; constant id -> value
+    std::map<uint32_t, uint32_t> uniform_var;             // Uniform-class variable -> binding (set 0 only, below)
+    std::map<uint32_t, uint32_t> max_index;               // variable -> highest vec4 read + 1
+    std::set<uint32_t> full;                              // variables read in a way not traced
+    for (size_t i = 5; i < in.size();) {
+        uint32_t len = in[i] >> 16, op = in[i] & 0xffff;
+        if (!len || i + len > in.size()) break;
+        const uint32_t* w = &in[i];
+        if (op == 71 && len >= 4 && w[2] == 33) binding[w[1]] = w[3];  // OpDecorate Binding
+        if (op == 71 && len >= 4 && w[2] == 34) set[w[1]] = w[3];      // OpDecorate DescriptorSet
+        if (op == 43 && len >= 4) constant[w[2]] = w[3];                // OpConstant (32-bit)
+        if (op == 59 && len >= 4 && w[3] == 2) uniform_var[w[2]] = 0;   // OpVariable, StorageClass Uniform
+        i += len;
+    }
+    for (size_t i = 5; i < in.size();) {
+        uint32_t len = in[i] >> 16, op = in[i] & 0xffff;
+        if (!len || i + len > in.size()) break;
+        const uint32_t* w = &in[i];
+        if ((op == 65 || op == 66) && len >= 4 && uniform_var.count(w[3])) {  // OpAccessChain into a uniform block
+            auto c0 = len >= 5 ? constant.find(w[4]) : constant.end();
+            auto c1 = len >= 6 ? constant.find(w[5]) : constant.end();
+            if (c0 == constant.end() || c0->second != 0 || c1 == constant.end()) full.insert(w[3]);
+            else max_index[w[3]] = std::max(max_index[w[3]], c1->second + 1);
+        } else if (op != 65 && op != 66) {  // any other use of the block variable itself (a whole load, a copy)
+            for (uint32_t k = 1; k < len; k++)
+                if (op != 71 && op != 72 && op != 5 && op != 6 && op != 15 && op != 59 && uniform_var.count(w[k])) full.insert(w[k]);
+        }
+        i += len;
+    }
+    for (auto& [var, unused] : uniform_var) {
+        if (!binding.count(var) || (set.count(var) && set[var] != 0) || binding[var] >= 64) continue;
+        if (full.count(var) || !max_index.count(var)) continue;  // 0: everything
+        s.uniform_bytes[binding[var]] = std::min<uint32_t>(max_index[var] * 16, 0x10000);
+    }
 }
 
 // Bindings (set 0..1, binding < 64) of storage buffers the shader writes: OpStore or an atomic through a pointer into
