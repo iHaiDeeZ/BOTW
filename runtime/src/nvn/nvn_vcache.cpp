@@ -82,7 +82,9 @@ bool make_arena() {
     p_vkGetBufferMemoryRequirements(d, g_arena, &req);
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     ai.allocationSize = req.size;
-    ai.memoryTypeIndex = upload_memory_type(req.memoryTypeBits);
+    // Plain host-visible coherent memory: write-combined where that is the fast path for the GPU (PS4 Garlic); the CPU
+    // only writes the arena.
+    ai.memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     void* p = nullptr;
     if (p_vkAllocateMemory(d, &ai, nullptr, &g_arena_memory) != VK_SUCCESS ||
         p_vkBindBufferMemory(d, g_arena, g_arena_memory, 0) != VK_SUCCESS ||

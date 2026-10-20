@@ -25,8 +25,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <string>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -458,7 +460,16 @@ void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
         c.in_flight[slot] = false;
     }
     const VkDeviceSize offset = VkDeviceSize(kLabelW) * kLabelH * 4 * slot;
-    counter_label(c.ptr + offset, kLabelW, kLabelH, double(fps), ms);
+    // The values shown change twice a second, and a slot's label is drawn only when its text differs from what that
+    // slot's buffer holds: drawing the glyphs on the CPU at every present was 2.2% of the replay thread (TOTK v00.28).
+    static auto shown_at = now;
+    static int shown_fps = 0;
+    static double shown_ms = 0;
+    if (now - shown_at >= std::chrono::milliseconds(500) || c.presents < 3) shown_at = now, shown_fps = fps, shown_ms = ms;
+    char key[48];
+    std::snprintf(key, sizeof key, "%d %d %.1f", settings_frame_counter(), shown_fps, shown_ms);
+    static std::string drawn[kMaxImages];
+    if (drawn[slot] != key) counter_label(c.ptr + offset, kLabelW, kLabelH, double(shown_fps), shown_ms), drawn[slot] = key;
     VkCommandBuffer cb = c.cb[slot];
     device_fn<PFN_vkResetCommandBuffer>(d, "vkResetCommandBuffer")(cb, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};

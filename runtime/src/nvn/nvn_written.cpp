@@ -361,6 +361,12 @@ void apply_write_back(const WriteBack& w) {
     }
     const uint8_t* was = w.before->data();
     uint64_t k = 0;
+    // Whole 64-byte blocks the GPU left alone are skipped with one compare (most of a written range is unchanged).
+    for (; k + 64 <= w.size; k += 64) {
+        if (std::memcmp(w.from + k, was + k, 64) == 0) continue;
+        for (uint64_t b = k; b < k + 64; b += 4)
+            if (std::memcmp(w.from + b, was + b, 4) != 0) std::memcpy(w.to + b, w.from + b, 4);
+    }
     for (; k + 8 <= w.size; k += 8) {
         if (std::memcmp(w.from + k, was + k, 8) == 0) continue;
         for (uint64_t b = k; b < k + 8; b += 4)
