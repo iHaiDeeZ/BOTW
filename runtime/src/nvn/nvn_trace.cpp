@@ -28,8 +28,30 @@ constexpr uint32_t kFullCalls = 32;  // calls of one proc traced with their argu
 
 std::mutex g_lock;
 FILE* g_trace_file = nullptr;
-std::map<std::string, uint64_t> g_calls;  // proc -> calls
-std::atomic<uint64_t> g_seq{0};
+std::map<std::string, uint64_t> g_calls;  // proc -> calls (stubs the table below has no room for)
+std::atomic<uint64_t> g_seq{0};  // traced stub calls (the first kFullCalls of each proc)
+
+// Calls per stub, by name pointer (the thunk's name: one per proc, stable), counted without g_lock. Every stub call
+// took g_lock with a std::string and a map lookup, from every game thread: Tears of the Kingdom calls
+// nvnCommandBufferSetTiledCacheAction/TileSize per render pass and SetDebugLabel per texture it makes.
+struct StubCount {
+    std::atomic<const char*> name{nullptr};
+    std::atomic<uint64_t> calls{0};
+    std::atomic<int> initialize{-1};  // whether the name has "Initialize" (it returns 1); -1: not looked at yet
+};
+constexpr uint32_t kStubSlots = 512;
+StubCount g_stub_counts[kStubSlots];
+
+StubCount* stub_count(const char* name) {
+    uint32_t h = uint32_t((uint64_t(reinterpret_cast<uintptr_t>(name)) * 0x9E3779B97F4A7C15ull) >> 55);
+    for (uint32_t k = 0; k < kStubSlots; k++) {
+        StubCount& s = g_stub_counts[(h + k) & (kStubSlots - 1)];
+        const char* at = s.name.load(std::memory_order_acquire);
+        if (!at && s.name.compare_exchange_strong(at, name, std::memory_order_acq_rel)) return &s;
+        if (at == name) return &s;
+    }
+    return nullptr;
+}
 
 std::string guest_str(uint64_t addr) {
     if (!addr) return "(null)";
@@ -44,6 +66,9 @@ void write_line(const char* line) {  // g_lock held
             if (!g_trace_file) return;
             std::fprintf(g_trace_file, "\n# calls per proc\n");
             for (auto& [name, n] : g_calls) std::fprintf(g_trace_file, "%10llu %s\n", (unsigned long long)n, name.c_str());
+            for (const StubCount& s : g_stub_counts)
+                if (const char* name = s.name.load())
+                    std::fprintf(g_trace_file, "%10llu %s\n", (unsigned long long)s.calls.load(), name);
             std::fclose(g_trace_file);
             g_trace_file = nullptr;
         });
@@ -58,11 +83,22 @@ void write_line(const char* line) {  // g_lock held
 // A proc we do not implement yet: record it, return 0 except for the ones whose 0 means "failed" to the game.
 void trace_stub(CPU& c) {
     const char* name = hle_current_name();
-    uint64_t n, seq = g_seq++;
+    uint64_t n = 0;
+    StubCount* sc = stub_count(name);
+    if (sc) {
+        n = sc->calls.fetch_add(1, std::memory_order_relaxed) + 1;
+        int init = sc->initialize.load(std::memory_order_relaxed);
+        if (init < 0) sc->initialize.store(init = std::strstr(name, "Initialize") ? 1 : 0, std::memory_order_relaxed);
+        if (n > kFullCalls) {  // the common case: counted, nothing else
+            c.x[0] = uint64_t(init);
+            return;
+        }
+    }
     {
         std::lock_guard lk(g_lock);
-        n = ++g_calls[name];
+        if (!sc) n = ++g_calls[name];
         if (n <= kFullCalls) {
+            uint64_t seq = g_seq++;
             char line[512];
             std::snprintf(line, sizeof line, "%8llu %s(%llx, %llx, %llx, %llx, %llx, %llx) lr %s", (unsigned long long)seq,
                           name, (unsigned long long)c.x[0], (unsigned long long)c.x[1], (unsigned long long)c.x[2],
@@ -153,10 +189,41 @@ uint64_t scratch(CPU&, size_t size) {
 uint64_t real_proc(CPU& c, const char* name) {
     static std::mutex lock;
     static std::map<std::string, uint64_t> cache;
+    // Found procs, readable without the lock (driver() runs per state bind, ~20 of them in nvn_state.cpp): by a hash
+    // of the name, checked against a copy of it. Entries are only ever added, under `lock`.
+    struct Known {
+        std::atomic<const char*> name{nullptr};
+        uint64_t hash = 0, address = 0;
+    };
+    constexpr uint32_t kKnown = 1024;
+    static Known known[kKnown];
+    uint64_t h = 14695981039346656037ull;
+    for (const char* p = name; *p; p++) h = (h ^ uint8_t(*p)) * 1099511628211ull;
+    for (uint32_t k = 0; k < kKnown; k++) {
+        const Known& e = known[(h + k) & (kKnown - 1)];
+        const char* at = e.name.load(std::memory_order_acquire);
+        if (!at) break;
+        if (e.hash == h && std::strcmp(at, name) == 0) return e.address;
+    }
+    auto remember = [&](uint64_t address) {  // under `lock`
+        for (uint32_t k = 0; k < kKnown; k++) {
+            Known& e = known[(h + k) & (kKnown - 1)];
+            if (const char* at = e.name.load(std::memory_order_relaxed)) {
+                if (e.hash == h && std::strcmp(at, name) == 0) return;
+                continue;
+            }
+            e.hash = h, e.address = address;
+            e.name.store(strdup(name), std::memory_order_release);
+            return;
+        }
+    };
     {
         std::lock_guard lk(lock);
         auto it = cache.find(name);
-        if (it != cache.end()) return it->second;
+        if (it != cache.end()) {
+            remember(it->second);
+            return it->second;
+        }
     }
     static uint64_t loader = find_symbol("nvnBootstrapLoader");  // the sdk's export (imports are HLE)
     static uint64_t scratch = kernel_alloc(0x1000);
@@ -167,6 +234,7 @@ uint64_t real_proc(CPU& c, const char* name) {
         std::memcpy(reinterpret_cast<void*>(scratch), name, len + 1);
         real = guest_call(c, loader, {scratch});
         cache[name] = real;
+        remember(real);
     }
     {
         std::lock_guard lk(g_lock);

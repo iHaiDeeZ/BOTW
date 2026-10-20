@@ -48,6 +48,38 @@ void log_state(const char* what, const T& s) {
     log("nvn state %s:%s", what, words.c_str());
 }
 
+// State objects decoded by their bytes, per thread (direct mapped). The driver's getters read nothing but the object,
+// so the same bytes decode the same way: every bind went through 2-10 calls of the recompiled driver (BindColorState
+// 10, BindDepthStencilState 8, BindChannelMaskState 8), each saving the guest registers and looking its proc up, on
+// the game's recording threads. Keyed by the object's first `bytes` bytes (16 for the bind-one-object states: NVN's
+// are 4-8 bytes, and bytes past one only make the key stricter). NX_STATE_MEMO=0: decoded every time.
+template <typename V>
+struct StateMemo {
+    struct Slot {
+        uint64_t k0 = 0, k1 = 0;
+        bool used = false;
+        V v{};
+    };
+    static constexpr uint32_t kSlots = 256;
+    Slot* slots = nullptr;  // on the heap (thread_local arrays ran the PS4's TLS pool dry, nvn.h get<>)
+    template <typename F>
+    V get(uint64_t addr, uint32_t bytes, F&& decode) {
+        static const bool on = [] {
+            const char* e = std::getenv("NX_STATE_MEMO");
+            return !(e && e[0] == '0');
+        }();
+        if (!on || !addr) return decode();
+        uint64_t k[2] = {0, 0};
+        std::memcpy(k, reinterpret_cast<const void*>(addr), bytes);
+        if (!slots) slots = new Slot[kSlots]();
+        Slot& e = slots[((k[0] * 0x9E3779B97F4A7C15ull) ^ (k[1] * 0xC2B2AE3D27D4EB4Full)) >> 56];
+        if (e.used && e.k0 == k[0] && e.k1 == k[1]) return e.v;
+        V v = decode();
+        e.k0 = k[0], e.k1 = k[1], e.used = true, e.v = v;
+        return v;
+    }
+};
+
 // ---- shaders and resources --------------------------------------------------------------------------------------
 
 void BindProgram(CPU& c) {
@@ -116,43 +148,58 @@ void UpdateUniformBuffer(CPU& c) {  // the data is copied now: the game's buffer
 
 void BindVertexAttribState(CPU& c) {
     uint32_t n = std::min<uint32_t>(uint32_t(c.x[1]), 32);
-    std::vector<VertexAttrib> v(n);
-    uint64_t tmp = scratch(c, 16);
+    VertexAttrib v[32];
+    thread_local StateMemo<VertexAttrib> memo;
     for (uint32_t k = 0; k < n; k++) {
         uint64_t state = c.x[2] + 4 * k;
-        driver(c, "nvnVertexAttribStateGetFormat", {state, tmp, tmp + 8});
-        v[k].format = ld<uint32_t>(tmp);
-        v[k].offset = uint32_t(ld<uint64_t>(tmp + 8));
-        v[k].stream = uint32_t(driver(c, "nvnVertexAttribStateGetStreamIndex", {state}));
+        v[k] = memo.get(state, 4, [&] {
+            VertexAttrib a;
+            uint64_t tmp = scratch(c, 16);
+            driver(c, "nvnVertexAttribStateGetFormat", {state, tmp, tmp + 8});
+            a.format = ld<uint32_t>(tmp);
+            a.offset = uint32_t(ld<uint64_t>(tmp + 8));
+            a.stream = uint32_t(driver(c, "nvnVertexAttribStateGetStreamIndex", {state}));
+            return a;
+        });
     }
-    for (auto& a : v) log_state("attrib", a);
+    for (uint32_t k = 0; k < n; k++) log_state("attrib", v[k]);
     Cmd cmd{Cmd::BindVertexAttribs};
     cmd.n = n;
-    record(c.x[0], cmd, v.data(), v.size() * sizeof(VertexAttrib));
+    record(c.x[0], cmd, v, n * sizeof(VertexAttrib));
 }
 
 void BindVertexStreamState(CPU& c) {
     uint32_t n = std::min<uint32_t>(uint32_t(c.x[1]), 32);
-    std::vector<VertexStream> v(n);
+    VertexStream v[32];
+    thread_local StateMemo<VertexStream> memo;
     for (uint32_t k = 0; k < n; k++) {
         uint64_t state = c.x[2] + 8 * k;
-        v[k].stride = uint32_t(driver(c, "nvnVertexStreamStateGetStride", {state}));
-        v[k].divisor = uint32_t(driver(c, "nvnVertexStreamStateGetDivisor", {state}));
+        v[k] = memo.get(state, 8, [&] {
+            VertexStream s;
+            s.stride = uint32_t(driver(c, "nvnVertexStreamStateGetStride", {state}));
+            s.divisor = uint32_t(driver(c, "nvnVertexStreamStateGetDivisor", {state}));
+            return s;
+        });
     }
     Cmd cmd{Cmd::BindVertexStreams};
     cmd.n = n;
-    record(c.x[0], cmd, v.data(), v.size() * sizeof(VertexStream));
+    record(c.x[0], cmd, v, n * sizeof(VertexStream));
 }
 
 void BindBlendState(CPU& c) {
-    uint64_t state = c.x[1], tmp = scratch(c, 16);
-    BlendTarget b;
-    b.target = uint32_t(driver(c, "nvnBlendStateGetBlendTarget", {state}));
-    driver(c, "nvnBlendStateGetBlendFunc", {state, tmp, tmp + 4, tmp + 8, tmp + 12});
-    b.src_rgb = ld<uint32_t>(tmp), b.dst_rgb = ld<uint32_t>(tmp + 4);
-    b.src_a = ld<uint32_t>(tmp + 8), b.dst_a = ld<uint32_t>(tmp + 12);
-    driver(c, "nvnBlendStateGetBlendEquation", {state, tmp, tmp + 4});
-    b.eq_rgb = ld<uint32_t>(tmp), b.eq_a = ld<uint32_t>(tmp + 4);
+    uint64_t state = c.x[1];
+    thread_local StateMemo<BlendTarget> memo;
+    BlendTarget b = memo.get(state, 16, [&] {
+        uint64_t tmp = scratch(c, 16);
+        BlendTarget b;
+        b.target = uint32_t(driver(c, "nvnBlendStateGetBlendTarget", {state}));
+        driver(c, "nvnBlendStateGetBlendFunc", {state, tmp, tmp + 4, tmp + 8, tmp + 12});
+        b.src_rgb = ld<uint32_t>(tmp), b.dst_rgb = ld<uint32_t>(tmp + 4);
+        b.src_a = ld<uint32_t>(tmp + 8), b.dst_a = ld<uint32_t>(tmp + 12);
+        driver(c, "nvnBlendStateGetBlendEquation", {state, tmp, tmp + 4});
+        b.eq_rgb = ld<uint32_t>(tmp), b.eq_a = ld<uint32_t>(tmp + 4);
+        return b;
+    });
     Cmd cmd{Cmd::BindBlendState};
     log_state("blend", b);
     record(c.x[0], cmd, &b, sizeof b);
@@ -160,43 +207,58 @@ void BindBlendState(CPU& c) {
 
 void BindColorState(CPU& c) {
     uint64_t state = c.x[1];
-    ColorStateInfo s;
-    for (uint32_t k = 0; k < 8; k++) s.blend_enable[k] = uint8_t(driver(c, "nvnColorStateGetBlendEnable", {state, k}) & 1);
-    s.alpha_test = uint32_t(driver(c, "nvnColorStateGetAlphaTest", {state}));
-    s.logic_op = uint32_t(driver(c, "nvnColorStateGetLogicOp", {state}));
+    thread_local StateMemo<ColorStateInfo> memo;
+    ColorStateInfo s = memo.get(state, 16, [&] {
+        ColorStateInfo s;
+        for (uint32_t k = 0; k < 8; k++)
+            s.blend_enable[k] = uint8_t(driver(c, "nvnColorStateGetBlendEnable", {state, k}) & 1);
+        s.alpha_test = uint32_t(driver(c, "nvnColorStateGetAlphaTest", {state}));
+        s.logic_op = uint32_t(driver(c, "nvnColorStateGetLogicOp", {state}));
+        return s;
+    });
     Cmd cmd{Cmd::BindColorState};
     log_state("color", s);
     record(c.x[0], cmd, &s, sizeof s);
 }
 
 void BindChannelMaskState(CPU& c) {
-    uint64_t state = c.x[1], tmp = scratch(c, 16);
-    ChannelMaskInfo s;
-    for (uint32_t k = 0; k < 8; k++) {
-        // Four NVNboolean* outputs, one slot of 4 bytes each: slots 1 byte apart overlapped when the driver stores
-        // words, and draws lost channels (the title art came out green only).
-        for (int ch = 0; ch < 4; ch++) st<uint32_t>(tmp + 4 * ch, 0);
-        driver(c, "nvnChannelMaskStateGetChannelMask", {state, k, tmp, tmp + 4, tmp + 8, tmp + 12});
-        s.mask[k] = uint8_t((ld<uint8_t>(tmp) & 1) | (ld<uint8_t>(tmp + 4) & 1) << 1 | (ld<uint8_t>(tmp + 8) & 1) << 2 |
-                            (ld<uint8_t>(tmp + 12) & 1) << 3);
-    }
+    uint64_t state = c.x[1];
+    thread_local StateMemo<ChannelMaskInfo> memo;
+    ChannelMaskInfo s = memo.get(state, 16, [&] {
+        uint64_t tmp = scratch(c, 16);
+        ChannelMaskInfo s;
+        for (uint32_t k = 0; k < 8; k++) {
+            // Four NVNboolean* outputs, one slot of 4 bytes each: slots 1 byte apart overlapped when the driver
+            // stores words, and draws lost channels (the title art came out green only).
+            for (int ch = 0; ch < 4; ch++) st<uint32_t>(tmp + 4 * ch, 0);
+            driver(c, "nvnChannelMaskStateGetChannelMask", {state, k, tmp, tmp + 4, tmp + 8, tmp + 12});
+            s.mask[k] = uint8_t((ld<uint8_t>(tmp) & 1) | (ld<uint8_t>(tmp + 4) & 1) << 1 |
+                                (ld<uint8_t>(tmp + 8) & 1) << 2 | (ld<uint8_t>(tmp + 12) & 1) << 3);
+        }
+        return s;
+    });
     Cmd cmd{Cmd::BindChannelMaskState};
     record(c.x[0], cmd, &s, sizeof s);
 }
 
 void BindDepthStencilState(CPU& c) {
-    uint64_t state = c.x[1], tmp = scratch(c, 16);
-    DepthStencilInfo s;
-    s.depth_test = uint8_t(driver(c, "nvnDepthStencilStateGetDepthTestEnable", {state}) & 1);
-    s.depth_write = uint8_t(driver(c, "nvnDepthStencilStateGetDepthWriteEnable", {state}) & 1);
-    s.depth_func = uint32_t(driver(c, "nvnDepthStencilStateGetDepthFunc", {state}));
-    s.stencil_test = uint8_t(driver(c, "nvnDepthStencilStateGetStencilTestEnable", {state}) & 1);
-    for (uint32_t face = 0; face < 2; face++) {  // NVNface: 1 front, 2 back
-        s.stencil_func[face] = uint32_t(driver(c, "nvnDepthStencilStateGetStencilFunc", {state, face + 1}));
-        driver(c, "nvnDepthStencilStateGetStencilOp", {state, face + 1, tmp, tmp + 4, tmp + 8});
-        s.stencil_fail[face] = ld<uint32_t>(tmp), s.depth_fail[face] = ld<uint32_t>(tmp + 4);
-        s.depth_pass[face] = ld<uint32_t>(tmp + 8);
-    }
+    uint64_t state = c.x[1];
+    thread_local StateMemo<DepthStencilInfo> memo;
+    DepthStencilInfo s = memo.get(state, 16, [&] {
+        uint64_t tmp = scratch(c, 16);
+        DepthStencilInfo s;
+        s.depth_test = uint8_t(driver(c, "nvnDepthStencilStateGetDepthTestEnable", {state}) & 1);
+        s.depth_write = uint8_t(driver(c, "nvnDepthStencilStateGetDepthWriteEnable", {state}) & 1);
+        s.depth_func = uint32_t(driver(c, "nvnDepthStencilStateGetDepthFunc", {state}));
+        s.stencil_test = uint8_t(driver(c, "nvnDepthStencilStateGetStencilTestEnable", {state}) & 1);
+        for (uint32_t face = 0; face < 2; face++) {  // NVNface: 1 front, 2 back
+            s.stencil_func[face] = uint32_t(driver(c, "nvnDepthStencilStateGetStencilFunc", {state, face + 1}));
+            driver(c, "nvnDepthStencilStateGetStencilOp", {state, face + 1, tmp, tmp + 4, tmp + 8});
+            s.stencil_fail[face] = ld<uint32_t>(tmp), s.depth_fail[face] = ld<uint32_t>(tmp + 4);
+            s.depth_pass[face] = ld<uint32_t>(tmp + 8);
+        }
+        return s;
+    });
     Cmd cmd{Cmd::BindDepthStencilState};
     log_state("depth", s);
     record(c.x[0], cmd, &s, sizeof s);
@@ -204,11 +266,15 @@ void BindDepthStencilState(CPU& c) {
 
 void BindPolygonState(CPU& c) {
     uint64_t state = c.x[1];
-    PolygonInfo s;
-    s.cull = uint32_t(driver(c, "nvnPolygonStateGetCullFace", {state}));
-    s.front = uint32_t(driver(c, "nvnPolygonStateGetFrontFace", {state}));
-    s.mode = uint32_t(driver(c, "nvnPolygonStateGetPolygonMode", {state}));
-    s.offset_enables = uint32_t(driver(c, "nvnPolygonStateGetPolygonOffsetEnables", {state}));
+    thread_local StateMemo<PolygonInfo> memo;
+    PolygonInfo s = memo.get(state, 16, [&] {
+        PolygonInfo s;
+        s.cull = uint32_t(driver(c, "nvnPolygonStateGetCullFace", {state}));
+        s.front = uint32_t(driver(c, "nvnPolygonStateGetFrontFace", {state}));
+        s.mode = uint32_t(driver(c, "nvnPolygonStateGetPolygonMode", {state}));
+        s.offset_enables = uint32_t(driver(c, "nvnPolygonStateGetPolygonOffsetEnables", {state}));
+        return s;
+    });
     Cmd cmd{Cmd::BindPolygonState};
     log_state("polygon", s);
     record(c.x[0], cmd, &s, sizeof s);

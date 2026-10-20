@@ -109,10 +109,15 @@ GpuImage* image_of(uint64_t guest) {
     if (share && t->memory) {
         static std::set<std::pair<StorageKey, StorageKey>> seen;
         static int logged = 0;
-        for (auto it = g_live_images.lower_bound(StorageKey{t->memory}); it != g_live_images.end() && it->first.memory == t->memory; ++it) {
+        for (auto it = g_live_images.lower_bound(StorageKey{t->memory}); it != g_live_images.end() && it->first.memory == t->memory;) {
             auto other = it->second.lock();
-            if (!other || !other->image || logged >= 200 || !seen.insert({key, it->first}).second) continue;
-            const StorageKey& o = it->first;
+            if (!other) {  // its image is gone: dropped here, or every image ever made over this memory stays listed
+                it = g_live_images.erase(it);
+                continue;
+            }
+            auto at = it++;
+            if (!other->image || logged >= 200 || !seen.insert({key, at->first}).second) continue;
+            const StorageKey& o = at->first;
             logged++;
             log("nvn/vk: no image share at %llx: this %ux%ux%u fmt %#x levels %u target %u samples %u%s; live %ux%ux%u fmt %#x "
                 "levels %u target %u samples %u%s",

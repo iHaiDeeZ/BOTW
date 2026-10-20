@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 #include "nvn_draw_state.h"
 #include "nvn_vk.h"
@@ -17,22 +18,54 @@ namespace {
 // course frame calls hundreds of lists, each looked up twice (the dispatch count, then the replay). The first lookup
 // of a handle in a submit is kept for the rest of it: a list re-recorded meanwhile on the game's recording thread
 // is not mixed into a submit already being replayed. NX_CALL_TABLE=0: every call looks up.
-std::unordered_map<uint64_t, std::shared_ptr<CmdList>> g_called;
+// An open-addressed table emptied by a generation bump (no frees at each submit), the lists owned by g_called_owned
+// until the next submit: the unordered_map (a node per list, freed at every reset) and the shared_ptr copied out of
+// it at every CallList were ~2% of the PS4 replay thread in the cave.
+struct CalledSlot {
+    uint64_t handle = 0, generation = 0;
+    const CmdList* list = nullptr;
+};
+constexpr uint32_t kCalledSlots = 8192;
+CalledSlot g_called[kCalledSlots];
+uint64_t g_called_generation = 1;
+std::vector<std::shared_ptr<CmdList>> g_called_owned;
+std::unordered_map<uint64_t, std::shared_ptr<CmdList>> g_called_overflow;  // past half of the table
 }  // namespace
 
-void submit_lists_reset() { g_called.clear(); }
+void submit_lists_reset() {
+    g_called_generation++;
+    g_called_owned.clear();
+    if (!g_called_overflow.empty()) g_called_overflow.clear();
+}
 
-std::shared_ptr<CmdList> submit_command_list(uint64_t handle) {
+const CmdList* submit_command_list(uint64_t handle) {
     static const bool off = [] {
         const char* e = std::getenv("NX_CALL_TABLE");
         return e && e[0] == '0';
     }();
-    if (off) return command_list(handle);
-    auto it = g_called.find(handle);
-    if (it != g_called.end()) return it->second;
+    if (off) {  // kept alive until the next submit, as the table's
+        auto l = command_list(handle);
+        if (l) g_called_owned.push_back(l);
+        return l.get();
+    }
+    uint32_t at = uint32_t((handle * 0x9E3779B97F4A7C15ull) >> 51);  // 13 bits
+    for (uint32_t k = 0; k < kCalledSlots; k++) {
+        CalledSlot& s = g_called[(at + k) & (kCalledSlots - 1)];
+        if (s.generation != g_called_generation) {
+            if (g_called_owned.size() >= kCalledSlots / 2) break;  // full enough: the overflow map
+            auto l = command_list(handle);
+            if (!l) return nullptr;  // looked up again next time, as before
+            s = {handle, g_called_generation, l.get()};
+            g_called_owned.push_back(std::move(l));
+            return s.list;
+        }
+        if (s.handle == handle) return s.list;
+    }
+    auto it = g_called_overflow.find(handle);
+    if (it != g_called_overflow.end()) return it->second.get();
     auto l = command_list(handle);
-    if (l) g_called.emplace(handle, l);
-    return l;
+    if (l) g_called_overflow.emplace(handle, l);
+    return l.get();
 }
 
 void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth) {

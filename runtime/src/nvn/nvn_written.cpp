@@ -214,8 +214,11 @@ Upload read_upload(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t
     return dedup_upload(p, size, padded, align);
 }
 
-bool written_overlaps(const uint8_t* p, uint64_t size) {
-    return p && size && !g_regions.empty() && !overlapping(p, size).empty();
+bool written_overlaps(const uint8_t* p, uint64_t size) {  // per vertex stream, index buffer and uniform update
+    if (!p || !size || g_regions.empty()) return false;
+    It it = g_regions.upper_bound(p);  // what overlapping() finds first, without building its list
+    if (it != g_regions.begin() && std::prev(it)->first + std::prev(it)->second.size > p) return true;
+    return it != g_regions.end() && it->first < p + size;
 }
 
 bool written_indirect(VkCommandBuffer cb, const uint8_t* p) {

@@ -468,8 +468,15 @@ void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
     if (now - shown_at >= std::chrono::milliseconds(500) || c.presents < 3) shown_at = now, shown_fps = fps, shown_ms = ms;
     char key[48];
     std::snprintf(key, sizeof key, "%d %d %.1f", settings_frame_counter(), shown_fps, shown_ms);
-    static std::string drawn[kMaxImages];
-    if (drawn[slot] != key) counter_label(c.ptr + offset, kLabelW, kLabelH, double(shown_fps), shown_ms), drawn[slot] = key;
+    // Drawn once per text and copied to each slot that shows another (the glyphs were drawn per slot: 0.9% of the
+    // replay thread in the cave, v00.31).
+    static std::string drawn[kMaxImages], label_text;
+    static std::vector<uint8_t> label(size_t(kLabelW) * kLabelH * 4);
+    if (drawn[slot] != key) {
+        if (label_text != key) counter_label(label.data(), kLabelW, kLabelH, double(shown_fps), shown_ms), label_text = key;
+        std::memcpy(c.ptr + offset, label.data(), label.size());
+        drawn[slot] = key;
+    }
     VkCommandBuffer cb = c.cb[slot];
     device_fn<PFN_vkResetCommandBuffer>(d, "vkResetCommandBuffer")(cb, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};

@@ -150,6 +150,11 @@ void decode_astc(uint32_t format, std::vector<uint8_t>& linear, std::vector<Line
 // zero-fills), a page fault per 4 KB of the copy and a free at retire, on the replay thread. A scene load, which
 // stages hundreds of MB in one submit, still gets its own buffers: past a quarter of the ring in this submit, or one
 // upload over an eighth of it. NX_STAGING_MIN=0: a staging buffer for every 1 MB+ upload, as before.
+bool staging_ring() {  // NX_STAGING_RING=1 (upload_texture)
+    static const bool on = std::getenv("NX_STAGING_RING") != nullptr;
+    return on;
+}
+
 bool staging_wanted(uint64_t size) {
     static const bool always = [] {
         const char* e = std::getenv("NX_STAGING_MIN");
@@ -317,7 +322,8 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     img.uploaded = true;
     if (gpu_profile_on()) gpu_profile_mark(cb, "texture uploads");
     if (!t.memory || !t.storage_size) return;
-    if (std::getenv("NX_TRACE_UPLOADS") && t.storage_size >= (1u << 20)) {
+    static const bool trace_uploads = std::getenv("NX_TRACE_UPLOADS") != nullptr;
+    if (trace_uploads && t.storage_size >= (1u << 20)) {
         const uint8_t* m = reinterpret_cast<const uint8_t*>(t.memory);
         size_t nz = 0;
         for (uint64_t k = 0; k < t.storage_size; k += 64) nz += m[k] != 0;
@@ -459,7 +465,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
     if (widen) {
         u = texel_alloc(linear.size() * 2, 16);
         widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
-    } else if (linear.size() >= (1u << 20) && !std::getenv("NX_STAGING_RING") && staging_wanted(linear.size())) {
+    } else if (linear.size() >= (1u << 20) && !staging_ring() && staging_wanted(linear.size())) {
         // 1 MB and up: a staging buffer of its own, so a scene load cannot wrap the ring over itself (DEBUG-2 #72).
         // NX_STAGING_RING=1: through the ring, as before (bisecting).
         u = staging_alloc(linear.size());

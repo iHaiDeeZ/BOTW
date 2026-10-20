@@ -244,7 +244,7 @@ bool mask_clear(VkCommandBuffer cb, const Targets& t, uint32_t slot, uint32_t ma
                 const VkRect2D& rect);
 // nvn_replay.cpp: a command list into `cb` (`depth`: CallList nesting).
 void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth);
-std::shared_ptr<CmdList> submit_command_list(uint64_t handle);  // command_list(), once per handle per submit
+const CmdList* submit_command_list(uint64_t handle);  // command_list(), once per handle per submit (valid until the next)
 void submit_lists_reset();  // at each submit's start (draw_begin_submit)
 
 void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list);  // nvn_copy.cpp: texture copies

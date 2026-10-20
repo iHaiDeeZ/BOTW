@@ -520,8 +520,8 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                         (written_storage_bindings(s) >> b.binding & 1) && graphics_write_backs()) {
                         uint64_t n = std::max<uint64_t>((size + 15) & ~15ull, 0x10000);
                         Upload u = upload_alloc(n, 256);
-                        std::memset(u.ptr, 0, n);
                         std::memcpy(u.ptr, p, size);
+                        std::memset(u.ptr + size, 0, n - size);  // only past the data
                         auto before = std::make_shared<std::vector<uint8_t>>(p, p + size);
                         g_write_backs.push_back({u.ptr, const_cast<uint8_t*>(p), size, std::move(before)});
                         info = {u.buffer, u.offset, n};

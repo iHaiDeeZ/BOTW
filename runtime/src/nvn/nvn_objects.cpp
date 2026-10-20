@@ -83,12 +83,13 @@ ViewInfo read_view(CPU& c, uint64_t view) {
 
 uint64_t pool_host(const MemoryPool& pool, uint64_t offset) {
     if (pool.memory) return pool.memory + offset;
-    std::lock_guard lk(objects_lock());
+    std::shared_lock lk(objects_lock());  // reads only: an exclusive lock empties every thread's get<> cache
     auto it = pool.mappings.upper_bound(offset);
     if (it == pool.mappings.begin()) return 0;
     --it;
     if (offset - it->first >= it->second.size) return 0;
-    auto* phys = dynamic_cast<MemoryPool*>(objects().count(it->second.physical) ? objects()[it->second.physical].get() : nullptr);
+    auto po = objects().find(it->second.physical);
+    auto* phys = po == objects().end() ? nullptr : dynamic_cast<MemoryPool*>(po->second.get());
     return phys && phys->memory ? phys->memory + it->second.physical_offset + (offset - it->first) : 0;
 }
 
@@ -175,6 +176,30 @@ std::map<uint64_t, std::set<uint64_t>>& pool_textures() {
     return m;
 }
 
+// The pool each texture in pool_textures() is listed under: a finalize erased the texture from every pool's set (a
+// tree lookup per pool, the game threads' busiest loop in TextureFinalize), and a texture re-initialized in another
+// pool stayed listed in the old one. Under objects_lock (alone).
+std::unordered_map<uint64_t, uint64_t> g_texture_pool;
+
+void list_pool_texture(uint64_t pool, uint64_t guest) {
+    auto [it, fresh] = g_texture_pool.try_emplace(guest, pool);
+    if (!fresh && it->second != pool) {
+        if (auto old = pool_textures().find(it->second); old != pool_textures().end()) old->second.erase(guest);
+        it->second = pool;
+    }
+    pool_textures()[pool].insert(guest);
+}
+
+// Unlists `guest`; returns its pool (0: it was not listed).
+uint64_t unlist_pool_texture(uint64_t guest) {
+    auto it = g_texture_pool.find(guest);
+    if (it == g_texture_pool.end()) return 0;
+    uint64_t pool = it->second;
+    g_texture_pool.erase(it);
+    if (auto p = pool_textures().find(pool); p != pool_textures().end()) p->second.erase(guest);
+    return pool;
+}
+
 // Guest memory is host memory, so buffers need nothing. Textures are copies on the GPU (untiled at first use): a
 // flush over one means the CPU wrote it (a glyph cache rasterises text this way), so it is uploaded again.
 // (NVNmemoryPool*, ptrdiff_t offset, size_t size)
@@ -182,7 +207,7 @@ void MemoryPoolFlushMappedRange(CPU& c) {
     uint64_t pool = c.x[0], off = c.x[1], size = c.x[2];
     if (auto* p = get<MemoryPool>(pool))  // vertex data kept from earlier frames (nvn_vcache.cpp); virtual pools: all
         vcache_dirty(p->memory ? reinterpret_cast<const void*>(p->memory + off) : nullptr, p->memory ? size : 0);
-    std::lock_guard lk(objects_lock());
+    std::shared_lock lk(objects_lock());  // reads the lists; mark_dirty is atomic
     auto it = pool_textures().find(pool);
     if (it == pool_textures().end()) return;
     for (uint64_t guest : it->second) {
@@ -317,7 +342,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
     t.storage_size = texture_storage_size(c, builder);
     if (old) {
         std::lock_guard lk(objects_lock());
-        pool_textures()[t.pool].insert(guest);
+        list_pool_texture(t.pool, guest);
     }
     // Packaged (BNTX) textures were tiled offline with a block height often one step below the default
     // (docs/nvn/TILING.md). The layout the builder returns does not carry it (it reads 1 for every texture in
@@ -355,7 +380,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
         note_replaced(guest);
         keep_for_slots(guest);
         hand_image_to_snapshots(guest);
-        pool_textures()[t.pool].insert(guest);
+        list_pool_texture(t.pool, guest);
         publish_locked(guest, std::move(fresh));
     }
     c.x[0] = 1;
@@ -373,11 +398,15 @@ constexpr uint64_t kKeptTexture = 0xF000000000000000ull;  // host keys of finali
 // pointed at, and is destroyed once no slot names it.
 // Moves the texture at `guest` to a host key when a pool slot still names it, and points those slots there (under
 // objects_lock). Returns the key, or 0 when no slot names it.
-uint64_t keep_for_slots(uint64_t guest) {
-    // Off unless NX_KEEP_TEXTURES=1: kept textures fed stale data to the course's sky (white, blocky) and did not fix
-    // what they were for (docs/nvn/DEBUG.md #38); missing pool textures sample the dummy without a pass break (#34).
+// Off unless NX_KEEP_TEXTURES=1: kept textures fed stale data to the course's sky (white, blocky) and did not fix
+// what they were for (docs/nvn/DEBUG.md #38); missing pool textures sample the dummy without a pass break (#34).
+bool keep_textures() {
     static const bool on = std::getenv("NX_KEEP_TEXTURES") != nullptr;
-    if (!on) return 0;
+    return on;
+}
+
+uint64_t keep_for_slots(uint64_t guest) {
+    if (!keep_textures()) return 0;
     auto reg = g_registered.find(guest);
     uint64_t kept = 0;
     if (reg == g_registered.end()) return 0;
@@ -403,8 +432,7 @@ uint64_t keep_for_slots(uint64_t guest) {
         if (g_registered[kept].size() == 1) g_kept_order.push_back({kept, plat::monotonic_ns()});
     }
     g_registered.erase(guest);
-    for (auto& [pool, set] : pool_textures())
-        if (set.erase(guest) && kept) set.insert(kept);
+    if (uint64_t pool = unlist_pool_texture(guest); pool && kept) list_pool_texture(pool, kept);
     return kept;
 }
 
@@ -422,7 +450,7 @@ void expire_kept() {
         g_kept_order.pop_front();
         if (!t) continue;
         g_registered.erase(key);
-        for (auto& [pool, set] : pool_textures()) set.erase(key);
+        unlist_pool_texture(key);
         defer_object(std::move(o->second));
         objects().erase(o);
         g_released_kept++;
@@ -439,7 +467,7 @@ void TextureFinalize(CPU& c) {
         note_replaced(guest);  // a replay in flight keeps resolving it (#55)
         hand_image_to_snapshots(guest);
         uint64_t kept = keep_for_slots(guest);
-        for (auto& [pool, set] : pool_textures()) set.erase(guest);
+        unlist_pool_texture(guest);
         expire_kept();
         if (kept) return;
         if (!old) {  // in the same section (#55)
@@ -528,7 +556,7 @@ void release_kept(uint64_t key) {
             if (d && d->textures.count(id) && d->textures[id] == key) return;  // still named
         }
     g_registered.erase(key);
-    for (auto& [pool, set] : pool_textures()) set.erase(key);
+    unlist_pool_texture(key);
     if (auto o = objects().find(key); o != objects().end()) defer_object(std::move(o->second)), objects().erase(o);
     g_released_kept++;
 }
@@ -599,6 +627,14 @@ NX_TEXTURE_GETTER(TextureGetStorageSize, storage_size)
 NX_TEXTURE_GETTER(TextureGetDepthStencilMode, depth_stencil_mode)
 #undef NX_TEXTURE_GETTER
 
+// nvnTextureGetSwizzle(const NVNtexture*, NVNtextureSwizzle* r, g, b, a). It was a trace stub, which wrote nothing:
+// the game read whatever was in its four out variables (thousands of calls once the world loads).
+void TextureGetSwizzle(CPU& c) {
+    auto* t = get<Texture>(c.x[0]);
+    for (int k = 0; k < 4; k++)
+        if (uint64_t out = c.x[1 + k]) st<uint32_t>(out, t ? t->swizzle[k] : uint32_t(2 + k));
+}
+
 // ---- samplers and descriptor pools ----------------------------------------------------------------------------
 
 // NVNboolean nvn{Texture,Sampler}PoolInitialize(pool, const NVNmemoryPool*, ptrdiff_t offset, int numDescriptors)
@@ -611,6 +647,37 @@ void DescriptorPoolInitialize(CPU& c) {
 }
 
 void DescriptorPoolFinalize(CPU& c) { destroy(c.x[0]); }
+
+// Whether slot `id` already holds `guest` as it is now, through the same view: the game re-registers its slots every
+// frame, and each registration made a new snapshot (a whole Texture), dropped the last one and recorded the change
+// for the replays in flight, under objects_lock (the game threads' busiest NVN work in the PS4 profiles). Nothing
+// changes then. Under objects_lock. NX_REREGISTER_FULL=1: every registration does it all, as before.
+bool same_registration(const DescriptorPool& d, uint32_t id, uint64_t guest, const ViewInfo& v) {
+    static const bool full = std::getenv("NX_REREGISTER_FULL") != nullptr;
+    if (full) return false;
+    auto t = d.textures.find(id);
+    if (t == d.textures.end() || t->second != guest) return false;
+    const bool has_view = v.base_level || v.levels || v.min_layer || v.layers || v.swizzle || v.format;
+    auto w = d.views.find(id);
+    if (has_view != (w != d.views.end())) return false;
+    if (has_view && std::memcmp(&w->second, &v, sizeof v) != 0) return false;
+    auto s = d.snapshots.find(id);
+    if (s == d.snapshots.end()) return false;
+    auto so = objects().find(s->second), go = objects().find(guest);
+    if (so == objects().end() || go == objects().end()) return false;
+    auto* snap = dynamic_cast<Texture*>(so->second.get());
+    auto* tex = dynamic_cast<Texture*>(go->second.get());
+    if (!snap || !tex) return false;
+    // make_snapshot's fields
+    return snap->target == tex->target && snap->format == tex->format && snap->flags == tex->flags &&
+           snap->levels == tex->levels && snap->samples == tex->samples &&
+           snap->depth_stencil_mode == tex->depth_stencil_mode && snap->width == tex->width &&
+           snap->height == tex->height && snap->depth == tex->depth && snap->stride == tex->stride &&
+           snap->pool == tex->pool && snap->offset == tex->offset && snap->storage_size == tex->storage_size &&
+           snap->memory == tex->memory && snap->gpu == tex->gpu && snap->block_height_gobs == tex->block_height_gobs &&
+           std::memcmp(snap->swizzle, tex->swizzle, sizeof snap->swizzle) == 0 &&
+           snap->pool_swizzle.load() == tex->pool_swizzle.load();
+}
 
 // nvnTexturePoolRegisterTexture / RegisterImage(pool, int id, const NVNtexture*, const NVNtextureView*)
 void TexturePoolRegister(CPU& c) {
@@ -627,8 +694,12 @@ void TexturePoolRegister(CPU& c) {
     if (v.swizzle)
         if (auto* t = get<Texture>(c.x[2])) t->pool_swizzle = v.swizzle;
     if (auto* d = get<DescriptorPool>(c.x[0])) {
-        std::lock_guard lk(objects_lock());
         uint32_t id = uint32_t(c.x[1]);
+        {  // shared: an exclusive lock bumps the generation, which empties every thread's get<> cache
+            std::shared_lock lk(objects_lock());
+            if (same_registration(*d, id, c.x[2], v)) return;
+        }
+        std::lock_guard lk(objects_lock());
         PoolEntry before;  // what a replay in flight still has to see in this slot (nvn_incarnation.cpp)
         if (auto it = d->textures.find(id); it != d->textures.end()) before.has = true, before.texture = it->second;
         if (auto it = d->snapshots.find(id); it != d->snapshots.end()) before.snapshot = it->second;
@@ -638,9 +709,13 @@ void TexturePoolRegister(CPU& c) {
         d->textures[id] = c.x[2];
         if (auto s = d->snapshots.find(uint32_t(c.x[1])); s != d->snapshots.end()) drop_snapshot(s->second);
         if (uint64_t snap = make_snapshot(c.x[2])) d->snapshots[uint32_t(c.x[1])] = snap;
-        auto& slots = g_registered[c.x[2]];  // re-registered every frame: keep each slot once
-        std::pair<uint64_t, uint32_t> slot{c.x[0], uint32_t(c.x[1])};
-        if (std::find(slots.begin(), slots.end(), slot) == slots.end()) slots.push_back(slot);
+        // For keep_for_slots only: with it off (the default), the slots of every texture ever registered piled up here
+        // for the session, each registration searching its texture's list.
+        if (keep_textures()) {
+            auto& slots = g_registered[c.x[2]];  // re-registered every frame: keep each slot once
+            std::pair<uint64_t, uint32_t> slot{c.x[0], uint32_t(c.x[1])};
+            if (std::find(slots.begin(), slots.end(), slot) == slots.end()) slots.push_back(slot);
+        }
         if (old && old != c.x[2]) release_kept(old);
         // A view setting only a base level, first layer or format counts too (it was dropped: level 0 sampled).
         if (v.base_level || v.levels || v.min_layer || v.layers || v.swizzle || v.format)
@@ -709,6 +784,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
 NX_HLE("nvnTextureGetMemoryOffset", TextureGetMemoryOffset);
 NX_HLE("nvnTextureGetStorageSize", TextureGetStorageSize);
 NX_HLE("nvnTextureGetDepthStencilMode", TextureGetDepthStencilMode);
+NX_HLE("nvnTextureGetSwizzle", TextureGetSwizzle);
 NX_HLE("nvnSamplerPoolInitialize", DescriptorPoolInitialize);
 NX_HLE("nvnTexturePoolInitialize", DescriptorPoolInitialize);
 NX_HLE("nvnSamplerPoolFinalize", DescriptorPoolFinalize);

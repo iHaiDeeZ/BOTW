@@ -4,6 +4,7 @@
 // inline uniform updates (UpdateUniformBuffer, which invalidates what it overlaps) and compute results (ranges a
 // dispatch writes are read from their written copy, nvn_written.cpp, and invalidated here): a copy made once can
 // serve every later draw of the submit that binds the same bytes.
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -24,6 +25,7 @@ struct Entry {
 };
 // By host address; several sizes of one address are rare, so the latest one is kept.
 std::map<const uint8_t*, Entry> g_copies;
+uint64_t g_copies_max = 0;  // the largest copy in g_copies (how far back an overlap can start)
 uint64_t g_saved = 0, g_copied = 0;
 uint64_t g_kind_copied[5] = {}, g_kind_saved[5] = {}, g_kind_calls[5] = {};
 
@@ -67,12 +69,13 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
     std::memcpy(u.ptr, p, size);
     if (padded > size) std::memset(u.ptr + size, 0, padded - size);
     g_copies[p] = {size, padded, u};
+    g_copies_max = std::max(g_copies_max, size);
     f = {p, g_generation, {size, padded, u}};
     g_copied += padded, g_kind_copied[kind] += padded;
     return u;
 }
 
-void dedup_reset() { g_copies.clear(), g_generation++; }
+void dedup_reset() { g_copies.clear(), g_generation++, g_copies_max = 0; }
 
 void dedup_invalidate(const uint8_t* p, uint64_t size) {
     // Entries starting before p may still reach into it: look back over the few that can.
@@ -80,7 +83,9 @@ void dedup_invalidate(const uint8_t* p, uint64_t size) {
     while (it != g_copies.begin()) {
         --it;
         if (it->first + it->second.size <= p) {
-            if (p - it->first > (64ll << 20)) break;  // nothing larger than 64 MB is copied
+            // Nothing further back reaches p: no copy this submit is larger than g_copies_max. (A fixed 64 MB walked
+            // back over every uniform block copied below p at each replayed UpdateUniformBuffer.)
+            if (uint64_t(p - it->first) > g_copies_max) break;
             continue;
         }
         if (Front& f = front_of(it->first); f.p == it->first) f.generation = 0;

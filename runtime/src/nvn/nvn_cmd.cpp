@@ -30,6 +30,7 @@ namespace {
 struct CommandBuffer : Object {
     std::mutex lock;
     std::shared_ptr<CmdList> recording = std::make_shared<CmdList>();
+    size_t last_cmds = 0, last_blobs = 0;  // the previous list's sizes: the next one is reserved that much up front
     // The memory the game hands over (AddCommandMemory / AddControlMemory) and what recording "uses" of it. Engines
     // look at the used amounts right after EndRecording (a list that used nothing is dropped, never submitted) and
     // at the free ones (to add memory in time), so usage grows with the commands recorded, survives EndRecording
@@ -148,6 +149,10 @@ void CommandBufferBeginRecording(CPU& c) {
     if (auto* cb = get<CommandBuffer>(c.x[0])) {
         std::lock_guard lk(cb->lock);
         cb->recording = std::make_shared<CmdList>();
+        // A command buffer records much the same each frame: one allocation instead of ~log2(n) regrowths of
+        // ~128-byte commands.
+        cb->recording->cmds.reserve(cb->last_cmds);
+        cb->recording->blobs.reserve(cb->last_blobs);
     }
 }
 
@@ -202,6 +207,7 @@ void CommandBufferEndRecording(CPU& c) {  // NVNcommandHandle
     if (auto* cb = get<CommandBuffer>(c.x[0])) {
         std::lock_guard lk(cb->lock);
         size_t n = cb->recording->cmds.size() + 1;  // + the end of the list, so even an empty one used something
+        cb->last_cmds = cb->recording->cmds.size(), cb->last_blobs = cb->recording->blobs.size();
         start = cb->command_memory + cb->command_base;
         pool = cb->command_pool;
         cb->command_base = used(cb->command_size, cb->command_base, n, kCommandBytes);
@@ -334,7 +340,8 @@ void ClearDepthStencil(CPU& c) {
     cmd.f[0] = c.v[0].f32[0];
     cmd.mask = (c.x[1] & 1) | ((uint32_t(c.x[3]) & 0xFF) << 8);  // depth mask, stencil mask
     cmd.i[0] = int32_t(c.x[2]);
-    if (std::getenv("NX_TRACE_CLEAR_DS")) {  // each call site once: its raw arguments
+    static const bool trace_clear_ds = std::getenv("NX_TRACE_CLEAR_DS") != nullptr;
+    if (trace_clear_ds) {  // each call site once: its raw arguments
         static std::mutex m;
         static std::set<std::tuple<uint64_t, uint64_t, uint64_t, uint64_t>> seen;
         std::lock_guard lk(m);
