@@ -373,7 +373,7 @@ index 73bb101..e5f878e 100644
      with open(os.path.join(args.out, "report.txt"), "w") as out:
          out.write(f"functions {len(funcs)}, handled {e.handled}, unhandled {sum(e.unhandled.values())}\n")
 diff --git a/recomp/analysis.py b/recomp/analysis.py
-index c40659d..0425147 100644
+index c40659d..ca25d4a 100644
 --- a/recomp/analysis.py
 +++ b/recomp/analysis.py
 @@ -79,7 +79,9 @@ class Analysis:
@@ -403,7 +403,59 @@ index c40659d..0425147 100644
      fde_bounds = {f.start: f.start + f.size for f in fdes}
      log(f"  seeds: {len(fdes)} FDE, {len(an.plt)} PLT stubs, {len(entries)} entries")
  
-@@ -285,18 +296,51 @@ def _jump_table(an, f, br):
+@@ -244,17 +255,27 @@ def _jump_table(an, f, br):
+     mshift = re.search(r"(lsl|sxtw|uxtw) #(\d+)", ",".join(ops[2:]))
+     if mshift:
+         shift = int(mshift.group(2))
+-    # Either operand can be the loaded entry; the other one is the anchor (anchor + entry << shift).
++    # Either operand can be the loaded entry; the other one is the anchor (anchor + entry << shift). Both orders are
++    # tried: the anchor register's own last definition can be an unrelated load. When the anchor is the table's base
++    # register (ldrsw x8, [x21, x8, lsl #2]; add x8, x8, x21) it is resolved together with the table: Breath of the
++    # Wild's br main+1062274 keeps its table in x21, which the function redefines many times (v00.06 called into the
++    # middle of main+105f300 at main+1062388).
+     ld = anchor = None
++    anchor_is_table = False
+     for ent_op, anc_op in ((ops[2], ops[1]), (ops[1], ops[2])):
+         cand = _find_def(an, f, a_add, _regno(ent_op))
+-        if cand and cand[1].startswith("ldr") and "[" in ",".join(cand[2]):
+-            ld = cand
+-            anchor = _const(an, f, a_add, _regno(anc_op))
+-            if anc_op is ops[2] and shift:
+-                return None  # shifted anchor: not a jump table shape we know
+-            break
+-    if ld is None or anchor is None:
++        if not (cand and cand[1].startswith("ldr") and "[" in ",".join(cand[2])):
++            continue
++        if anc_op is ops[2] and shift:
++            continue  # shifted anchor: not a jump table shape we know
++        base = re.match(r"\[(\w+)", cand[2][1]) if len(cand[2]) > 1 else None
++        same = base is not None and _regno(base.group(1)) == _regno(anc_op)
++        value = None if same else _const(an, f, a_add, _regno(anc_op))
++        if value is None and not same:
++            continue
++        ld, anchor, anchor_is_table = cand, value, same
++        break
++    if ld is None:
+         return None
+     a_ld, ld_mn, ld_ops = ld
+     size = {"ldrb": 1, "ldrh": 2, "ldrsb": 1, "ldrsh": 2, "ldrsw": 4, "ldr": 4}.get(ld_mn)
+@@ -271,6 +292,7 @@ def _jump_table(an, f, br):
+         # Without a bound, take every entry that lands on an instruction of this function (up to 256): a superset
+         # only adds labels, while a missing target would be a call into the middle of the function at run time.
+         limit = count if count is not None else 256
++        anc = table if anchor_is_table else anchor
+         out = []
+         misses = 0
+         for k in range(limit):
+@@ -278,25 +300,62 @@ def _jump_table(an, f, br):
+             if p + size > len(m.image):
+                 break
+             v = int.from_bytes(m.image[p:p + size], "little", signed=signed)
+-            t = anchor + (v << shift)
++            t = anc + (v << shift)
+             if not (f.start <= t < f.end) or t not in an.insns:
+                 misses += 1
+                 if count is None and misses > 4:
                      break
                  continue
              out.append(t)
@@ -416,7 +468,7 @@ index c40659d..0425147 100644
 +                if p + size > len(m.image):
 +                    break
 +                v = int.from_bytes(m.image[p:p + size], "little", signed=signed)
-+                t = anchor + (v << shift)
++                t = anc + (v << shift)
 +                if not (f.start <= t < f.end) or t not in an.insns:
 +                    break
 +                out.append(t)
@@ -432,7 +484,7 @@ index c40659d..0425147 100644
 +    # Kingdom's main+221ff6c picks its byte tables at run time through one register (x13: adrp/add, then reused for
 +    # other values), and no table the analysis could read held main+22205f8, where the game went (v00.11).
 +    byte_targets = set()
-+    if size == 1:
++    if size == 1 and anchor is not None:
 +        for v in (range(-128, 128) if signed else range(256)):
 +            t = anchor + (v << shift)
 +            if f.start <= t < f.end and t in an.insns:
@@ -444,10 +496,15 @@ index c40659d..0425147 100644
 +
      table = _const(an, f, a_ld, base_reg)
 -    if table is not None and m.in_image(table):
-+    if table is not None and in_tables(table):
-         out, _ = entries(table)
+-        out, _ = entries(table)
 -        return sorted(set(out)) if out else None
-+        return finish(out)
++    if table is not None and in_tables(table):
++        out, misses = entries(table)
++        # A table that is also the anchor must land every entry of its bound on this function; otherwise the
++        # register's last definition in address order was another value of it, and the candidates below decide.
++        # (Without a bound the scan stops at misses by design.)
++        if not anchor_is_table or count is None or (out and misses == 0):
++            return finish(out)
      # The base register's last definition in address order is not a constant (control flow reaches the load from
      # another path: Wonder's main+28b3bc takes x24 from an adrp/add 0x5000 bytes earlier, the linear search found an
      # unrelated movk). With a known bound, try every constant the function puts in that register and keep one whose
@@ -458,7 +515,7 @@ index c40659d..0425147 100644
      candidates = []
      a = f.start
      while a < f.end:
-@@ -304,7 +348,7 @@ def _jump_table(an, f, br):
+@@ -304,7 +363,7 @@ def _jump_table(an, f, br):
          ops = _ops(op)
          if mn in ("adrp", "adr", "add") and ops and _regno(ops[0]) == base_reg:
              c = _const(an, f, a + 4, base_reg)
@@ -467,7 +524,7 @@ index c40659d..0425147 100644
                  candidates.append(c)
          a += 4
      # Several constants can pass that test (main+28b3bc: an add x24, x23, #0x90 as well as the real adrp/add), and
-@@ -314,7 +358,7 @@ def _jump_table(an, f, br):
+@@ -314,7 +373,7 @@ def _jump_table(an, f, br):
          out, misses = entries(c)
          if out and misses == 0:
              found.update(out)
@@ -10366,7 +10423,7 @@ index 35cb3de..950f5a0 100644
          uint64_t expected = 0;
          if (!w.addr.compare_exchange_strong(expected, addr)) continue;
 diff --git a/tools/maxwell/containers.py b/tools/maxwell/containers.py
-index 6b42bf3..1e3b423 100644
+index 6b42bf3..3de4794 100644
 --- a/tools/maxwell/containers.py
 +++ b/tools/maxwell/containers.py
 @@ -12,7 +12,8 @@ Understood formats (docs/nvn/SHADERS.md has the layouts and what is verified vs.
@@ -10379,7 +10436,17 @@ index 6b42bf3..1e3b423 100644
  
  Every stage gets a stable id (container path / program / stage) and a content hash of its code block. --extract writes
  <id>.code.bin (the code block as stored: 0x30-byte NVN header, SPH for graphics stages, Maxwell instructions,
-@@ -113,6 +114,7 @@ class Stage:
+@@ -36,6 +37,9 @@ SPH_TYPE = {1: "vertex", 2: "hull", 3: "domain", 4: "geometry", 5: "pixel"}
+ CODE_MAGIC_GRAPHICS = 0x12345678   # first word of the 0x30-byte header in front of vertex..pixel code
+ CODE_MAGIC_COMPUTE = 0x12345679    # same header in front of compute code
+ CONTROL_MAGIC = 0x98761234         # first word of an NVN control section
++# Yaz0-compressed SARC members worth opening (Breath of the Wild: Effect/*.sesetlist, Layout/*.sblarc,
++# Shader/*.sbfsha, System/*.ssarc); everything else in its packs is models, actors and map data.
++YAZ0_SHADER_MEMBERS = (".sesetlist", ".sblarc", ".sbfsha", ".ssarc", ".sbnsh", ".sbfsh")
+ 
+ 
+ def u16(d, o):
+@@ -113,6 +117,7 @@ class Stage:
          self.code_size = code_size
          self.ctrl_off = ctrl_off
          self.ctrl_size = ctrl_size
@@ -10387,7 +10454,7 @@ index 6b42bf3..1e3b423 100644
          code = bytes(data[code_off:code_off + code_size])
          self.hash = hashlib.sha1(code).hexdigest()[:16]
          ctrl = data[ctrl_off:ctrl_off + ctrl_size]
-@@ -134,7 +136,9 @@ def check_stage(st, data):
+@@ -134,7 +139,9 @@ def check_stage(st, data):
          return ["out of file"]
      magic = u32(data, st.code_off)
      want = CODE_MAGIC_COMPUTE if st.kind == "compute" else CODE_MAGIC_GRAPHICS
@@ -10398,7 +10465,7 @@ index 6b42bf3..1e3b423 100644
          bad.append(f"code magic {magic:#x}")
      if u32(data, st.ctrl_off) != CONTROL_MAGIC:
          bad.append("control magic")
-@@ -150,7 +154,7 @@ def check_stage(st, data):
+@@ -150,7 +157,7 @@ def check_stage(st, data):
          elif any(data[c + end:c + st.const_off]) or any(data[c + st.const_off + st.const_size:c + st.code_size]):
              bad.append("padding not zero")
      if st.kind != "compute":
@@ -10407,7 +10474,34 @@ index 6b42bf3..1e3b423 100644
          if SPH_TYPE.get((sph >> 10) & 0xF) != st.kind:
              bad.append(f"SPH type {(sph >> 10) & 0xF}")
      return bad
-@@ -451,8 +455,25 @@ def open_blob(d, base, size, path, reflect=False):
+@@ -305,7 +312,7 @@ def parse_fsha(d, base, path, reflect=False):
+ def parse_vfxb(d, base, path, reflect=False):
+     """Sections of 0x20-byte headers: magic, u32 size, u32 child offset, u32 next offset (both relative to the
+     section, 0xffffffff = none), u32 attribute offset, u32 data offset, u32 0, u16 child count.
+-    GRSR (graphics) and GRSC (compute) hold a BNSH at their data offset."""
++    GRSR or GRSN (graphics) and GRSC (compute) hold a BNSH at their data offset."""
+     if bytes(d[base:base + 8]) != b"VFXB    ":
+         raise ValueError(f"no VFXB at {base:#x}")
+     size = u32(d, base + 0x1C)
+@@ -322,7 +329,8 @@ def parse_vfxb(d, base, path, reflect=False):
+             magic = bytes(d[s:s + 4]).decode("ascii")
+             child, nxt, data_off = u32(d, s + 8), u32(d, s + 12), u32(d, s + 20)
+             names.append(magic)
+-            if magic in ("GRSR", "GRSC") and bytes(d[s + data_off:s + data_off + 4]) == b"BNSH":
++            # GRSN: the graphics shaders of older effect binaries (Breath of the Wild); GRSR in later ones.
++            if magic in ("GRSR", "GRSN", "GRSC") and bytes(d[s + data_off:s + data_off + 4]) == b"BNSH":
+                 c.children.append(parse_bnsh(d, s + data_off, f"{path}/{magic}", reflect))
+             if child != 0xFFFFFFFF:
+                 todo.append(s + child)
+@@ -447,12 +455,33 @@ def open_blob(d, base, size, path, reflect=False):
+     if magic[:4] == b"SARC":
+         c = Container("SARC", path, base, size)
+         for name, off, n in sarc_files(d, base):
++            # Breath of the Wild's packs hold thousands of Yaz0 members (models, actor packs, maps): only those that can
++            # carry shaders are decompressed (effects, layouts, shader and agl/gsys archives).
++            if bytes(d[off:off + 4]) == b"Yaz0" and not name.endswith(YAZ0_SHADER_MEMBERS):
++                continue
+             sub = open_blob(d, off, n, f"{path}/{name}", reflect)
              if sub:
                  c.children.append(sub)
          return c if c.children else None
@@ -10434,7 +10528,7 @@ index 6b42bf3..1e3b423 100644
      if magic == b"BNSH\0\0\0\0":
          return parse_bnsh(d, base, path, reflect)
      if magic == b"VFXB    ":
-@@ -468,14 +489,84 @@ def open_blob(d, base, size, path, reflect=False):
+@@ -468,14 +497,84 @@ def open_blob(d, base, size, path, reflect=False):
      return None
  
  
@@ -10521,7 +10615,7 @@ index 6b42bf3..1e3b423 100644
      return raw
  
  
-@@ -530,8 +621,8 @@ def extract(c, outdir, data, unique=False):
+@@ -530,8 +629,8 @@ def extract(c, outdir, data, unique=False):
          m.write("id\tstage\tcode_off\tcode_size\tctrl_off\tctrl_size\tprogram_start\tprogram_bytes\tconst_off\t"
                  "const_size\tcode_sha1_16\tcode_file\tctrl_file\n")
          for s in all_stages(c):
@@ -10532,7 +10626,7 @@ index 6b42bf3..1e3b423 100644
              if unique:
                  code_file = f"code_{s.hash}.bin"
                  ctrl_file = f"ctrl_{hashlib.sha1(bytes(ctrl)).hexdigest()[:16]}.bin"
-@@ -580,7 +671,7 @@ def inventory(paths):
+@@ -580,7 +679,7 @@ def inventory(paths):
              kinds[s.kind] += 1
              total["layout check failures"] += bool(s.problems)
              blocks[s.hash] = s.code_size
