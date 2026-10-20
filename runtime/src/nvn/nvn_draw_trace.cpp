@@ -368,6 +368,9 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                           double(g_state.depth_far), g_state.depth_clamp, g_state.polygon.offset_enables,
                           g_state.polygon.cull, g_state.viewport[2], g_state.viewport[3]);
             line += b;
+            std::snprintf(b, sizeof b, " bias %g %g %g", double(g_state.bias_factor), double(g_state.bias_units),
+                          double(g_state.bias_clamp));
+            line += b;
         }
         diag_line(line);
     }

@@ -338,7 +338,13 @@ VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, 
     rs.lineWidth = 1.0f;
     // SetDepthClamp: clamps instead of clipping at the near and far planes, like depthClampEnable (a device feature;
     // nvn_vk.cpp enables every core feature the GPU has, and MoltenVK has it through Metal's depth clip mode).
-    rs.depthClampEnable = key.depth_clamp && vk_features().depthClamp ? VK_TRUE : VK_FALSE;
+    // NX_DEPTH_CLAMP=0: clipped instead (Tears of the Kingdom's PS4 default, games/totk/game.cpp): on the PS4's RADV
+    // every clamped fragment came out at depth 0 (the shadow casters filled their maps with 0: a black world).
+    static const bool clamp_on = [] {
+        const char* e = std::getenv("NX_DEPTH_CLAMP");
+        return !e || e[0] != '0';
+    }();
+    rs.depthClampEnable = key.depth_clamp && clamp_on && vk_features().depthClamp ? VK_TRUE : VK_FALSE;
     // Polygon offset: NVNpolygonOffsetEnable has a bit per polygon mode (POINT 1, LINE 2, FILL 4; modes are POINT 0,
     // LINE 1, FILL 2), and the bit of the mode drawn with decides. Factor, units and clamp are dynamic (SetDepthBias
     // at each draw, nvn_raster.cpp): the game sets them on the command buffer, not in the state object.
