@@ -512,16 +512,18 @@ void draw_counter(VkDevice d, VkQueue queue, VkImage image, uint32_t slot) {
         c.in_flight[ring] = true;
 }
 
-// Until VideoOut shows flip `arg` (the GPU has written the frame out by then), at most ~100 ms.
-void wait_flipped(int64_t arg) {
-    for (int tries = 0; tries < 20; tries++) {
+// Until VideoOut shows flip `arg` (the GPU has written the frame out by then), at most `tries` x 5 ms. False: it did
+// not show up in that time.
+bool wait_flipped(int64_t arg, int tries = 20) {
+    for (int k = 0; k < tries; k++) {
         OrbisVideoOutFlipStatus status{};
-        if (sceVideoOutGetFlipStatus(g_video, &status) < 0 || status.flipArg >= arg) return;
+        if (sceVideoOutGetFlipStatus(g_video, &status) < 0 || status.flipArg >= arg) return true;
         OrbisKernelEvent ev;
         int got = 0;
         OrbisKernelUseconds timeout = 5000;
         sceKernelWaitEqueue(*g_flip_queue, &ev, 1, &got, &timeout);
     }
+    return false;
 }
 
 void count_present() {
@@ -587,9 +589,12 @@ VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInf
             if (n <= 3) log("ps4/wsi: flip %llu of buffer %u (%s)", (unsigned long long)n, buffer,
                             gpu_flip ? "GPU-side" : "CPU wait");
             // L3 + R3: the quick menu (ps4_menu.cpp), over this frame once the GPU has drawn it. The game waits here.
+            // No vkQueueWaitIdle first: the frame on screen means the GPU is done with it, and the queue may never go
+            // idle here (v00.33 froze entering the menu, 554 s in, with the replay thread in this call; a 317 s entry
+            // had worked). The wait is bounded: past 2 s the menu opens over whatever is on screen.
             if (menu_requested()) {
-                device_fn<PFN_vkQueueWaitIdle>(sc->device, "vkQueueWaitIdle")(queue);
-                wait_flipped(int64_t(n));  // the frame is in memory once it is on screen (read before: black)
+                if (!wait_flipped(int64_t(n), 400))  // the frame is in memory once it is on screen (read before: black)
+                    log("ps4/wsi: menu: flip %llu not on screen after 2 s; opening anyway", (unsigned long long)n);
                 menu_run(sc->pixels[info->pImageIndices[k]], sc->pitch, g_video, int(buffer), int64_t(n));
             }
         }
