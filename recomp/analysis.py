@@ -255,17 +255,27 @@ def _jump_table(an, f, br):
     mshift = re.search(r"(lsl|sxtw|uxtw) #(\d+)", ",".join(ops[2:]))
     if mshift:
         shift = int(mshift.group(2))
-    # Either operand can be the loaded entry; the other one is the anchor (anchor + entry << shift).
+    # Either operand can be the loaded entry; the other one is the anchor (anchor + entry << shift). Both orders are
+    # tried: the anchor register's own last definition can be an unrelated load. When the anchor is the table's base
+    # register (ldrsw x8, [x21, x8, lsl #2]; add x8, x8, x21) it is resolved together with the table: Breath of the
+    # Wild's br main+1062274 keeps its table in x21, which the function redefines many times (v00.06 called into the
+    # middle of main+105f300 at main+1062388).
     ld = anchor = None
+    anchor_is_table = False
     for ent_op, anc_op in ((ops[2], ops[1]), (ops[1], ops[2])):
         cand = _find_def(an, f, a_add, _regno(ent_op))
-        if cand and cand[1].startswith("ldr") and "[" in ",".join(cand[2]):
-            ld = cand
-            anchor = _const(an, f, a_add, _regno(anc_op))
-            if anc_op is ops[2] and shift:
-                return None  # shifted anchor: not a jump table shape we know
-            break
-    if ld is None or anchor is None:
+        if not (cand and cand[1].startswith("ldr") and "[" in ",".join(cand[2])):
+            continue
+        if anc_op is ops[2] and shift:
+            continue  # shifted anchor: not a jump table shape we know
+        base = re.match(r"\[(\w+)", cand[2][1]) if len(cand[2]) > 1 else None
+        same = base is not None and _regno(base.group(1)) == _regno(anc_op)
+        value = None if same else _const(an, f, a_add, _regno(anc_op))
+        if value is None and not same:
+            continue
+        ld, anchor, anchor_is_table = cand, value, same
+        break
+    if ld is None:
         return None
     a_ld, ld_mn, ld_ops = ld
     size = {"ldrb": 1, "ldrh": 2, "ldrsb": 1, "ldrsh": 2, "ldrsw": 4, "ldr": 4}.get(ld_mn)
@@ -282,6 +292,7 @@ def _jump_table(an, f, br):
         # Without a bound, take every entry that lands on an instruction of this function (up to 256): a superset
         # only adds labels, while a missing target would be a call into the middle of the function at run time.
         limit = count if count is not None else 256
+        anc = table if anchor_is_table else anchor
         out = []
         misses = 0
         for k in range(limit):
@@ -289,7 +300,7 @@ def _jump_table(an, f, br):
             if p + size > len(m.image):
                 break
             v = int.from_bytes(m.image[p:p + size], "little", signed=signed)
-            t = anchor + (v << shift)
+            t = anc + (v << shift)
             if not (f.start <= t < f.end) or t not in an.insns:
                 misses += 1
                 if count is None and misses > 4:
@@ -305,7 +316,7 @@ def _jump_table(an, f, br):
                 if p + size > len(m.image):
                     break
                 v = int.from_bytes(m.image[p:p + size], "little", signed=signed)
-                t = anchor + (v << shift)
+                t = anc + (v << shift)
                 if not (f.start <= t < f.end) or t not in an.insns:
                     break
                 out.append(t)
@@ -321,7 +332,7 @@ def _jump_table(an, f, br):
     # Kingdom's main+221ff6c picks its byte tables at run time through one register (x13: adrp/add, then reused for
     # other values), and no table the analysis could read held main+22205f8, where the game went (v00.11).
     byte_targets = set()
-    if size == 1:
+    if size == 1 and anchor is not None:
         for v in (range(-128, 128) if signed else range(256)):
             t = anchor + (v << shift)
             if f.start <= t < f.end and t in an.insns:
@@ -333,8 +344,12 @@ def _jump_table(an, f, br):
 
     table = _const(an, f, a_ld, base_reg)
     if table is not None and in_tables(table):
-        out, _ = entries(table)
-        return finish(out)
+        out, misses = entries(table)
+        # A table that is also the anchor must land every entry of its bound on this function; otherwise the
+        # register's last definition in address order was another value of it, and the candidates below decide.
+        # (Without a bound the scan stops at misses by design.)
+        if not anchor_is_table or count is None or (out and misses == 0):
+            return finish(out)
     # The base register's last definition in address order is not a constant (control flow reaches the load from
     # another path: Wonder's main+28b3bc takes x24 from an adrp/add 0x5000 bytes earlier, the linear search found an
     # unrelated movk). With a known bound, try every constant the function puts in that register and keep one whose

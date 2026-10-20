@@ -37,6 +37,9 @@ SPH_TYPE = {1: "vertex", 2: "hull", 3: "domain", 4: "geometry", 5: "pixel"}
 CODE_MAGIC_GRAPHICS = 0x12345678   # first word of the 0x30-byte header in front of vertex..pixel code
 CODE_MAGIC_COMPUTE = 0x12345679    # same header in front of compute code
 CONTROL_MAGIC = 0x98761234         # first word of an NVN control section
+# Yaz0-compressed SARC members worth opening (Breath of the Wild: Effect/*.sesetlist, Layout/*.sblarc,
+# Shader/*.sbfsha, System/*.ssarc); everything else in its packs is models, actors and map data.
+YAZ0_SHADER_MEMBERS = (".sesetlist", ".sblarc", ".sbfsha", ".ssarc", ".sbnsh", ".sbfsh")
 
 
 def u16(d, o):
@@ -309,7 +312,7 @@ def parse_fsha(d, base, path, reflect=False):
 def parse_vfxb(d, base, path, reflect=False):
     """Sections of 0x20-byte headers: magic, u32 size, u32 child offset, u32 next offset (both relative to the
     section, 0xffffffff = none), u32 attribute offset, u32 data offset, u32 0, u16 child count.
-    GRSR (graphics) and GRSC (compute) hold a BNSH at their data offset."""
+    GRSR or GRSN (graphics) and GRSC (compute) hold a BNSH at their data offset."""
     if bytes(d[base:base + 8]) != b"VFXB    ":
         raise ValueError(f"no VFXB at {base:#x}")
     size = u32(d, base + 0x1C)
@@ -326,7 +329,8 @@ def parse_vfxb(d, base, path, reflect=False):
             magic = bytes(d[s:s + 4]).decode("ascii")
             child, nxt, data_off = u32(d, s + 8), u32(d, s + 12), u32(d, s + 20)
             names.append(magic)
-            if magic in ("GRSR", "GRSC") and bytes(d[s + data_off:s + data_off + 4]) == b"BNSH":
+            # GRSN: the graphics shaders of older effect binaries (Breath of the Wild); GRSR in later ones.
+            if magic in ("GRSR", "GRSN", "GRSC") and bytes(d[s + data_off:s + data_off + 4]) == b"BNSH":
                 c.children.append(parse_bnsh(d, s + data_off, f"{path}/{magic}", reflect))
             if child != 0xFFFFFFFF:
                 todo.append(s + child)
@@ -451,6 +455,10 @@ def open_blob(d, base, size, path, reflect=False):
     if magic[:4] == b"SARC":
         c = Container("SARC", path, base, size)
         for name, off, n in sarc_files(d, base):
+            # Breath of the Wild's packs hold thousands of Yaz0 members (models, actor packs, maps): only those that can
+            # carry shaders are decompressed (effects, layouts, shader and agl/gsys archives).
+            if bytes(d[off:off + 4]) == b"Yaz0" and not name.endswith(YAZ0_SHADER_MEMBERS):
+                continue
             sub = open_blob(d, off, n, f"{path}/{name}", reflect)
             if sub:
                 c.children.append(sub)
