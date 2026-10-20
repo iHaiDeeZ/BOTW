@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -56,8 +57,22 @@ struct File {
     uint64_t base = 0;   // RomFS pack: where the file starts in romfs.pak
     int64_t size = -1;   // RomFS pack: the file's size (-1: a host file of its own)
     bool owns = true;    // false: the shared romfs.pak
+    // Streamed audio (.bwav in the pack) is read ahead: the game reads its streams 48 KB at a time, several streams
+    // (music, ambience, a cutscene's dialogue) and the world's data from all over romfs.pak at once, and on the PS4's
+    // hard disk each small read waited ~90 ms (up to 155) for its seek, long enough for the audio engine to drop a
+    // voice in the middle of a line. One read of kReadAhead serves the next ones from memory. Under ahead_lock.
+    bool stream = false;
+    std::mutex ahead_lock;
+    std::vector<uint8_t> ahead;
+    int64_t ahead_at = -1;  // the window's offset in the file
     File(FILE* file, std::string p) : f(file), path(std::move(p)) {}
-    File(FILE* file, std::string p, uint64_t b, int64_t n) : f(file), path(std::move(p)), base(b), size(n), owns(false) {}
+    File(FILE* file, std::string p, uint64_t b, int64_t n) : f(file), path(std::move(p)), base(b), size(n), owns(false) {
+        static const bool on = [] {
+            const char* e = std::getenv("NX_STREAM_READ_AHEAD");
+            return !(e && e[0] == '0');
+        }();
+        stream = on && path.size() > 5 && path.compare(path.size() - 5, 5, ".bwav") == 0;
+    }
     File(const File&) = delete;  // owns the FILE: one instance only
     File& operator=(const File&) = delete;
     ~File() {
@@ -398,11 +413,37 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
     c.x[0] = kOk;
 }
 
-uint64_t read_at(const File& file, int64_t off, uint64_t buf, uint64_t size) {
+constexpr uint64_t kReadAhead = 512 << 10;  // NX_STREAM_READ_AHEAD=0: off
+
+// `size` bytes at `off` (file-relative) of a streamed file through its read-ahead window. False: read directly.
+bool read_ahead(File& file, int64_t off, uint64_t buf, uint64_t size, uint64_t& n) {
+    if (!file.stream || size == 0 || size > kReadAhead / 2) return false;
+    std::lock_guard lk(file.ahead_lock);
+    const int64_t end = off + int64_t(size);
+    if (file.ahead_at < 0 || off < file.ahead_at || end > file.ahead_at + int64_t(file.ahead.size())) {
+        uint64_t want = std::min<uint64_t>(kReadAhead, uint64_t(file.size - off));
+        file.ahead.resize(want);
+        uint64_t got = plat::read_at(file.f, int64_t(file.base) + off, file.ahead.data(), want);
+        file.ahead.resize(got);
+        file.ahead_at = off;
+        if (got < size) return false;
+    }
+    std::memcpy(reinterpret_cast<void*>(buf), file.ahead.data() + (off - file.ahead_at), size);
+    n = size;
+    return true;
+}
+
+uint64_t read_at(File& file, int64_t off, uint64_t buf, uint64_t size) {
     uint64_t t0 = plat::monotonic_ns();
     if (file.size >= 0) {  // a window of the RomFS pack: never past the file's end
         if (off < 0 || off >= file.size) return 0;
         size = std::min<uint64_t>(size, uint64_t(file.size - off));
+        if (uint64_t n = 0; read_ahead(file, off, buf, size, n)) {
+            if (uint64_t ms = (plat::monotonic_ns() - t0) / 1'000'000; ms >= 30)
+                log("fs: slow read %s: %llu bytes at %lld took %llu ms (read ahead)", file.path.c_str(),
+                    (unsigned long long)size, (long long)off, (unsigned long long)ms);
+            return n;
+        }
         off += int64_t(file.base);
     }
     uint64_t n = plat::read_at(file.f, off, reinterpret_cast<void*>(buf), size);

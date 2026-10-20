@@ -1,6 +1,8 @@
 // nn::vi (display/layers) and nv:: (graphics driver setup) at the API level. The layer is the platform's window
 // (Win32 window / Android surface); its handle is the "native window" the game hands to vkCreateViSurfaceNN, which
 // the Vulkan bridge turns into the platform's surface.
+#include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -43,13 +45,32 @@ void nv_noop(CPU&) {}
 // SystemEvent (AttachSystemEvent with our read/write handles, auto clear: each wait consumes one vsync).
 std::shared_ptr<EventState> g_vsync = std::make_shared<EventState>();
 
+// A vsync that fires while the last one is still unconsumed is owed (at most one): it is signalled again as soon as
+// the game takes the first. At 30 fps the game waits for two vsyncs a frame, and a frame a little over 33 ms (the PS4
+// outside the cave) found the first one latched and the second lost, then waited up to 16.7 ms for the next: frames
+// snapped from 34 ms to 50 (20.0 fps where 29 was possible). The game times its frames itself (it picks its present
+// interval from them), so a late frame is not made later. NX_VSYNC_CATCHUP=0: missed vsyncs are lost, as on the Switch.
 void vsync_thread() {
     plat::set_thread_name("vsync");
+    static const bool catchup = [] {
+        const char* e = std::getenv("NX_VSYNC_CATCHUP");
+        return !(e && e[0] == '0');
+    }();
     uint64_t next = plat::monotonic_ns();
+    int owed = 0;
     for (;;) {
         next += 16'666'667;
-        int64_t wait = int64_t(next - plat::monotonic_ns());
-        if (wait > 0) plat::sleep_ns(wait);
+        for (;;) {
+            uint64_t now = plat::monotonic_ns();
+            if (now >= next) break;
+            if (owed && !g_vsync->signaled) {
+                owed--;
+                g_vsync->signaled = true;
+                notify_all();
+            }
+            plat::sleep_ns(owed ? std::min<uint64_t>(next - now, 1'000'000) : next - now);
+        }
+        if (catchup && g_vsync->signaled) owed = 1;
         g_vsync->signaled = true;
         notify_all();
     }
