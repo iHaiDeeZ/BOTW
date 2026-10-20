@@ -373,6 +373,7 @@ struct PolygonInfo {
 // nvn_raster.cpp: an EQUAL colour pass after a depth pre-pass (tested, not written), drawn with a small depth bias
 // toward the camera (DEBUG.md #60). NX_EQUAL_SLACK=<units> (default 4, 0: off); the slope term is 1 per unit of it.
 bool equal_slack_pass(const DepthStencilInfo& d);
+bool equal_exact();  // NX_EQUAL_EXACT=1: depth EQUAL kept exact, no slack (nvn_raster.cpp)
 
 struct TargetViews {  // SetRenderTargets' blob: level and layer per color target (0..7) and depth (8)
     uint8_t level[9] = {};

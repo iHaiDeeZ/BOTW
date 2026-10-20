@@ -23,6 +23,8 @@ void game::after_init() {
     // The shadow casters draw with depth clamp; on the PS4 every clamped fragment landed at depth 0 (storyboard
     // v00.23: shadow maps cleared to 1, then 0 everywhere). Clipped instead (nvn_pipeline.cpp).
     setenv("NX_DEPTH_CLAMP", "0", 0);
+    // The deferred lighting matches material IDs written as depth with EQUAL: kept exact (nvn_pipeline.cpp).
+    setenv("NX_EQUAL_EXACT", "1", 0);
 }
 void game::renderer_start() {}
 void game::first_frame() {}
