@@ -14,6 +14,9 @@
 #include <cstdlib>
 #include <deque>
 #include <map>
+#include <mutex>
+#include <set>
+#include <tuple>
 
 #include "nvn.h"
 #include "nvn_shaders.h"
@@ -331,6 +334,14 @@ void ClearDepthStencil(CPU& c) {
     cmd.f[0] = c.v[0].f32[0];
     cmd.mask = (c.x[1] & 1) | ((uint32_t(c.x[3]) & 0xFF) << 8);  // depth mask, stencil mask
     cmd.i[0] = int32_t(c.x[2]);
+    if (std::getenv("NX_TRACE_CLEAR_DS")) {  // each call site once: its raw arguments
+        static std::mutex m;
+        static std::set<std::tuple<uint64_t, uint64_t, uint64_t, uint64_t>> seen;
+        std::lock_guard lk(m);
+        if (seen.insert({c.x[30], c.x[1], c.x[2], c.x[3]}).second && seen.size() < 200)
+            log("clear-ds: lr %s depth %g x1 %llx x2 %llx x3 %llx", describe(c.x[30]).c_str(), double(c.v[0].f32[0]),
+                (unsigned long long)c.x[1], (unsigned long long)c.x[2], (unsigned long long)c.x[3]);
+    }
     record(c.x[0], cmd);
 }
 

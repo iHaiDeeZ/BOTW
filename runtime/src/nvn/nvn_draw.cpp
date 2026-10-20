@@ -422,6 +422,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
     std::copy_n(g_state.blend, 8, key.blend);
     key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
+    // NX_NO_DEPTH_TEST_FS=<hash>[,<hash>...]: those fragment shaders drawn without the depth test (bisecting).
+    static const char* no_depth_fs = std::getenv("NX_NO_DEPTH_TEST_FS");
+    if (no_depth_fs && fs && std::strstr(no_depth_fs, fs->hash.c_str())) key.depth.depth_test = 0;
     key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
     key.alpha_to_coverage = g_state.alpha_to_coverage;
     for (uint32_t k = 0; k < t.color_count; k++) {

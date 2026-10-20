@@ -340,9 +340,11 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             ViewInfo vw;
             texture_for(handles[k], texture, si, &vw);
             GpuImage* img = texture ? image_of(texture) : nullptr;
-            char b[160];
-            std::snprintf(b, sizeof b, " t%zu=%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g)", k,
-                          (unsigned long long)texture, img ? img->width : 0, img ? img->height : 0,
+            char b[200];
+            Texture* tx = texture ? get<Texture>(texture) : nullptr;
+            std::snprintf(b, sizeof b, " t%zu=%llx@%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g)", k,
+                          (unsigned long long)texture, (unsigned long long)(tx ? tx->memory : 0),
+                          img ? img->width : 0, img ? img->height : 0,
                           img ? int(img->format) : 0, img ? img->levels : 0, img ? img->layers : 0,
                           img && img->rendered ? " rt" : "", img && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? " depth" : "",
                           si.compare_mode, double(si.lod_min), double(si.lod_max));
@@ -352,8 +354,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
         {  // where it draws and how it tests depth (depth-only passes leave no picture: shadows, depth pyramids)
             auto shape = [](uint64_t texture) {
                 GpuImage* img = texture ? image_of(texture) : nullptr;
-                char s[96];
-                std::snprintf(s, sizeof s, "%llx(%ux%u vk%d)", (unsigned long long)texture, img ? img->width : 0,
+                Texture* tx = texture ? get<Texture>(texture) : nullptr;
+                char s[128];
+                std::snprintf(s, sizeof s, "%llx@%llx(%ux%u vk%d)", (unsigned long long)texture,
+                              (unsigned long long)(tx ? tx->memory : 0), img ? img->width : 0,
                               img ? img->height : 0, img ? int(img->format) : 0);
                 return std::string(s);
             };
@@ -361,7 +365,9 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             char b[256];
             std::snprintf(b, sizeof b, " | c%u", t.color_count);
             line += b;
-            if (t.color_count) line += " c0=" + shape(t.colors[0]);
+            for (uint32_t k = 0; k < t.color_count && k < 8; k++)
+                if (t.colors[k])
+                    line += " c" + std::to_string(k) + "=" + shape(t.colors[k]) + "m" + std::to_string(g_state.mask.mask[k]);
             if (t.depth) line += " d=" + shape(t.depth) + " L" + std::to_string(t.views.layer[8]);
             std::snprintf(b, sizeof b, " z test %u write %u func %u range %g..%g clamp %u offset %x cull %u vp %dx%d",
                           d.depth_test, d.depth_write, d.depth_func, double(g_state.depth_near),
@@ -477,6 +483,38 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                     (unsigned long long)r.size, f ? f[0] : -1, f ? f[1] : -1, f ? f[2] : -1, f ? f[3] : -1,
                     f ? f[4] : -1, f ? f[5] : -1, f ? f[6] : -1, f ? f[7] : -1);
             }
+        // NX_TRACE_UNIFORM=<stage>:<bank>:<vec4>[,...] (stage 0 vertex, 1 fragment): those uniform vec4s (guest memory).
+        if (const char* e = std::getenv("NX_TRACE_UNIFORM"))
+            for (const char* p = e; *p;) {
+                unsigned st = 0, bank = 0, v = 0;
+                int used = 0;
+                if (std::sscanf(p, "%u:%u:%u%n", &st, &bank, &v, &used) != 3) break;
+                p += used;
+                if (*p == ',') p++;
+                if (st > 1 || bank < 3 || bank - 3 >= 16) continue;
+                const Range& r = g_state.uniforms[st][bank - 3];
+                const auto* f = r.address && uint64_t(v) * 16 + 16 <= r.size
+                                    ? reinterpret_cast<const float*>(guest_bytes(r.address + uint64_t(v) * 16)) : nullptr;
+                if (f)
+                    log("  %s c%u[%u] = %g %g %g %g (%08x %08x %08x %08x)", st ? "fs" : "vs", bank, v, f[0], f[1], f[2],
+                        f[3], *reinterpret_cast<const uint32_t*>(f), *reinterpret_cast<const uint32_t*>(f + 1),
+                        *reinterpret_cast<const uint32_t*>(f + 2), *reinterpret_cast<const uint32_t*>(f + 3));
+                else
+                    log("  %s c%u[%u]: not bound (size %llu)", st ? "fs" : "vs", bank, v, (unsigned long long)r.size);
+            }
+        // NX_TRACE_FS_STORAGE=<words>: the fragment stage's storage buffer 0, that many words as floats (guest memory).
+        if (const char* e = std::getenv("NX_TRACE_FS_STORAGE"))
+            if (const Range& r = g_state.storage[1][0]; r.address)
+                if (const auto* f = reinterpret_cast<const float*>(guest_bytes(r.address))) {
+                    size_t n = std::min<size_t>(std::strtoul(e, nullptr, 10), r.size / 4);
+                    std::string s;
+                    for (size_t i = 0; i < n; i++) {
+                        char b[32];
+                        std::snprintf(b, sizeof b, "%s[%zu]=%g", i % 8 ? " " : "\n    ", i, double(f[i]));
+                        s += b;
+                    }
+                    log("  fs s0 @%llx+%llx:%s", (unsigned long long)r.address, (unsigned long long)r.size, s.c_str());
+                }
         {
             const auto& k = vs->constants;
             std::string w;
