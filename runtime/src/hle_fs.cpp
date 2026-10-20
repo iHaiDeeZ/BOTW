@@ -6,6 +6,7 @@
 //   save:  -> private/user/save/<mount>
 //   cache: -> private/user/cache<index>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -61,10 +62,15 @@ struct File {
     // (music, ambience, a cutscene's dialogue) and the world's data from all over romfs.pak at once, and on the PS4's
     // hard disk each small read waited ~90 ms (up to 155) for its seek, long enough for the audio engine to drop a
     // voice in the middle of a line. One read of kReadAhead serves the next ones from memory. Under ahead_lock.
+    // Only once the file is being streamed (a read starting where the last one ended), within a budget for all files
+    // (kReadAheadBudget), and given back at the stream's end or the file's close: v00.36 read ahead for every .bwav
+    // opened, and the loading screen froze (the game opens thousands of sound files while loading; the host heap has
+    // ~130 MB on the PS4).
     bool stream = false;
     std::mutex ahead_lock;
     std::vector<uint8_t> ahead;
     int64_t ahead_at = -1;  // the window's offset in the file
+    int64_t last_end = -1;  // where the last read ended (a read starting there: streaming)
     File(FILE* file, std::string p) : f(file), path(std::move(p)) {}
     File(FILE* file, std::string p, uint64_t b, int64_t n) : f(file), path(std::move(p)), base(b), size(n), owns(false) {
         static const bool on = [] {
@@ -75,9 +81,7 @@ struct File {
     }
     File(const File&) = delete;  // owns the FILE: one instance only
     File& operator=(const File&) = delete;
-    ~File() {
-        if (owns) std::fclose(f);
-    }
+    ~File();
 };
 std::map<uint64_t, std::shared_ptr<File>> g_files;
 
@@ -413,23 +417,53 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
     c.x[0] = kOk;
 }
 
-constexpr uint64_t kReadAhead = 512 << 10;  // NX_STREAM_READ_AHEAD=0: off
+constexpr uint64_t kReadAhead = 512 << 10;        // NX_STREAM_READ_AHEAD=0: off
+constexpr uint64_t kReadAheadBudget = 16ull << 20;  // all files' windows together
+std::atomic<uint64_t> g_ahead_bytes{0};
+
+void drop_ahead(File& file) {  // under ahead_lock
+    g_ahead_bytes -= file.ahead.capacity();
+    std::vector<uint8_t>().swap(file.ahead);
+    file.ahead_at = -1;
+}
+
+File::~File() {
+    if (!ahead.empty() || ahead.capacity()) g_ahead_bytes -= ahead.capacity();
+    if (owns) std::fclose(f);
+}
 
 // `size` bytes at `off` (file-relative) of a streamed file through its read-ahead window. False: read directly.
 bool read_ahead(File& file, int64_t off, uint64_t buf, uint64_t size, uint64_t& n) {
     if (!file.stream || size == 0 || size > kReadAhead / 2) return false;
     std::lock_guard lk(file.ahead_lock);
     const int64_t end = off + int64_t(size);
+    const bool sequential = file.last_end == off;
+    file.last_end = end;
     if (file.ahead_at < 0 || off < file.ahead_at || end > file.ahead_at + int64_t(file.ahead.size())) {
-        uint64_t want = std::min<uint64_t>(kReadAhead, uint64_t(file.size - off));
+        if (!sequential) {  // not streaming (yet): read directly, and keep no window
+            if (file.ahead.capacity()) drop_ahead(file);
+            return false;
+        }
+        const uint64_t want = std::min<uint64_t>(kReadAhead, uint64_t(file.size - off));
+        if (want <= size) return false;  // nothing left to read ahead
+        if (want > file.ahead.capacity()) {
+            const uint64_t grow = want - file.ahead.capacity();
+            if (g_ahead_bytes.load() + grow > kReadAheadBudget) return false;  // over budget: read directly
+            g_ahead_bytes += grow;
+            file.ahead.reserve(want);
+        }
         file.ahead.resize(want);
         uint64_t got = plat::read_at(file.f, int64_t(file.base) + off, file.ahead.data(), want);
         file.ahead.resize(got);
         file.ahead_at = off;
-        if (got < size) return false;
+        if (got < size) {
+            drop_ahead(file);
+            return false;
+        }
     }
     std::memcpy(reinterpret_cast<void*>(buf), file.ahead.data() + (off - file.ahead_at), size);
     n = size;
+    if (end >= file.size) drop_ahead(file);  // the stream's end: the window goes back to the budget
     return true;
 }
 
