@@ -1,0 +1,50 @@
+memory: direct memory 4608 MiB (4592 MiB free), flexible 224 MiB free
+loaded main at 4000000000 (83256 functions, 211961 relocs)
+loaded subsdk0 at 4018000000 (13638 functions, 19175 relocs)
+loaded sdk at 4010000000 (34480 functions, 31667 relocs)
+linked: 115 to HLE, 41066 across modules, 22 unresolved
+entering nn::init::Start at sdk+296c50 (_ZN2nn4init5StartEmmPFvvES2_+0)
+missing import called: nnosGetDefaultUserExceptionStackForApplication (lr sdk+32f4e8 (nnosInitialize+1a8)) -> 0
+ConnectToNamedPort(sm:)
+sm: GetService(lm)
+main.npdm: SystemResourceSize 0
+sm: GetService(apm)
+sm: GetService(appletOE)
+ipc: ISelfController cmd 91 not implemented (stub ok)
+ipc: IWindowController cmd 10 not implemented (stub ok)
+ipc: ISelfController cmd 13 not implemented (stub ok)
+ipc: ISelfController cmd 16 not implemented (stub ok)
+sm: GetService(aoc:u)
+sm: GetService(pctl)
+sm: GetService(pctl:s)
+sm: GetService(pctl:a)
+sm: GetService(pctl:r)
+ipc: IParentalControlService cmd 1 not implemented (stub ok)
+sdk constructors: 0
+subsdk0 constructors: 0
+main constructors: 0
+entering nnMain
+ipc: ILogger cmd 0 not implemented (stub ok)
+ipc: ISession cmd 0 not implemented (stub ok)
+ipc: ICommonStateGetter cmd 66 not implemented (stub ok)
+ipc: ISelfController cmd 14 not implemented (stub ok)
+ipc: ISelfController cmd 11 not implemented (stub ok)
+ipc: ISelfController cmd 12 not implemented (stub ok)
+ipc: ISelfController cmd 13 not implemented (stub ok)
+ipc: ISelfController cmd 16 not implemented (stub ok)
+fs: RomFS pack: 41052 files, 875 folders (/data/BOTW/romfs.pak)
+fs: mounted content: -> /romfs-pack
+ipc: ISession cmd 0 not implemented (stub ok)
+vi: layer created -> native window 0xd182248
+nvnBootstrapLoader(nvnDeviceInitialize)
+nvnBootstrapLoader(nvnDeviceGetProcAddress)
+nvn: first call of nvnDeviceInitialize (lr main+e552c0 (nnMain+1bb0))
+trace > main+1250750 (_ZdaPvRKSt9nothrow_t+ad50) #1 (5002002618, 5002000000, 6a00fffdd8, 6a00fffed8) lr main+e562f4 (nnMain+2be4)
+trace > main+124e8b0 (_ZdaPvRKSt9nothrow_t+8eb0) #1 (5002002618, 5003006a88, 18, 68d7ad5fe0) lr main+1250b2c (_ZdaPvRKSt9nothrow_t+b12c)
+guest call stack at the crash:
+  at lr main+124e8cc (_ZdaPvRKSt9nothrow_t+8ecc)
+  #0  main+124e8cc (_ZdaPvRKSt9nothrow_t+8ecc)  (fp 6a00fffd00)
+  #1  main+1250b2c (_ZdaPvRKSt9nothrow_t+b12c)  (fp 6a00fffd20)
+  #2  main+e562f4 (nnMain+2be4)  (fp 6a00fffdb0)
+  #3  sdk+296c9c (_ZN2nn4init5StartEmmPFvvES2_+4c)  (fp 6a00ffffc0)
+  #4  hle:__process_return  (fp 6a00fffff0)
