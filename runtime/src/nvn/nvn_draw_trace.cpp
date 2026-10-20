@@ -349,6 +349,29 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             line += b;
             diag_want_texture(texture);
         }
+        {  // where it draws and how it tests depth (depth-only passes leave no picture: shadows, depth pyramids)
+            auto shape = [](uint64_t texture) {
+                GpuImage* img = texture ? image_of(texture) : nullptr;
+                char s[96];
+                std::snprintf(s, sizeof s, "%llx(%ux%u vk%d)", (unsigned long long)texture, img ? img->width : 0,
+                              img ? img->height : 0, img ? int(img->format) : 0);
+                return std::string(s);
+            };
+            const DepthStencilInfo& d = g_state.depth;
+            char b[256];
+            std::snprintf(b, sizeof b, " | c%u", t.color_count);
+            line += b;
+            if (t.color_count) line += " c0=" + shape(t.colors[0]);
+            if (t.depth) line += " d=" + shape(t.depth) + " L" + std::to_string(t.views.layer[8]);
+            std::snprintf(b, sizeof b, " z test %u write %u func %u range %g..%g clamp %u offset %x cull %u vp %dx%d",
+                          d.depth_test, d.depth_write, d.depth_func, double(g_state.depth_near),
+                          double(g_state.depth_far), g_state.depth_clamp, g_state.polygon.offset_enables,
+                          g_state.polygon.cull, g_state.viewport[2], g_state.viewport[3]);
+            line += b;
+            std::snprintf(b, sizeof b, " bias %g %g %g", double(g_state.bias_factor), double(g_state.bias_units),
+                          double(g_state.bias_clamp));
+            line += b;
+        }
         diag_line(line);
     }
     // NX_TRACE_DRAWS=<first draw>: logs 80 draws from there.

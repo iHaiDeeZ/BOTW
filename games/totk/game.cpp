@@ -28,6 +28,9 @@ void game::after_init() {
     // Storage that fragment shaders write (v00.17) went back to guest memory with a wait for every submit: 20 -> 9 fps,
     // and the world stayed black without it too. Off until it can apply without waiting.
     setenv("NX_GRAPHICS_WRITE_BACK", "0", 0);
+    // The shadow casters draw with depth clamp; on the PS4 every clamped fragment landed at depth 0 (storyboard
+    // v00.23: shadow maps cleared to 1, then 0 everywhere). Clipped instead (nvn_pipeline.cpp).
+    setenv("NX_DEPTH_CLAMP", "0", 0);
 }
 void game::renderer_start() {}
 void game::first_frame() {}

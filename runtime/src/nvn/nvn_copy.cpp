@@ -79,6 +79,14 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
     std::memcpy(&info, list.blobs[c.blob].data(), sizeof info);
     GpuImage* src = ensure_contents(cb, c.a[0]);
     GpuImage* dst = ensure_contents(cb, c.a[1]);
+    if (diag_active()) {
+        char b[200];
+        std::snprintf(b, sizeof b, "  copy %llx (%ux%u vk%d) %dx%d -> %llx (%ux%u vk%d) %dx%d flags %x",
+                      (unsigned long long)c.a[0], src ? src->width : 0, src ? src->height : 0, src ? int(src->format) : 0,
+                      info.src[3], info.src[4], (unsigned long long)c.a[1], dst ? dst->width : 0, dst ? dst->height : 0,
+                      dst ? int(dst->format) : 0, info.dst[3], info.dst[4], info.flags);
+        diag_line(b);
+    }
     if (!src || !dst) return;
     bool same = src == dst;
     static const bool no_same = std::getenv("NX_COPY_NO_SAME_IMAGE") != nullptr;  // bisecting: the old way

@@ -244,14 +244,15 @@ GpuImage* image_of(uint64_t guest) {
 // format of the same texel size (R32F or RG16F read as RGBA8, layer 0 of an R11G11B10F array read as a 2D texture):
 // on the Switch that is one memory; here they are two images, and the reader saw a cleared one (the lighting
 // composite read zero shadow, AO and depth-derived inputs: a black world). The reader gets a copy of the newest
-// contents (through a buffer: the bits, as the Switch's one memory holds them). NX_ALIAS_SYNC=0: off (bisecting).
+// contents (through a buffer: the bits, as the Switch's one memory holds them). NX_ALIAS_SYNC=1: on. Off by
+// default: with it (v00.19-21) the loading screens lost their icon and pages, and the world stayed black.
 namespace {
 uint64_t g_content_serial = 0;
 std::unordered_map<uint64_t, uint64_t> g_memory_newest;  // guest memory -> newest content_at of an image over it
 bool alias_sync_on() {
     static const bool on = [] {
         const char* e = std::getenv("NX_ALIAS_SYNC");
-        return !e || e[0] != 0;
+        return e && e[0] == '1';
     }();
     return on;
 }
