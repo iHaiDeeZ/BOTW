@@ -476,6 +476,25 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                         (unsigned long long)k, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11],
                         w[12], w[13], w[14], w[15]);
                 }
+        // NX_TRACE_VS_WORDS=<byte offset>,<count>,<stride>: those 32-bit words of the vertex stage's storage buffer 0
+        // (guest memory: what the GPU wrote there comes back after the submit, so a frame later).
+        if (const char* e = std::getenv("NX_TRACE_VS_WORDS"))
+            if (const Range& r = g_state.storage[0][0]; r.address)
+                if (const auto* base = static_cast<const uint8_t*>(guest_bytes(r.address))) {
+                    unsigned off = 0, count = 0, stride = 4;
+                    if (std::sscanf(e, "%u,%u,%u", &off, &count, &stride) >= 2) {
+                        std::string s;
+                        unsigned ones = 0;
+                        for (unsigned i = 0; i < count && off + uint64_t(i) * stride + 4 <= r.size; i++) {
+                            uint32_t w;
+                            std::memcpy(&w, base + off + uint64_t(i) * stride, 4);
+                            ones += w == 1;
+                            if (i < 48) s += (i % 16 ? " " : "\n    ") + std::to_string(w);
+                        }
+                        log("  vs s0 @%llx+%llx words from %u (stride %u): %u of %u are 1:%s",
+                            (unsigned long long)r.address, (unsigned long long)r.size, off, stride, ones, count, s.c_str());
+                    }
+                }
         for (int k = 0; k < 2; k++)
             if (const Range& r = g_state.storage[0][k]; r.address) {
                 auto* f = reinterpret_cast<const float*>(guest_bytes(r.address));

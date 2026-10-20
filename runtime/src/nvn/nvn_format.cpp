@@ -117,8 +117,20 @@ bool astc_bc3() {
     return on;
 }
 
+// NX_D16_AS_D32=1: D16 depth as D32 float. Tears of the Kingdom classifies the G-buffer by writing a material ID as
+// FragDepth into a D16 target and draws each material's lighting quad with depth EQUAL at that value; whether the
+// written and the rasterized depth round to the same 16-bit value is up to the Vulkan driver (bisecting).
+bool d16_as_d32() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_D16_AS_D32");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+
 VkFormat vk_format(uint32_t f) {
     if (f == 0x3f && native_r11g11b10()) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;  // nvn_caps.cpp
+    if (f == 0x32 && d16_as_d32()) return VK_FORMAT_D32_SFLOAT;
     if (f < sizeof kFormats / sizeof kFormats[0]) return kFormats[f].vk;
     if (f >= 0x79 && f <= 0x86)
         return astc_decoded(f) ? (astc_bc3() ? VK_FORMAT_BC3_UNORM_BLOCK : VK_FORMAT_R8G8B8A8_UNORM) : kAstc[f - 0x79];

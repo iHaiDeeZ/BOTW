@@ -138,6 +138,17 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
         img->rendered = true;
         uint32_t level = std::min<uint32_t>(t.views.level[k], img->levels - 1);
         formats[k] = view_format(*img, t.views.format[k]);
+        {  // A block-compressed image has no colour-attachment usage (nvn_image.cpp): what renders into one, once each
+            uint32_t bw = 1, bh = 1, bytes = 0;
+            format_block(img->nvn_format, bw, bh, bytes);
+            static std::set<std::pair<uint64_t, uint32_t>> logged;  // texture, level
+            if ((bw > 1 || bh > 1) && logged.size() < 200 && logged.insert({t.colors[k], level}).second)
+                log("nvn/vk: render into a compressed image: texture %llx (memory %llx) fmt %#x %ux%u x%u layers %u "
+                    "levels, view fmt %#x -> Vulkan %d, target %u level %u layer %u, frame %llu",
+                    (unsigned long long)t.colors[k], (unsigned long long)img->guest_memory, img->nvn_format, img->width,
+                    img->height, img->layers, img->levels, t.views.format[k], int(formats[k]), k, level,
+                    t.views.layer[k], (unsigned long long)g_frame);
+        }
         colors[k].imageView = attachment_view(*img, level, t.views.layer[k], formats[k]);
         // NX_TRACE_CUBES=<first frame>: writes into cube images from that frame on. With 400 from the start, the log
         // ran out at the first 3D scene (frame ~171) and never reached a course load.
@@ -618,6 +629,7 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     if (diag_active()) {  // the storyboard: what this pass left in its colour targets
         for (uint32_t k = 0; k < g_pass.color_count && k < 8; k++)
             if (g_pass_images[k]) diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs);
+        if (g_pass.depth && g_pass_images[8]) diag_pass_depth(cb, *g_pass_images[8], g_pass.depth, g_diag_draws, g_diag_fs);
         g_diag_draws = 0, g_diag_fs.clear();
     }
     g_pass_serial++;

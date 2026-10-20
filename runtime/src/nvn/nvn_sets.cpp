@@ -487,6 +487,22 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     // every tile read "nothing to light" and the world was black; MacNativeGames hit the same):
                     // a copy of its own, and after the submit what the GPU changed in it goes back to guest memory.
                     // Inside a render pass, so no GPU-side merging as for compute (nvn_written.cpp).
+                    // NX_GRAPHICS_SHARED=1: shared with the rest of the submit first (nvn_written.cpp,
+                    // written_graphics_bind), so the same frame's later draws read what it stores. Off by default
+                    // until a game shows it matters: Tears of the Kingdom's tile flags already live in a range a
+                    // dispatch writes, which every stage shares.
+                    static const bool shared_writes = [] {
+                        const char* e = std::getenv("NX_GRAPHICS_SHARED");
+                        return e && e[0] == '1';
+                    }();
+                    if (!written && s->stage != ShaderStage::Compute && p && size && b.binding < 64 &&
+                        (written_storage_bindings(s) >> b.binding & 1) && shared_writes) {
+                        uint64_t n = std::max<uint64_t>((size + 15) & ~15ull, 0x10000);
+                        if (Upload u; written_graphics_bind(p, size, n, u)) {
+                            info = {u.buffer, u.offset, n};
+                            break;
+                        }
+                    }
                     if (!written && s->stage != ShaderStage::Compute && p && size && b.binding < 64 &&
                         (written_storage_bindings(s) >> b.binding & 1) && graphics_write_backs()) {
                         uint64_t n = std::max<uint64_t>((size + 15) & ~15ull, 0x10000);

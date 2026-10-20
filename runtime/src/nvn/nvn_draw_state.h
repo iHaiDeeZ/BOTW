@@ -88,6 +88,7 @@ void dedup_log();
 bool written_separate();  // NX_COMPUTE_SEPARATE=1: a copy per binding, as before
 // A dispatch's storage binding it writes: the range's copy (made, reused or merged), kAlign aligned.
 Upload written_bind(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded);
+bool written_graphics_bind(const uint8_t* p, uint64_t size, uint64_t padded, Upload& out);  // vertex/fragment writers
 // Bytes read by later work: the written copy when [p, p + size) meets one (may end the render pass), else false.
 bool written_read(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out);
 Upload read_upload(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align);  // or dedup

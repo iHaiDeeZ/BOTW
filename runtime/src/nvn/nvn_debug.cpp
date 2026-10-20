@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
@@ -50,7 +51,7 @@ struct Scratch {
     }
 };
 
-bool make_scratch(Scratch& s, uint32_t w, uint32_t h) {
+bool make_scratch(Scratch& s, uint32_t w, uint32_t h, uint32_t texel_bytes = 4) {
     VkDevice d = vk_device();
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType = VK_IMAGE_TYPE_2D;
@@ -69,7 +70,7 @@ bool make_scratch(Scratch& s, uint32_t w, uint32_t h) {
     if (p_vkAllocateMemory(d, &ai, nullptr, &s.image_memory) != VK_SUCCESS) return false;
     p_vkBindImageMemory(d, s.image, s.image_memory, 0);
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bi.size = uint64_t(w) * h * 4;
+    bi.size = uint64_t(w) * h * texel_bytes;
     bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     if (p_vkCreateBuffer(d, &bi, nullptr, &s.buffer) != VK_SUCCESS) return false;
     p_vkGetBufferMemoryRequirements(d, s.buffer, &req);
@@ -399,6 +400,7 @@ struct Snap {
     uint32_t raw_format = 0;  // NX_SNAP_RAW: the texels as stored (4-byte formats), written as .raw
     std::string name;         // a storyboard picture (diag_pass): diag/<name>.ppm
     uint32_t depth_bytes = 0;  // a storyboard depth picture: texels of this size in the buffer, written as .pgm
+    VkFormat float_format = VK_FORMAT_UNDEFINED;  // a storyboard float target (NX_DIAG_FLOAT): logged as statistics
 };
 std::vector<Snap> g_snaps;
 std::set<uint64_t> g_diag_wanted;  // textures the storyboard frame sampled: pictured at the next frame's first pass end
@@ -612,6 +614,24 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     snap.name = name;
     if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
     g_diag_seq++;
+    // NX_DIAG_FLOAT=1: float targets read back as stored, whole level 0, and logged per channel (min, max, mean, share
+    // not zero): the RGBA8 pictures round HDR lighting and linear depth to 0..2.
+    static const bool floats = std::getenv("NX_DIAG_FLOAT") != nullptr;
+    if (floats && (img.format == VK_FORMAT_R16G16B16A16_SFLOAT || img.format == VK_FORMAT_R32_SFLOAT ||
+                   img.format == VK_FORMAT_R16G16_SFLOAT)) {
+        snap.w = img.width, snap.h = img.height, snap.float_format = img.format;
+        uint32_t bytes = img.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+        if (!make_scratch(snap.s, snap.w, snap.h, bytes)) return snap.s.destroy(vk_device());
+        VkImageLayout back = img.layout;
+        transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy r{};
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        r.imageExtent = {snap.w, snap.h, 1};
+        p_vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.buffer, 1, &r);
+        if (back != VK_IMAGE_LAYOUT_UNDEFINED) transition(cb, img, back);
+        g_snaps.push_back(std::move(snap));
+        return;
+    }
     if (!make_scratch(snap.s, snap.w, snap.h)) {
         snap.s.destroy(vk_device());
         return;
@@ -638,6 +658,20 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     g_snaps.push_back(std::move(snap));
 }
 
+// NX_DIAG_DEPTH=1: the storyboard also reads back each pass's depth target at its end (logged as "diag: depth
+// <seq>_d_..."): what depth EQUAL draws were tested against (Tears of the Kingdom's material-ID lighting).
+void diag_pass_depth(VkCommandBuffer cb, GpuImage& img, uint64_t texture, uint32_t draws, const std::string& fs) {
+    static const bool on = std::getenv("NX_DIAG_DEPTH") != nullptr;
+    if (!on || !g_diag_on || g_diag_seq >= kDiagMax || !img.image || !(img.aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) return;
+    char name[160];
+    std::snprintf(name, sizeof name, "%03d_d_%llx_d%u_%s", g_diag_seq++, (unsigned long long)texture, draws,
+                  fs.empty() ? "-" : fs.c_str());
+    if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
+    size_t before = g_snaps.size();
+    diag_texture_level(cb, img, texture, 0);
+    if (g_snaps.size() > before) g_snaps.back().name = name;
+}
+
 void debug_snapshots_write() {  // after the submit's fence
     for (Snap& snap : g_snaps) {
         void* p = nullptr;
@@ -651,6 +685,45 @@ void debug_snapshots_write() {  // after the submit's fence
                 std::fclose(f);
             }
             p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
+        } else if (snap.float_format) {  // a storyboard float target: statistics per channel
+            if (p_vkMapMemory(vk_device(), snap.s.buffer_memory, 0, VK_WHOLE_SIZE, 0, &p) == VK_SUCCESS) {
+                auto half = [](uint16_t h) {
+                    uint32_t e = h >> 10 & 0x1F, m = h & 0x3FF;
+                    float v = e == 0 ? std::ldexp(float(m), -24) : e == 31 ? (m ? NAN : INFINITY)
+                                                                       : std::ldexp(float(m | 0x400), int(e) - 25);
+                    return h & 0x8000 ? -v : v;
+                };
+                const uint32_t channels = snap.float_format == VK_FORMAT_R16G16B16A16_SFLOAT ? 4
+                                          : snap.float_format == VK_FORMAT_R16G16_SFLOAT     ? 2
+                                                                                             : 1;
+                const size_t n = size_t(snap.w) * snap.h;
+                std::string line;
+                for (uint32_t c = 0; c < channels; c++) {
+                    double lo = 1e30, hi = -1e30, sum = 0;
+                    size_t nonzero = 0, nan = 0;
+                    for (size_t k = 0; k < n; k++) {
+                        float v;
+                        if (snap.float_format == VK_FORMAT_R32_SFLOAT) {
+                            std::memcpy(&v, static_cast<const uint8_t*>(p) + k * 4, 4);
+                        } else {
+                            uint16_t h;
+                            std::memcpy(&h, static_cast<const uint8_t*>(p) + (k * channels + c) * 2, 2);
+                            v = half(h);
+                        }
+                        if (v != v) {
+                            nan++;
+                            continue;
+                        }
+                        lo = std::min(lo, double(v)), hi = std::max(hi, double(v)), sum += v, nonzero += v != 0;
+                    }
+                    char b[120];
+                    std::snprintf(b, sizeof b, " %c %.3g..%.3g mean %.3g nz %.0f%%%s", "RGBA"[c], lo, hi, sum / n,
+                                  100.0 * nonzero / n, nan ? " NaN" : "");
+                    line += b;
+                }
+                log("diag: float %s:%s", snap.name.c_str(), line.c_str());
+                p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
+            }
         } else if (snap.depth_bytes) {  // a storyboard depth picture
             if (p_vkMapMemory(vk_device(), snap.s.buffer_memory, 0, VK_WHOLE_SIZE, 0, &p) == VK_SUCCESS) {
                 size_t n = size_t(snap.w) * snap.h;

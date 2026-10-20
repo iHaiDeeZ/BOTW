@@ -149,9 +149,48 @@ Upload written_bind(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_
     return at(it, off);
 }
 
+// A vertex or fragment shader's storage binding that it writes, as a written range of the submit like a dispatch's:
+// later draws and dispatches of the submit read what it stored, and it goes back to guest memory once. Tears of the
+// Kingdom's half-resolution lighting passes store a flag per screen tile from the fragment shader, and the lighting
+// quads' vertex shaders of the same frame read it to cull the tiles with nothing to light: with a copy of their own,
+// every tile read 0 and nothing was lit (the black world). Bound inside a render pass, so only when that needs no
+// GPU commands: a range inside one written copy, or a new range meeting none. Else false (the caller's own copy).
+bool written_graphics_bind(const uint8_t* p, uint64_t size, uint64_t padded, Upload& out) {
+    if (!p || !size || written_separate()) return false;
+    std::vector<It> old = overlapping(p, size);
+    static int logged = 0;  // NX_TRACE_WRITTEN=1: the first binds and what they found
+    static const bool trace = std::getenv("NX_TRACE_WRITTEN") != nullptr;
+    if (trace && logged++ < 40)
+        log("written: graphics bind %p+%llx: %zu regions overlap, %zu in the submit", static_cast<const void*>(p),
+            (unsigned long long)size, old.size(), g_regions.size());
+    if (It it = containing(p, size, padded, bind_align(), old); it != g_regions.end()) {
+        g_binds++, g_shared++;
+        out = at(it, uint64_t(p - it->first));
+        return true;
+    }
+    if (!old.empty()) return false;
+    g_binds++;
+    Region r;
+    r.size = size;
+    r.cap = std::max(size + kTail, padded);
+    r.up = alloc_anchored(r.cap, 0);
+    std::memcpy(r.up.ptr, p, size);
+    std::memset(r.up.ptr + size, 0, r.cap - size);
+    r.before = std::make_shared<std::vector<uint8_t>>(p, p + size);
+    dedup_invalidate(p, size);
+    out = at(g_regions.emplace(p, r).first, 0);
+    return true;
+}
+
 bool written_read(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align, Upload& out) {
     if (!p || !size || g_regions.empty() || written_separate()) return false;
     std::vector<It> regions = overlapping(p, size);
+    static int logged = 0;
+    static const bool trace = std::getenv("NX_TRACE_WRITTEN") != nullptr;
+    if (trace && !regions.empty() && logged++ < 4000)
+        log("written: read %p+%llx (padded %llx, align %llu): %zu regions, contained %d", static_cast<const void*>(p),
+            (unsigned long long)size, (unsigned long long)padded, (unsigned long long)align, regions.size(),
+            int(containing(p, size, padded, align, regions) != g_regions.end()));
     if (regions.empty()) return false;
     if (It it = containing(p, size, padded, align, regions); it != g_regions.end()) {
         g_shared++, g_read = true;

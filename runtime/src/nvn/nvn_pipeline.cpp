@@ -350,6 +350,17 @@ VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, 
     // at each draw, nvn_raster.cpp): the game sets them on the command buffer, not in the state object.
     uint32_t offset_bit = key.polygon.mode <= 2 ? 1u << key.polygon.mode : 4u;
     rs.depthBiasEnable = key.polygon.offset_enables & offset_bit || equal_slack_pass(key.depth) ? VK_TRUE : VK_FALSE;
+    // A depth bias on a depth EQUAL draw moves it off the depth it is tested against (Tears of the Kingdom's lighting
+    // quads, drawn EQUAL at the material ID a classifier wrote): logged once per fragment shader. NX_NO_DEPTH_BIAS=1:
+    // no bias anywhere (bisecting).
+    static const bool no_bias = std::getenv("NX_NO_DEPTH_BIAS") != nullptr;
+    if (no_bias) rs.depthBiasEnable = VK_FALSE;
+    if (rs.depthBiasEnable && key.depth.depth_test && key.depth.depth_func == 3) {
+        static std::set<std::string> logged;
+        if (key.fs && logged.size() < 60 && logged.insert(key.fs->hash).second)
+            log("nvn/vk: depth bias on an EQUAL draw: fs %s, polygon mode %u, offset enables %#x%s", key.fs->hash.c_str(),
+                key.polygon.mode, key.polygon.offset_enables, key.depth.depth_write ? ", writes depth" : "");
+    }
 
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -372,6 +383,14 @@ VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, 
     // writes a material ID as depth (FragDepth) and draws each material's light quad with EQUAL: loosened, the quads
     // missed or crossed materials (a black world).
     if (key.depth.depth_func == 3 && !key.depth.depth_write && !equal_exact()) ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    // NX_EQUAL_AS=<VkCompareOp>: depth EQUAL without depth writes tested with that op instead (bisecting where the
+    // drawn depth lies against the stored one: 1 LESS, 3 LESS_OR_EQUAL, 4 GREATER, 6 GREATER_OR_EQUAL).
+    static const char* equal_as = std::getenv("NX_EQUAL_AS");
+    if (equal_as && key.depth.depth_func == 3 && !key.depth.depth_write) ds.depthCompareOp = VkCompareOp(std::atoi(equal_as));
+    // NX_EQUAL_WRITE=1 (with NX_EQUAL_AS=7, ALWAYS): those draws write their depth, which the storyboard's depth
+    // statistics (NX_DIAG_DEPTH) then show.
+    static const bool equal_write = std::getenv("NX_EQUAL_WRITE") != nullptr;
+    if (equal_write && key.depth.depth_func == 3 && !key.depth.depth_write) ds.depthWriteEnable = has_depth;
     ds.stencilTestEnable = has_depth && key.depth.stencil_test;
     VkStencilOpState* faces[2] = {&ds.front, &ds.back};
     for (int f = 0; f < 2; f++) {
@@ -382,6 +401,18 @@ VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, 
         faces[f]->compareMask = faces[f]->writeMask = 0xFF;  // dynamic: SetStencilValueMask / SetStencilMask
     }
 
+    // Render targets the fragment shader writes. On Maxwell a target outside the shader header's output map (OMAP) is
+    // left as it was; in Vulkan a colour attachment the shader has no output for gets undefined values (NVIDIA and
+    // RADV wrote 0). Tears of the Kingdom's terrain G-buffer shaders write targets 1 and 3 only (OMAP 0xF0F0) over a
+    // material-ID target 0 that must keep its value: with zeros there, the lighting classified the terrain as
+    // material 0 and lit nothing (the black world). Such targets get no colour writes. NX_UNWRITTEN_TARGETS=1: as before.
+    static const bool unwritten_targets = std::getenv("NX_UNWRITTEN_TARGETS") != nullptr;
+    uint32_t fs_writes = 0xFF;
+    if (key.fs && !unwritten_targets) {
+        fs_writes = 0;
+        for (const ShaderIo& o : key.fs->refl.fragment_outputs())
+            for (uint32_t a = 0; a < o.array && o.location + a < 8; a++) fs_writes |= 1u << (o.location + a);
+    }
     VkPipelineColorBlendAttachmentState att[8]{};
     for (uint32_t k = 0; k < key.color_count; k++) {
         const BlendTarget& b = key.blend[k];
@@ -403,6 +434,7 @@ VkPipeline create_pipeline(const PipelineKey& key, const ProgramLayout& layout, 
         att[k].dstAlphaBlendFactor = factor(b.dst_a);
         att[k].alphaBlendOp = vk_blend_op(b.eq_a);
         att[k].colorWriteMask = key.mask.mask[k] & 0xF;
+        if (!(fs_writes >> k & 1)) att[k].colorWriteMask = 0;
     }
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = key.color_count;
