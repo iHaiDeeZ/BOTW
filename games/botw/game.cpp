@@ -25,6 +25,9 @@ const game::Info game::kInfo = {"botw", "The Legend of Zelda: Breath of the Wild
 // Runtime defaults for this game (config.txt still overrides them: setenv does not replace a value already set). The
 // same as TOTK's where the reason is the PS4 or the engine family, not TOTK's own renderer.
 void game::after_init() {
+    // NVN API version: nnMain requires major 53 and minor >= 311 (main+e55304, 1.6.0) and otherwise skips its whole
+    // graphics setup (then sead::Graphics::sInstance is null at the first draw-context lock).
+    setenv("NX_NVN_API", "53.311", 0);
     // nvnMemoryPoolInvalidateMappedRange without waiting for the submits so far (nvn_objects.cpp): TOTK's waits kept
     // its main thread behind the whole replay.
     setenv("NX_INVALIDATE_WAIT", "0", 0);

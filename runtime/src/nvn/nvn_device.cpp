@@ -1,6 +1,9 @@
 // NVN device (docs/NVN.md, phases N2-N3). Values come from what the game checks and from the SDK's own NVN driver
 // (recompiled in sdk; NX_NVN_REAL=1 records where each of its procs lives, see nvn_trace.cpp).
+#include <cstdio>
+#include <cstdlib>
 #include <map>
+#include <utility>
 
 #include <nx/runtime.h>
 
@@ -115,11 +118,30 @@ const std::map<uint32_t, int32_t> kDeviceInfo = {
     {98, 0x0},  // provisional: the driver reads [dev+0xbc]
 };
 
+// The API version a game checks (pnames 0 and 1) is the one its SDK's driver reports: Wonder's SDK 16.2 driver says
+// 55.15, Breath of the Wild (SDK 7.3) requires major 53 and minor >= 311 (main+e55304) and skips its whole graphics
+// setup otherwise. NX_NVN_API=<major>.<minor> (games/<game>/game.cpp) replaces the table's 55.15.
+int32_t api_version(uint32_t pname, int32_t fallback) {
+    static const std::pair<int32_t, int32_t> v = [] {
+        const char* e = std::getenv("NX_NVN_API");
+        int major = 0, minor = 0;
+        if (e && std::sscanf(e, "%d.%d", &major, &minor) == 2) {
+            log("nvn: API version %d.%d (NX_NVN_API)", major, minor);
+            return std::pair<int32_t, int32_t>{major, minor};
+        }
+        return std::pair<int32_t, int32_t>{-1, -1};
+    }();
+    if (v.first < 0) return fallback;
+    return pname == 0 ? v.first : v.second;
+}
+
 void nvnDeviceGetInteger(CPU& c) {
     uint32_t pname = uint32_t(c.x[1]);
     auto it = kDeviceInfo.find(pname);
     if (it == kDeviceInfo.end()) log("nvn: nvnDeviceGetInteger(%u) unknown -> 0 (lr %s)", pname, describe(c.x[30]).c_str());
-    if (c.x[2]) st<int32_t>(c.x[2], it == kDeviceInfo.end() ? 0 : it->second);
+    int32_t value = it == kDeviceInfo.end() ? 0 : it->second;
+    if (pname <= 1) value = api_version(pname, value);
+    if (c.x[2]) st<int32_t>(c.x[2], value);
 }
 
 }  // namespace
