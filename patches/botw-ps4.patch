@@ -625,7 +625,7 @@ index 7269af9..071765d 100644
 +
  }  // namespace nx::plat
 diff --git a/runtime/src/hle_audio.cpp b/runtime/src/hle_audio.cpp
-index 44601b3..b5146a6 100644
+index 44601b3..0139745 100644
 --- a/runtime/src/hle_audio.cpp
 +++ b/runtime/src/hle_audio.cpp
 @@ -179,8 +179,16 @@ void CreateAudioRendererManagerByHipc(CPU& c) {
@@ -687,6 +687,18 @@ index 44601b3..b5146a6 100644
              last_rc = c.x[0];
              std::memcpy(c.x, saved, sizeof saved);
              std::lock_guard pk(g_pace_lock);  // counted under the render lock (AudioRenderSystemUpdate)
+@@ -533,6 +537,11 @@ NX_HLE("_ZN2nn5audio25ListAudioOutputDeviceNameEPNS0_15AudioDeviceNameEi", ListA
+ NX_HLE("_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE", GetActiveAudioOutputDeviceName);
+ NX_HLE("_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", zero);
+ NX_HLE("_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", two);
++// The same calls under SDK 7's names (Breath of the Wild): they went to the audio device service, which is not
++// served (AcquireAudioDeviceSwitchNotification aborted).
++NX_HLE("_ZN2nn5audio36AcquireAudioDeviceSwitchNotificationEPNS_2os11SystemEventE", AcquireAudioDeviceNotificationForOutput);
++NX_HLE("_ZN2nn5audio19ListAudioDeviceNameEPNS0_15AudioDeviceNameEi", ListAudioOutputDeviceName);
++NX_HLE("_ZN2nn5audio21GetActiveChannelCountEv", two);
+ NX_HLE("_ZN2nn5audio27InitializeAudioOutParameterEPNS0_17AudioOutParameterE", InitializeAudioOutParameter);
+ NX_HLE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", OpenDefaultAudioOut);
+ NX_HLE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", StartAudioOut);
 diff --git a/runtime/src/hle_fs.cpp b/runtime/src/hle_fs.cpp
 index 64b5beb..a94a357 100644
 --- a/runtime/src/hle_fs.cpp
