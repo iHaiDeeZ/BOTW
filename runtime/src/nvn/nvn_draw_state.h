@@ -125,6 +125,7 @@ struct DrawTextures {
     std::vector<uint64_t> handles;
     std::vector<ResolvedTexture> resolved;
 };
+extern const ShaderInfo* g_last_draw_fs;  // nvn_draw.cpp: the last draw's fragment shader
 extern DrawTextures g_textures;  // filled by gather_textures, read by build_sets and the traces of the same draw
 // kTexturesPending: a texture is being decoded in the background (astc_pending): the draw is skipped this time.
 enum : uint32_t { kNeedBreak = 1, kSampledPending = 2, kTexturesPending = 4 };

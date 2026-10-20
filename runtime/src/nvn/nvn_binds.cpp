@@ -122,12 +122,16 @@ void SetRenderEnable(CPU& c) {
         log("nvn: SetRenderEnable(%u) x%llu", cmd.n, (unsigned long long)n);
 }
 
-// SetRenderEnableConditional(cmd, NVNconditionalRenderMode, NVNbufferAddress): rendering on or off from values the
-// GPU wrote (occlusion results). Treated as "on": drawing what might have been culled is only extra work, while
-// staying off after a SetRenderEnable(false) dropped whole passes.
+// SetRenderEnableConditional(cmd, NVNconditionalRenderMode, NVNbufferAddress): rendering on or off from two counter
+// reports at the address (16 bytes each; mode 0 renders if their values are equal, 1 if not), evaluated at replay
+// (nvn_draw_state.cpp), where the reports before it were written. It used to be "on" always: Tears of the Kingdom
+// clears its half-resolution depth under a condition before the light volumes test GREATER against it, and with the
+// clear done every light volume failed (the black world). NX_COND_RENDER=0: "on" as before.
 void SetRenderEnableConditional(CPU& c) {
     Cmd cmd{Cmd::SetRenderEnable};
     cmd.n = 1;
+    cmd.mask = 0x100 | uint32_t(c.x[1] & 0xFF);  // 0x100: conditional, low byte the mode
+    cmd.a[0] = c.x[2];
     record(c.x[0], cmd);
 }
 

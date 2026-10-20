@@ -31,6 +31,7 @@ const uint8_t* guest_bytes(uint64_t gpu) {
     return host ? reinterpret_cast<const uint8_t*>(host) : nullptr;
 }
 
+const ShaderInfo* g_last_draw_fs = nullptr;  // the last draw's fragment shader (NX_SKIP_CLEARS_AFTER_FS)
 }  // namespace replay
 
 using namespace replay;
@@ -504,6 +505,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     clock.mark(kPhCommands);
     g_phase_draws++;
     if (diag_active()) g_diag_draws++, g_diag_fs = fs ? fs->hash : vs->hash;
+    g_last_draw_fs = fs;  // NX_SKIP_CLEARS_AFTER_FS (nvn_clears.cpp)
     g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
     // NX_SNAP_FS=<hash>,<hash>[@<first draw>]: also snapshot after draws with those fragment shaders (8 at most, or
     // NX_SNAP_FS_MAX).

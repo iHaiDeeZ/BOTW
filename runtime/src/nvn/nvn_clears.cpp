@@ -200,6 +200,12 @@ void clears_log() {
 // clears honour the call's masks.
 void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     bool color = c.op == Cmd::ClearColor;
+    // NX_SKIP_CLEARS_AFTER_FS=<hash>[,<hash>...]: the clears that follow a draw with that fragment shader (before the
+    // next draw) are skipped (bisecting what a clear wipes).
+    // Rendering off (SetRenderEnable(false) or a false condition): clears are skipped too, as on the GPU.
+    if (!replay::g_state.render_enable) return;
+    static const char* skip_after = std::getenv("NX_SKIP_CLEARS_AFTER_FS");
+    if (skip_after && replay::g_last_draw_fs && std::strstr(skip_after, replay::g_last_draw_fs->hash.c_str())) return;
     uint64_t guest = color ? (c.n < 8 ? t.colors[c.n] : 0) : t.depth;
     GpuImage* img = guest ? image_of(guest) : nullptr;
     if (!img || color != (img->aspect == VK_IMAGE_ASPECT_COLOR_BIT)) return;

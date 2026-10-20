@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 
 #include "nvn_draw_state.h"
 #include "platform.h"
@@ -25,7 +26,37 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
             if (c.i[0] >= 0 && c.i[0] < kStages && c.i[1] >= 0 && c.i[1] < 16) s.images[c.i[0]][c.i[1]] = c.a[0];
             break;
         case Cmd::DispatchCompute: dispatch_call(cb, c); break;
-        case Cmd::SetRenderEnable: s.render_enable = c.n != 0; break;
+        case Cmd::SetRenderEnable: {
+            s.render_enable = c.n != 0;
+            static const bool cond = [] {
+                const char* e = std::getenv("NX_COND_RENDER");
+                return !e || e[0] != '0';
+            }();
+            if (cond && (c.mask & 0x100)) {  // SetRenderEnableConditional (nvn_binds.cpp)
+                const uint8_t* p = guest_bytes(c.a[0]);
+                if (p) {
+                    uint64_t a, b;
+                    std::memcpy(&a, p, 8), std::memcpy(&b, p + 16, 8);
+                    s.render_enable = (c.mask & 0xFF) == 0 ? a == b : a != b;
+                }
+                static uint64_t evaluated = 0, off = 0;
+                off += !s.render_enable;
+                // NX_TRACE_COND=1: the compared values, for the first evaluations of each address after gameplay.
+                static const bool tr = std::getenv("NX_TRACE_COND") != nullptr;
+                static std::map<uint64_t, int> per;
+                if (tr && p && evaluated > 200000 && per[c.a[0]]++ < 3) {
+                    uint64_t w[4];
+                    std::memcpy(w, p, 32);
+                    log("nvn: cond at %llx mode %u: [%llx %llx] [%llx %llx] -> %s", (unsigned long long)c.a[0],
+                        c.mask & 0xFF, (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)w[2],
+                        (unsigned long long)w[3], s.render_enable ? "on" : "off");
+                }
+                if (++evaluated <= 20 || evaluated % 20000 == 0)
+                    log("nvn: conditional render #%llu mode %u at %llx: %s (%llu off so far)", (unsigned long long)evaluated,
+                        c.mask & 0xFF, (unsigned long long)c.a[0], s.render_enable ? "on" : "off", (unsigned long long)off);
+            }
+            break;
+        }
         case Cmd::SetScissor:
             std::memcpy(s.scissor, c.i, sizeof s.scissor), s.has_scissor = true;
             break;
@@ -125,7 +156,14 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
                 // NX_FAKE_GPU_TIME=1: every report of a submit carries the submit's start (a GPU with no cost):
                 // the game picks its present interval from the timings it measures (bisecting its 30 fps mode).
                 static const bool fake = std::getenv("NX_FAKE_GPU_TIME") != nullptr;
-                uint64_t v[2] = {++reports, fake ? submit_start_ns() : plat::monotonic_ns()};
+                // Timestamp reports (NVN counter types 0 TIMESTAMP and 16 TIMESTAMP_TOP) carry a value of 0 on Maxwell,
+                // only the time. Tears of the Kingdom guards its clears with SetRenderEnableConditional on such a
+                // report against a zero slot ("render if not equal"): with a non-zero value every guarded clear ran,
+                // and one wiped the half-resolution depth its light volumes test GREATER against (the black world).
+                // NX_COUNTER_FAKE_VALUES=1: a running number in every report, as before.
+                static const bool fake_values = std::getenv("NX_COUNTER_FAKE_VALUES") != nullptr;
+                const bool timestamp = c.n == 0 || c.n == 16;
+                uint64_t v[2] = {timestamp && !fake_values ? 0 : ++reports, fake ? submit_start_ns() : plat::monotonic_ns()};
                 std::memcpy(p, v, sizeof v);
                 dedup_invalidate(p, sizeof v);
                 written_cpu_write(p, sizeof v);

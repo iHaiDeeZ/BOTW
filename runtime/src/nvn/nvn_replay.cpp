@@ -47,6 +47,20 @@ void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth
             log("cmd after draw %llu: op %u n %u mask %x a0 %llx a1 %llx i %d %d %d %d f %g %g %g %g depth %d",
                 (unsigned long long)replay::g_stats.done, unsigned(c.op), c.n, c.mask, (unsigned long long)c.a[0],
                 (unsigned long long)c.a[1], c.i[0], c.i[1], c.i[2], c.i[3], c.f[0], c.f[1], c.f[2], c.f[3], depth);
+        // NX_DIAG_CMDS=1: the storyboard frame's commands that are not draws or clears, into diag/passes.txt (the
+        // order of targets, state and clears around a pass).
+        static const bool diag_cmds = std::getenv("NX_DIAG_CMDS") != nullptr;
+        if (diag_cmds && diag_active() &&
+            (c.op == Cmd::SetRenderTargets || c.op == Cmd::CallList || c.op == Cmd::SetDepthRange ||
+             c.op == Cmd::BindDepthStencilState || c.op == Cmd::BindPolygonState || c.op == Cmd::SetRenderEnable ||
+             c.op == Cmd::SetRasterizerDiscard || c.op == Cmd::CopyTextureToTexture || c.op == Cmd::SetDepthClamp ||
+             c.op == Cmd::SetDepthBounds || c.op == Cmd::ReportCounter)) {
+            char b[200];
+            std::snprintf(b, sizeof b, "  cmd op %u n %u mask %x a %llx %llx a8 %llx i %d %d f %g %g depth %d", unsigned(c.op),
+                          c.n, c.mask, (unsigned long long)c.a[0], (unsigned long long)c.a[1], (unsigned long long)c.a[8],
+                          c.i[0], c.i[1], c.f[0], c.f[1], depth);
+            diag_line(b);
+        }
         switch (c.op) {
             case Cmd::SetRenderTargets: {  // the pass ends only when a draw or clear needs other targets
                 static const bool always = std::getenv("NX_TARGETS_BREAK") != nullptr;  // bisecting: the old way

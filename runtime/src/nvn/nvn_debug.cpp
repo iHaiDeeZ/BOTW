@@ -618,7 +618,7 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     // not zero): the RGBA8 pictures round HDR lighting and linear depth to 0..2.
     static const bool floats = std::getenv("NX_DIAG_FLOAT") != nullptr;
     if (floats && (img.format == VK_FORMAT_R16G16B16A16_SFLOAT || img.format == VK_FORMAT_R32_SFLOAT ||
-                   img.format == VK_FORMAT_R16G16_SFLOAT)) {
+                   img.format == VK_FORMAT_R16G16_SFLOAT || img.format == VK_FORMAT_R8G8B8A8_UNORM)) {
         snap.w = img.width, snap.h = img.height, snap.float_format = img.format;
         uint32_t bytes = img.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
         if (!make_scratch(snap.s, snap.w, snap.h, bytes)) return snap.s.destroy(vk_device());
@@ -693,9 +693,10 @@ void debug_snapshots_write() {  // after the submit's fence
                                                                        : std::ldexp(float(m | 0x400), int(e) - 25);
                     return h & 0x8000 ? -v : v;
                 };
-                const uint32_t channels = snap.float_format == VK_FORMAT_R16G16B16A16_SFLOAT ? 4
-                                          : snap.float_format == VK_FORMAT_R16G16_SFLOAT     ? 2
-                                                                                             : 1;
+                const bool unorm8 = snap.float_format == VK_FORMAT_R8G8B8A8_UNORM;  // flags in the bytes too
+                const uint32_t channels = snap.float_format == VK_FORMAT_R16G16B16A16_SFLOAT || unorm8 ? 4
+                                          : snap.float_format == VK_FORMAT_R16G16_SFLOAT              ? 2
+                                                                                                      : 1;
                 const size_t n = size_t(snap.w) * snap.h;
                 std::string line;
                 for (uint32_t c = 0; c < channels; c++) {
@@ -703,7 +704,9 @@ void debug_snapshots_write() {  // after the submit's fence
                     size_t nonzero = 0, nan = 0;
                     for (size_t k = 0; k < n; k++) {
                         float v;
-                        if (snap.float_format == VK_FORMAT_R32_SFLOAT) {
+                        if (unorm8) {
+                            v = static_cast<const uint8_t*>(p)[k * 4 + c] / 255.0f;
+                        } else if (snap.float_format == VK_FORMAT_R32_SFLOAT) {
                             std::memcpy(&v, static_cast<const uint8_t*>(p) + k * 4, 4);
                         } else {
                             uint16_t h;
@@ -719,6 +722,15 @@ void debug_snapshots_write() {  // after the submit's fence
                     char b[120];
                     std::snprintf(b, sizeof b, " %c %.3g..%.3g mean %.3g nz %.0f%%%s", "RGBA"[c], lo, hi, sum / n,
                                   100.0 * nonzero / n, nan ? " NaN" : "");
+                    line += b;
+                }
+                if (unorm8) {  // the share of texels with each low bit of the alpha byte set (G-buffer flags)
+                    size_t bits[4] = {};
+                    for (size_t k = 0; k < n; k++)
+                        for (int b = 0; b < 4; b++) bits[b] += static_cast<const uint8_t*>(p)[k * 4 + 3] >> b & 1;
+                    char b[96];
+                    std::snprintf(b, sizeof b, " | A bits 1 %.0f%% 2 %.0f%% 4 %.0f%% 8 %.0f%%", 100.0 * bits[0] / n,
+                                  100.0 * bits[1] / n, 100.0 * bits[2] / n, 100.0 * bits[3] / n);
                     line += b;
                 }
                 log("diag: float %s:%s", snap.name.c_str(), line.c_str());
