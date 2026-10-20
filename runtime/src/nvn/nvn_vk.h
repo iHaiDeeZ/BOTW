@@ -36,6 +36,10 @@ struct GpuImage {
     // serial of this image's newest contents (its own write, or a copy from an alias) and the newest alias write
     // already looked at.
     uint64_t guest_memory = 0, content_at = 0, alias_checked = 0;
+    // hash_memory of the guest bytes the last full upload came from (block-linear textures; 0: unknown). An upload of
+    // the same bytes is skipped, and an image kept from a destroyed texture (reuse_sampled) is checked with it.
+    uint64_t source_hash = 0;
+    uint64_t memory_size = 0;  // its VkDeviceMemory's
 };
 
 VkDevice vk_device();
@@ -167,6 +171,13 @@ void frame_log(uint64_t frames);  // the mode's counters, with the timing log
 void free_retired_images(uint64_t completed);
 // A GPU-written image of a destroyed texture with the same memory and shape (nvn_frames.cpp), or null.
 std::shared_ptr<GpuImage> reuse_image(const Texture& t);  // images of textures destroyed before submit `completed` + 1
+// A sampled (uploaded, never rendered) image of a destroyed texture with the same memory, shape and swizzle, or null.
+// It comes back not uploaded: the upload compares its source_hash with guest memory and skips the work when they match
+// (nvn_upload.cpp). Tears of the Kingdom re-initializes texture objects over unchanged memory all the time (~3,000
+// images made again in two minutes of the cave), each one untiled again and ASTC decoded again (~125 ms on the PS4).
+std::shared_ptr<GpuImage> reuse_sampled(const Texture& t);
+void sampled_reuse_note(bool same);  // an upload of a kept image: unchanged (skipped) or changed (done)
+uint64_t hash_memory(const uint8_t* p, uint64_t size);  // nvn_sampler.cpp
 
 // nvn_debug.cpp: NX_DUMP_FRAMES, the presented texture read back (recorded into the present's command buffer, written
 // after its fence).

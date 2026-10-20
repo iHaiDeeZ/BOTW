@@ -201,6 +201,7 @@ struct AstcJob {
     std::vector<uint8_t> raw, linear;
     std::vector<LinearLevel> levels;
     uint32_t format = 0, width = 0, height = 0, layers = 1, level_count = 1, bw = 1, bh = 1, bytes = 4, gobs = 0;
+    uint64_t hash = 0;  // hash_memory of raw: the image's source_hash once uploaded
     std::atomic<bool> done{false};
 };
 std::unordered_map<const GpuImage*, std::shared_ptr<AstcJob>> g_astc_jobs;  // the replay thread's
@@ -230,6 +231,7 @@ bool async_astc() {
                     j->levels = deswizzle_texture(j->raw.data(), j->raw.size(), j->width, j->height, j->layers,
                                                   j->level_count, j->bw, j->bh, j->bytes, j->linear, j->gobs);
                     if (!j->levels.empty()) decode_astc(j->format, j->linear, j->levels, j->layers, j->bw, j->bh);
+                    j->hash = hash_memory(j->raw.data(), j->raw.size());
                     std::vector<uint8_t>().swap(j->raw);
                     std::lock_guard lk(g_astc_lock);
                     j->done = true;
@@ -241,8 +243,8 @@ bool async_astc() {
     return on;
 }
 
-// The finished decode of `img`, taken (false: none).
-bool take_astc(const GpuImage* img, std::vector<uint8_t>& linear, std::vector<LinearLevel>& levels) {
+// The finished decode of `img`, taken (false: none), with the hash of the bytes it decoded.
+bool take_astc(const GpuImage* img, std::vector<uint8_t>& linear, std::vector<LinearLevel>& levels, uint64_t& hash) {
     if (g_astc_jobs.empty()) return false;
     auto it = g_astc_jobs.find(img);
     if (it == g_astc_jobs.end()) return false;
@@ -255,7 +257,13 @@ bool take_astc(const GpuImage* img, std::vector<uint8_t>& linear, std::vector<Li
     if (j->levels.empty()) return false;
     linear.swap(j->linear);
     levels.swap(j->levels);
+    hash = j->hash;
     return true;
+}
+
+// A background decode `img` no longer needs (its bytes were uploaded already): forgotten, left to finish.
+void drop_astc(const GpuImage* img) {
+    if (!g_astc_jobs.empty()) g_astc_jobs.erase(img);
 }
 }  // namespace
 
@@ -266,6 +274,11 @@ bool astc_pending(uint64_t texture, bool may_defer) {
     if (!t || !t->memory || !t->storage_size || t->stride || !astc_decoded(t->format)) return false;
     GpuImage* img = image_of(texture);
     if (!img || img->uploaded || img->rendered || img->alpha_from_r) return false;
+    if (img->source_hash) {  // kept from a destroyed texture (reuse_sampled): unchanged, its upload is quick
+        if (hash_memory(reinterpret_cast<const uint8_t*>(t->memory), t->storage_size) == img->source_hash) return false;
+        img->source_hash = 0;
+        sampled_reuse_note(false);
+    }
     auto it = g_astc_jobs.find(img);
     if (it == g_astc_jobs.end()) {
         if (!may_defer) return false;  // decoded at once by the upload, as before
@@ -390,8 +403,21 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
         return;
     }
+    // Block-linear: the bytes of the last full upload again (an image kept from a destroyed texture, reuse_sampled, or
+    // a flush that changed nothing) are not untiled, decoded and copied again.
+    const uint64_t source = hash_memory(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size);
+    const bool kept = !was_uploaded && img.source_hash;
+    if (source && img.source_hash == source) {
+        if (kept) sampled_reuse_note(true);
+        drop_astc(&img);
+        return;
+    }
+    if (kept) sampled_reuse_note(false);
+    img.source_hash = source;
     std::vector<LinearLevel> levels;
-    const bool predecoded = astc_decoded(t.format) && take_astc(&img, linear, levels);  // decoded in the background
+    uint64_t decoded_from = 0;
+    const bool predecoded = astc_decoded(t.format) && take_astc(&img, linear, levels, decoded_from);  // in the background
+    if (predecoded) img.source_hash = decoded_from;
     if (!predecoded)
         levels = deswizzle_texture(reinterpret_cast<const uint8_t*>(t.memory), t.storage_size, img.width, img.height,
                                    layers, img.levels, bw, bh, bytes, linear, t.block_height_gobs);

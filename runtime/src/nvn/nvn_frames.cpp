@@ -143,6 +143,58 @@ ReuseKey reuse_key(const Texture& t) {
 std::map<ReuseKey, std::pair<uint64_t, std::shared_ptr<GpuImage>>> g_reusable;  // key -> (kept at, image)
 uint64_t g_reuse_clock = 0, g_reused = 0;
 
+// Sampled images of destroyed textures (reuse_sampled, nvn_vk.h), by memory, shape and swizzle (the image's view
+// swizzle is the texture's), the oldest dropped past NX_SAMPLED_CACHE_MB (PS4 128, else 512; 0: off). Under
+// g_grave_lock.
+std::map<ReuseKey, std::pair<uint64_t, std::shared_ptr<GpuImage>>> g_sampled;  // key -> (kept at, image)
+uint64_t g_sampled_bytes = 0, g_sampled_kept = 0, g_sampled_taken = 0, g_sampled_dropped = 0;
+std::atomic<uint64_t> g_sampled_same{0}, g_sampled_changed{0};
+
+uint64_t sampled_budget() {
+    static const uint64_t mb = [] {
+        const char* e = std::getenv("NX_SAMPLED_CACHE_MB");
+#if defined(__ORBIS__)
+        return e ? std::strtoull(e, nullptr, 10) : 128ull;
+#else
+        return e ? std::strtoull(e, nullptr, 10) : 512ull;
+#endif
+    }();
+    return mb << 20;
+}
+
+ReuseKey sampled_key(const Texture& t) {
+    ReuseKey k = reuse_key(t);
+    k.swizzle = uint32_t(t.swizzle[0]) | uint32_t(t.swizzle[1]) << 8 | uint32_t(t.swizzle[2]) << 16 |
+                uint32_t(t.swizzle[3]) << 24;
+    return k;
+}
+
+// From ~Texture: whether its image was kept.
+bool keep_sampled(Texture& t) {
+    GpuImage* img = t.image.get();
+    if (!sampled_budget() || !t.memory || !img->image || img->rendered || img->texels || img->alpha_from_r ||
+        !img->uploaded || !img->source_hash || img->memory_size > sampled_budget() / 4)
+        return false;
+    auto& slot = g_sampled[sampled_key(t)];
+    if (slot.second) {
+        g_sampled_bytes -= slot.second->memory_size;
+        g_grave.push_back({g_submitted + 1, std::move(slot.second)});
+    }
+    g_sampled_bytes += img->memory_size;
+    slot = {g_reuse_clock, std::move(t.image)};
+    g_sampled_kept++;
+    while (g_sampled_bytes > sampled_budget()) {  // the oldest out
+        auto oldest = g_sampled.begin();
+        for (auto it = g_sampled.begin(); it != g_sampled.end(); ++it)
+            if (it->second.first < oldest->second.first) oldest = it;
+        g_sampled_bytes -= oldest->second.second->memory_size;
+        g_grave.push_back({g_submitted + 1, std::move(oldest->second.second)});
+        g_sampled.erase(oldest);
+        g_sampled_dropped++;
+    }
+    return true;
+}
+
 void wait_fences(const VkFence* fences, uint32_t n) {
     if (!n) return;
     uint64_t t0 = plat::monotonic_ns();
@@ -641,6 +693,14 @@ void free_retired_images(uint64_t completed) {
                 ++it;
             }
         if (g_reuse_clock % 3600 == 0 && g_reused) log("nvn/vk: %llu images reused", (unsigned long long)g_reused);
+        if (g_reuse_clock % 600 == 0 && (g_sampled_kept || g_sampled_taken)) {
+            log("nvn/vk: sampled images of destroyed textures: %llu kept, %llu taken back (%llu unchanged, %llu "
+                "uploaded again), %llu dropped; %zu kept, %.0f MB",
+                (unsigned long long)g_sampled_kept, (unsigned long long)g_sampled_taken,
+                (unsigned long long)g_sampled_same.load(), (unsigned long long)g_sampled_changed.load(),
+                (unsigned long long)g_sampled_dropped, g_sampled.size(), double(g_sampled_bytes) / 1048576.0);
+            g_sampled_kept = g_sampled_taken = g_sampled_dropped = 0, g_sampled_same = 0, g_sampled_changed = 0;
+        }
         auto done = std::stable_partition(g_grave.begin(), g_grave.end(),
                                           [&](const auto& e) { return e.first > completed; });
         for (auto it = done; it != g_grave.end(); ++it) dead.push_back(std::move(it->second));
@@ -679,6 +739,7 @@ Texture::~Texture() {
         slot = {g_reuse_clock, std::move(image)};
         return;
     }
+    if (keep_sampled(*this)) return;
     g_grave.push_back({g_submitted + 1, std::move(image)});
 }
 
@@ -731,5 +792,20 @@ std::shared_ptr<GpuImage> reuse_image(const Texture& t) {
     g_reused++;
     return img;
 }
+
+std::shared_ptr<GpuImage> reuse_sampled(const Texture& t) {
+    if (!t.memory || !sampled_budget()) return nullptr;
+    std::lock_guard lk(g_grave_lock);
+    auto it = g_sampled.find(sampled_key(t));
+    if (it == g_sampled.end()) return nullptr;
+    std::shared_ptr<GpuImage> img = std::move(it->second.second);
+    g_sampled_bytes -= img->memory_size;
+    g_sampled.erase(it);
+    g_sampled_taken++;
+    img->uploaded = false;  // checked against guest memory by its upload (source_hash)
+    return img;
+}
+
+void sampled_reuse_note(bool same) { (same ? g_sampled_same : g_sampled_changed)++; }
 
 }  // namespace nx::nvn

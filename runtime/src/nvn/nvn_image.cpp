@@ -122,6 +122,11 @@ GpuImage* image_of(uint64_t guest) {
         }
     }
     if ((t->image = reuse_image(*t))) return t->image->guest_memory = t->memory, t->image.get();
+    if ((t->image = reuse_sampled(*t))) {  // checked against guest memory by its upload
+        t->image->guest_memory = t->memory;
+        g_live_images[key] = t->image;
+        return t->image.get();
+    }
     auto img = std::make_shared<GpuImage>();
     img->format = bc_host_decode(t->format) ? bc_decoded_format(t->format) : vk_format(t->format);  // nvn_bc.cpp
     img->nvn_format = t->format;
@@ -217,6 +222,7 @@ GpuImage* image_of(uint64_t guest) {
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (!check(p_vkAllocateMemory(vk_device(), &ai, nullptr, &img->memory), "vkAllocateMemory")) return nullptr;
+    img->memory_size = req.size;
     p_vkBindImageMemory(vk_device(), img->image, img->memory, 0);
     constexpr VkComponentSwizzle kSwizzle[] = {VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R,
                                                VK_COMPONENT_SWIZZLE_G,    VK_COMPONENT_SWIZZLE_B,   VK_COMPONENT_SWIZZLE_A};
