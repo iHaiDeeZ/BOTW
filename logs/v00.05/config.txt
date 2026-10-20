@@ -1,0 +1,9 @@
+# BOTW settings: one NX_<KEY>=<value> per line, read at startup ('#' comments). See README.md.
+# NX_PS4_CORES=pinned        guest threads on their Switch core's PS4 core (default: balanced; or spread)
+# NX_BUTTONS=nintendo        Circle = A, Cross = B (by position); default Cross = A
+# NX_HANDHELD=1              the game's handheld mode (720p) instead of docked (1080p)
+# NX_RENDER_RES=1600x900     the size the game renders at while docked (lighter on the GPU)
+# NX_FSR=1                   upscale to 1080p with FidelityFX Super Resolution 1 instead of a plain stretch
+# NX_MUTE=1                  no sound
+# test (v00.06): save the code of shaders spirv/ lacks to /data/BOTW/shader_misses; remove afterwards
+NX_DUMP_SHADER_MISSES=1

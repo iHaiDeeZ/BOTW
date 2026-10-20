@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 761b5dd..f1a5d76 100644
+index 761b5dd..b22d1de 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -4,6 +4,9 @@ project(SwitchGamesRecomp C CXX)
@@ -53,16 +53,17 @@ index 761b5dd..f1a5d76 100644
      endif()
  endforeach()
  
-@@ -105,6 +121,8 @@ set(NX_RUNTIME_SOURCES
+@@ -105,6 +121,9 @@ set(NX_RUNTIME_SOURCES
      runtime/src/hle_net.cpp
      runtime/src/hle_audio.cpp
      runtime/src/hle_pl.cpp
 +    runtime/src/hle_nfp.cpp
++    runtime/src/hle_oe.cpp
 +    runtime/src/hle_opus.cpp
      runtime/src/input_script.cpp
      runtime/src/touch_layout.cpp
      runtime/src/perf_hint.cpp
-@@ -138,6 +156,7 @@ set(NX_RUNTIME_SOURCES
+@@ -138,6 +157,7 @@ set(NX_RUNTIME_SOURCES
      runtime/src/nvn/nvn_image.cpp
      runtime/src/nvn/nvn_frames.cpp
      runtime/src/nvn/nvn_dedup.cpp
@@ -70,7 +71,7 @@ index 761b5dd..f1a5d76 100644
      runtime/src/nvn/nvn_written.cpp
      runtime/src/nvn/nvn_replay.cpp
      runtime/src/nvn/nvn_debug.cpp
-@@ -166,6 +185,30 @@ set(NX_RUNTIME_SOURCES
+@@ -166,6 +186,30 @@ set(NX_RUNTIME_SOURCES
  file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")
  list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES})
  
@@ -101,7 +102,7 @@ index 761b5dd..f1a5d76 100644
  # Vulkan headers (the same registry version tools/gen_vk.py generated from). The loader comes with the GPU driver.
  if(DEFINED ENV{VULKAN_SDK})
      set(NX_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH "Vulkan SDK")
-@@ -173,7 +216,31 @@ else()
+@@ -173,7 +217,31 @@ else()
      set(NX_VULKAN_SDK "C:/VulkanSDK/1.4.357.0" CACHE PATH "Vulkan SDK")
  endif()
  
@@ -134,7 +135,7 @@ index 761b5dd..f1a5d76 100644
      # NativeActivity app: lib<game>.so, entry android_main (android_native_app_glue).
      set(GLUE "${ANDROID_NDK}/sources/android/native_app_glue")
      add_library(${NX_GAME} SHARED ${NX_RUNTIME_SOURCES} runtime/src/platform_android.cpp
-@@ -183,7 +250,7 @@ if(ANDROID)
+@@ -183,7 +251,7 @@ if(ANDROID)
      # Our ANativeActivity_onCreate (platform_android.cpp) runs first, on the UI thread, then calls the glue's.
      set_source_files_properties("${GLUE}/android_native_app_glue.c" PROPERTIES
          COMPILE_DEFINITIONS "ANativeActivity_onCreate=glue_ANativeActivity_onCreate")
@@ -143,7 +144,7 @@ index 761b5dd..f1a5d76 100644
      target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -fno-semantic-interposition -march=armv8.2-a+crypto)
      # The glue's ANativeActivity_onCreate must be exported. 16 KB page alignment: Android 15+ devices with 16 KB pages.
      target_link_options(${NX_GAME} PRIVATE -u ANativeActivity_onCreate -Wl,-z,max-page-size=16384)
-@@ -194,7 +261,7 @@ elseif(APPLE)
+@@ -194,7 +262,7 @@ elseif(APPLE)
      find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include)
      add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_mac.cpp runtime/src/memguard_mac.cpp)
      target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
@@ -152,7 +153,7 @@ index 761b5dd..f1a5d76 100644
      target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
      # The executable loads near 0x1_0000_0000, below the guest ranges (0x40_0000_0000 and up). The game runs on its
      # own thread with a 64 MiB stack (platform_mac.cpp), so the main thread's stack size does not matter.
-@@ -206,14 +273,14 @@ elseif(UNIX)
+@@ -206,14 +274,14 @@ elseif(UNIX)
      find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS "${NX_VULKAN_SDK}/include" /usr/include /usr/local/include)
      add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_linux.cpp runtime/src/memguard_linux.cpp)
      target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
@@ -169,7 +170,7 @@ index 761b5dd..f1a5d76 100644
      # The runtime uses the portable C library (getenv, fopen, ...) on every host: no "_s" variants.
      target_compile_definitions(${NX_GAME} PRIVATE _CRT_SECURE_NO_WARNINGS _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
      if(MSVC)
-@@ -221,4 +288,12 @@ else()
+@@ -221,4 +289,12 @@ else()
          # main-thread stack (recompiled calls nest deeply); a link map for tools/symbolize.py.
          target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
      endif()
@@ -700,7 +701,7 @@ index 44601b3..0139745 100644
  NX_HLE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", OpenDefaultAudioOut);
  NX_HLE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", StartAudioOut);
 diff --git a/runtime/src/hle_fs.cpp b/runtime/src/hle_fs.cpp
-index 64b5beb..a94a357 100644
+index 64b5beb..546ac0a 100644
 --- a/runtime/src/hle_fs.cpp
 +++ b/runtime/src/hle_fs.cpp
 @@ -1,11 +1,19 @@
@@ -1020,7 +1021,15 @@ index 64b5beb..a94a357 100644
      }
      st<int64_t>(c.x[0], n);
      c.x[0] = kOk;
-@@ -481,7 +671,14 @@ void add_virtual_file(const std::string& path, std::string data) {
+@@ -459,6 +649,7 @@ NX_HLE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", FlushFile);
+ NX_HLE("_ZN2nn2fs25EnableGlobalFileDataCacheEPvm", EnableGlobalFileDataCache);
+ NX_HLE("_ZN2nn2fs26DisableGlobalFileDataCacheEv", DisableGlobalFileDataCache);
+ NX_HLE("_ZN2nn2fs6CommitEPKc", Commit);
++NX_HLE("_ZN2nn2fs14CommitSaveDataEPKc", Commit);  // SDK 7 name (Breath of the Wild)
+ NX_HLE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", OpenDirectory);
+ NX_HLE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", ReadDirectory);
+ NX_HLE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", CloseDirectory);
+@@ -481,7 +672,14 @@ void add_virtual_file(const std::string& path, std::string data) {
  }
  
  std::string read_game_file(const std::string& relative_to_romfs) {
@@ -1305,6 +1314,29 @@ index 0000000..d70dc59
 +NX_HLE("_ZN2nn3nfp13StopDetectionERKNS0_12DeviceHandleE", NoDevice);
 +NX_HLE("_ZN2nn3nfp10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE", NoDevice);
 +NX_HLE("_ZN2nn3nfp12GetModelInfoEPNS0_9ModelInfoERKNS0_12DeviceHandleE", NoDevice);
++
++}  // namespace nx
+diff --git a/runtime/src/hle_oe.cpp b/runtime/src/hle_oe.cpp
+new file mode 100644
+index 0000000..777d0d8
+--- /dev/null
++++ b/runtime/src/hle_oe.cpp
+@@ -0,0 +1,17 @@
++// nn::oe calls whose sdk client aborts on the stub am/oe services: there is never a launch parameter (the applet
++// storage it pops does not exist here) and never a notification message. Breath of the Wild aborted in
++// TryPopLaunchParameter at boot (v00.05).
++#include <nx/runtime.h>
++
++namespace nx {
++
++namespace {
++
++void none(CPU& c) { c.x[0] = 0; }  // bool: false, nothing popped
++
++}  // namespace
++
++NX_HLE("_ZN2nn2oe21TryPopLaunchParameterEPmPvm", none);
++NX_HLE("_ZN2nn2oe25TryPopNotificationMessageEPj", none);
 +
 +}  // namespace nx
 diff --git a/runtime/src/hle_opus.cpp b/runtime/src/hle_opus.cpp
