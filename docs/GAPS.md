@@ -17,6 +17,36 @@ expected or inferred, **not yet checked on a dump**. Check each item at the firs
   - it refuses if fewer than 90% land on instructions.
 - Yaz0 in `tools/maxwell/containers.py`. BOTW's packed files (`.s*`) are Yaz0, not zstd.
 
+## Checked on the user's dump (base + 1.6.0 update, 2026-10-20)
+
+- **Version.** The update is 1.6.0 (`v786432`): its main has the decomp's 1.6.0 hash, so it is recompiled
+  without symbols. DLC Pack 1 and 2 are in the dump folder but not imported (the base game runs without them).
+- **Modules.**
+  - main: 44.5 MB, 83,256 functions, 1,499 jump tables, 0 unhandled.
+  - sdk: NintendoSDK 7.3.2, 34,480 functions, 0 unhandled.
+  - subsdk0: the movie library, 6 MB, 21 unhandled NEON instructions (bfc, saddlv, sqabs, sqrshl, sqshl), as TOTK's.
+  - The sdk has the SDK 9 form of `nn::init::Start` (thread, base, init, fini), which the runtime handles, and the
+    in-process `nn::audio::server::AudioRenderSystem`.
+- **RomFS.** 41,052 files, 15.13 GB.
+- **Shaders.** All in `Pack/Bootup_Graphics.pack`, except for the effects:
+  - the nine `Shader/uking_*.product.sbfsha` (FSHA 3.0.1, Yaz0 inside the SARC);
+  - agl, gsys and KSys `*.ssarc` (BAHS v9);
+  - `Effect/*.sesetlist` (VFXB, compute).
+
+  In `containers.py`: Yaz0 members inside a SARC are opened, the FSHA 3.0.1 shading-model layout falls back to
+  BNSH by magic, and BNSH 2.1.2 programs start at 0 with no NVN header. Results: 868 containers, 7,878 distinct
+  blocks, **7,870 translated** and passed spirv-val.
+
+  **8 vertex shaders fail**, all with "Invalid instruction at 0x10":
+  - 6 effects: `DgnObj_Hrl_Warpin_2x2_01`, `Enemy_Chuchu_Electric_Junior`, `Enemy_SiteBoss_Spear`, `FlyLocater`,
+    `Octarock`, `RemainsElectricCannon`;
+  - 2 in `Bootup_Graphics`.
+
+  Probably another program start (VertexA/B pairs?). Check `spirv/results.tsv`.
+- **Not extracted.** `System/font/nvn_font/nvn_font_shader*.bin` is a raw NVN layout (offset table, then a control
+  section). It is probably a debug font.
+- **Eboot.** 220 MB.
+
 ## To check at the first import
 
 - **Which update.** The decomp targets 1.5.0, but most dumps carry 1.6.0. A 1.6.0 main is recompiled without
