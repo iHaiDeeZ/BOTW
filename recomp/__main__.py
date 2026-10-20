@@ -50,13 +50,23 @@ def main():
     ap.add_argument("--trace", default=None,
                     help="file of function addresses (hex, one per line, '#' comments) whose entry and return the runtime "
                          "logs (nx::guest_trace); only the files holding them change")
+    ap.add_argument("--symbols", default=None,
+                    help="file of known function starts ('<hex address> [size] [name or -]' per line, '#' comments; "
+                         "scripts/decomp-symbols.py in the SMO and BOTW ports): extra seeds and names")
     args = ap.parse_args()
     base = int(args.base, 0)
     name = args.name
 
     t = time.time()
     m = nso.load(args.nso, name)
-    an = analysis.analyze(m)
+    symbols = None
+    if args.symbols:
+        symbols = []
+        for line in open(args.symbols):
+            part = line.split("#")[0].split()
+            if part:
+                symbols.append((int(part[0], 16), part[2] if len(part) > 2 and part[2] != "-" else ""))
+    an = analysis.analyze(m, symbols=symbols)
     print(f"analysis: {len(an.functions)} functions, {len(an.jump_tables)} jump tables ({time.time() - t:.1f}s)")
 
     os.makedirs(args.out, exist_ok=True)
@@ -96,6 +106,11 @@ def main():
             print(f"  emitted {k}/{len(funcs)} functions ({time.time() - t:.0f}s)")
 
     write_table(os.path.join(args.out, "table.cpp"), m, an, e, name, base)
+    if symbols:  # every function with a known name, for crash logs: start, end (module offsets), name
+        with open_if_changed(os.path.join(args.out, "names.txt")) as out:
+            for f in an.functions:
+                if f.name:
+                    out.write(f"{f.start:08x} {f.end:08x} {f.name}\n")
 
     with open(os.path.join(args.out, "report.txt"), "w") as out:
         out.write(f"functions {len(funcs)}, handled {e.handled}, unhandled {sum(e.unhandled.values())}\n")

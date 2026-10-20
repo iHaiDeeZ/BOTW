@@ -295,6 +295,8 @@ class Emitter(ExtOps, VecLdSt, IntOps, FpOps, NeonOps, NeonWideOps):
         if traced:  # --trace: entry (x0..x3, lr) and return (x0) logged by the runtime
             out.append(f"void {self.fn(f.start)}(nx::CPU& NX_RESTRICT c) {{ nx::guest_trace(c, {B} + {f.start:#x}ull, 0); "
                        f"{name}(c); nx::guest_trace(c, {B} + {f.start:#x}ull, 1); }}")
+        if f.name:  # --symbols
+            out.insert(0, f"// {f.name}")
         return "\n".join(out)
 
     # ---- instruction dispatch -----------------------------------------------------------------------------

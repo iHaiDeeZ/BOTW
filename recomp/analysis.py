@@ -79,7 +79,9 @@ class Analysis:
         return self.functions[i] if i >= 0 and addr < self.functions[i].end else None
 
 
-def analyze(m, log=print):
+def analyze(m, log=print, symbols=None):
+    """symbols: optional [(address, name)] of known function starts (a decompilation's function list, e.g.
+    OdysseyDecomp's for Super Mario Odyssey 1.0.0): seeds next to the FDEs, and names for the functions."""
     cs = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
     cs.skipdata = True
     t0, tn = m.text
@@ -120,6 +122,15 @@ def analyze(m, log=print):
             if t0 <= t < text_end and t in insns:
                 entries.add(t) if _looks_like_code_pointer(an, a, t) else None
     entries.add(t0) if t0 in insns else None
+    if symbols:
+        known = [(a, n) for a, n in symbols if t0 <= a < text_end and a in insns]
+        log(f"  symbols: {len(known)} of {len(symbols)} on instructions")
+        if len(known) < len(symbols) * 0.9:
+            raise ValueError("most symbol addresses are not on instructions: wrong file or game version")
+        for a, n in known:
+            entries.add(a)
+            if n:
+                an.names.setdefault(a, n)
     fde_bounds = {f.start: f.start + f.size for f in fdes}
     log(f"  seeds: {len(fdes)} FDE, {len(an.plt)} PLT stubs, {len(entries)} entries")
 

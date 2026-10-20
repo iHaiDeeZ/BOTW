@@ -12,7 +12,7 @@ Understood formats (docs/nvn/SHADERS.md has the layouts and what is verified vs.
   VFXB   NintendoWare Vfx2 effect binary: its GRSR/GRSC sections hold BNSH files
   BAHS   agl shader archive binary (.sharcb): programs, variations, per-stage records
   BYML   (.esetb.byml) not parsed: the VFXB inside is found by its magic
-Files ending in .zs are zstd and are decompressed first (zstandard module or the zstd tool); Tears of the Kingdom's
+Yaz0 files (.szs) and files ending in .zs (zstd) are decompressed first (zstandard module or the zstd tool); Tears of the Kingdom's
 dictionary-compressed ones with the dictionaries in romfs/Pack/ZsDic.pack.zs.
 
 Every stage gets a stable id (container path / program / stage) and a content hash of its code block. --extract writes
@@ -493,8 +493,46 @@ def zs_dictionaries(path):
     return _ZSDICS[pack]
 
 
+def yaz0(d):
+    """Yaz0 (Super Mario Odyssey's .szs and other pre-2020 games): header "Yaz0", u32 BE size, 8 reserved bytes, then
+    groups of a flag byte (MSB first: 1 = literal byte, 0 = back reference of 2 or 3 bytes)."""
+    n = struct.unpack_from(">I", d, 4)[0]
+    out = bytearray(n)
+    i, o = 16, 0
+    while o < n:
+        flags = d[i]
+        i += 1
+        for bit in range(7, -1, -1):
+            if o >= n:
+                break
+            if flags >> bit & 1:
+                out[o] = d[i]
+                i += 1
+                o += 1
+                continue
+            b1, b2 = d[i], d[i + 1]
+            i += 2
+            dist = ((b1 & 0xF) << 8 | b2) + 1
+            cnt = b1 >> 4
+            if cnt == 0:
+                cnt = d[i] + 0x12
+                i += 1
+            else:
+                cnt += 2
+            src = o - dist
+            if dist >= cnt:
+                out[o:o + cnt] = out[src:src + cnt]
+            else:
+                for k in range(cnt):
+                    out[o + k] = out[src + k]
+            o += cnt
+    return bytes(out)
+
+
 def read_file(path):
     raw = open(path, "rb").read()
+    if raw[:4] == b"Yaz0":
+        return yaz0(raw)
     if path.endswith(".zs"):
         try:
             import zstandard
