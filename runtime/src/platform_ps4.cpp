@@ -560,9 +560,21 @@ void set_guest_core(int64_t host_tid, int core) {
     ps4_set_affinity(k->thread, guest_core_mask(core));
 }
 
+// Whether /data/<app>/profile.txt exists (the sampler, port/ps4_sampler.cpp). Through open: access() answered "no"
+// on the console for a file that was there (TOTK v00.27 never started the sampler).
+bool profile_requested() {
+    static const bool on = [] {
+        int fd = open(NX_PS4_DATA "/profile.txt", O_RDONLY);
+        if (fd < 0) return false;
+        close(fd);
+        return true;
+    }();
+    return on;
+}
+
 void place_frame_thread(int role) {
     // /data/SMW/profile.txt: these two are the threads worth sampling (port/ps4_sampler.cpp, samples.log)
-    if (access(NX_PS4_DATA "/profile.txt", F_OK) == 0) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
+    if (profile_requested()) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
     Known* k = known(ps4_thread_id());
     if (k && k->guest) return;  // a guest thread presents (NX_REPLAY_THREAD=0): it keeps its guest core
     if (role == 0) {
@@ -1058,7 +1070,7 @@ int main() {
         trace("gpu: every cache flushed after every draw (NX_PS4_GPU_FLUSH)");
     }
     ps4::boot_screen_start();  // our own picture with a progress bar until the game's first frame
-    if (access(NX_PS4_DATA "/profile.txt", F_OK) == 0) ps4_sampler_start();
+    if (profile_requested()) ps4_sampler_start();
     detect_cores();
     g_cross_confirms = !(std::getenv("NX_BUTTONS") && std::strcmp(std::getenv("NX_BUTTONS"), "nintendo") == 0);
     ps4::settings_load(g_cross_confirms);  // the quick menu's settings (ps4_menu.cpp): button mapping, FSR
