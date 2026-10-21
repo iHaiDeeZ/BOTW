@@ -2618,7 +2618,7 @@ index ea6c20c..17ed618 100644
  
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_debug.cpp b/runtime/src/nvn/nvn_debug.cpp
-index 4f1910e..5cf10a2 100644
+index 4f1910e..6450e72 100644
 --- a/runtime/src/nvn/nvn_debug.cpp
 +++ b/runtime/src/nvn/nvn_debug.cpp
 @@ -6,7 +6,10 @@
@@ -2650,7 +2650,7 @@ index 4f1910e..5cf10a2 100644
      bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
      if (p_vkCreateBuffer(d, &bi, nullptr, &s.buffer) != VK_SUCCESS) return false;
      p_vkGetBufferMemoryRequirements(d, s.buffer, &req);
-@@ -395,8 +398,13 @@ struct Snap {
+@@ -395,8 +398,14 @@ struct Snap {
      uint32_t w = 0, h = 0;
      uint64_t draw = 0;
      uint32_t raw_format = 0;  // NX_SNAP_RAW: the texels as stored (4-byte formats), written as .raw
@@ -2660,11 +2660,12 @@ index 4f1910e..5cf10a2 100644
  };
  std::vector<Snap> g_snaps;
 +std::set<uint64_t> g_diag_wanted;  // textures the storyboard frame sampled: pictured at the next frame's first pass end
++std::string g_diag_tex_prefix;     // the folder under diag/ of the storyboard those textures belong to ("" or "<frame>/")
 +bool g_diag_textures_due = false;
  
  }  // namespace
  
-@@ -476,6 +484,216 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
+@@ -476,6 +485,232 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
  
  bool debug_snapshots_pending() { return !g_snaps.empty(); }
  
@@ -2677,7 +2678,7 @@ index 4f1910e..5cf10a2 100644
 +    char name[160];
 +    std::snprintf(name, sizeof name, "tex_%llx_%ux%u_f%d_l%u_L%u%s", (unsigned long long)texture, img.width, img.height,
 +                  int(img.format), level, img.layers, img.rendered ? "_rt" : "");
-+    snap.name = name;
++    snap.name = g_diag_tex_prefix + name;
 +    VkImageLayout back = img.layout;
 +    if (depth) {
 +        snap.depth_bytes = img.format == VK_FORMAT_D16_UNORM || img.format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
@@ -2742,6 +2743,15 @@ index 4f1910e..5cf10a2 100644
 +FILE* g_diag_index = nullptr;
 +constexpr int kDiagMax = 400;
 +std::map<const GpuImage*, int> g_diag_pictures;  // pictures of each image in this storyboard
++// NX_DIAG_KEEP=1: each storyboard in a folder of its own, diag/<frame>/, instead of replacing the last one: with
++// NX_DIAG_EVERY one run keeps the title menu, a loading screen and gameplay (Breath of the Wild's menu text, missing
++// on the PS4 only, was never on screen when L3 + R3 was pressed). Its sampled textures (~110 MB a storyboard) only
++// with NX_DIAG_TEXTURES=1. g_diag_prefix: "<frame>/" or "" (the picture names' folder under diag/).
++std::string g_diag_prefix;
++bool diag_keep() {
++    static const bool on = std::getenv("NX_DIAG_KEEP") != nullptr;
++    return on;
++}
 +}  // namespace
 +
 +void diag_line(const std::string& line) {
@@ -2749,7 +2759,8 @@ index 4f1910e..5cf10a2 100644
 +}
 +
 +void diag_want_texture(uint64_t texture) {
-+    if (g_diag_on && texture && g_diag_wanted.size() < 300) g_diag_wanted.insert(texture);
++    static const bool textures = !diag_keep() || std::getenv("NX_DIAG_TEXTURES") != nullptr;
++    if (textures && g_diag_on && texture && g_diag_wanted.size() < 300) g_diag_wanted.insert(texture);
 +}
 +
 +void diag_request() { g_diag_armed = true; }
@@ -2759,9 +2770,10 @@ index 4f1910e..5cf10a2 100644
 +    if (g_diag_on) {
 +        g_diag_on = false;
 +        g_diag_textures_due = !g_diag_wanted.empty();
++        g_diag_tex_prefix = g_diag_prefix;
 +        if (g_diag_index) std::fclose(g_diag_index), g_diag_index = nullptr;
-+        log("diag: storyboard of frame %llu: %d pictures in %s/diag", (unsigned long long)presents, g_diag_seq,
-+            plat::data_root().c_str());
++        log("diag: storyboard of frame %llu: %d pictures in %s/diag/%s", (unsigned long long)presents, g_diag_seq,
++            plat::data_root().c_str(), g_diag_prefix.c_str());
 +    }
 +    // NX_DIAG_EVERY=<presents>: a storyboard every that many presents (each replaces the last), for a scene that is
 +    // hard to reach with the menu open (Tears of the Kingdom's black world).
@@ -2780,6 +2792,11 @@ index 4f1910e..5cf10a2 100644
 +    }
 +    if (g_diag_armed.exchange(false)) {
 +        std::string dir = plat::data_root() + "/diag";
++        g_diag_prefix.clear();
++        if (diag_keep()) {
++            dir += "/" + std::to_string(presents + 1);
++            g_diag_prefix = std::to_string(presents + 1) + "/";
++        }
 +        plat::make_dirs(dir);
 +        g_diag_index = plat::fopen_utf8(dir + "/passes.txt", "w");
 +        g_diag_seq = 0;
@@ -2817,7 +2834,7 @@ index 4f1910e..5cf10a2 100644
 +    char name[160];
 +    std::snprintf(name, sizeof name, "%03d_c%u%s_%ux%u_f%d_d%u_%s", g_diag_seq, slot, sub, img.width, img.height,
 +                  int(img.format), draws, fs.empty() ? "-" : fs.c_str());
-+    snap.name = name;
++    snap.name = g_diag_prefix + name;
 +    if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
 +    g_diag_seq++;
 +    // NX_DIAG_FLOAT=1: float targets read back as stored, whole level 0, and logged per channel (min, max, mean, share
@@ -2875,13 +2892,13 @@ index 4f1910e..5cf10a2 100644
 +    if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
 +    size_t before = g_snaps.size();
 +    diag_texture_level(cb, img, texture, 0);
-+    if (g_snaps.size() > before) g_snaps.back().name = name;
++    if (g_snaps.size() > before) g_snaps.back().name = g_diag_prefix + name;
 +}
 +
  void debug_snapshots_write() {  // after the submit's fence
      for (Snap& snap : g_snaps) {
          void* p = nullptr;
-@@ -489,6 +707,103 @@ void debug_snapshots_write() {  // after the submit's fence
+@@ -489,6 +724,103 @@ void debug_snapshots_write() {  // after the submit's fence
                  std::fclose(f);
              }
              p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
@@ -3134,7 +3151,7 @@ index 564fd74..aabbd23 100644
  
  }  // namespace
 diff --git a/runtime/src/nvn/nvn_draw.cpp b/runtime/src/nvn/nvn_draw.cpp
-index ff8d46a..d2705d6 100644
+index ff8d46a..0499472 100644
 --- a/runtime/src/nvn/nvn_draw.cpp
 +++ b/runtime/src/nvn/nvn_draw.cpp
 @@ -31,6 +31,7 @@ const uint8_t* guest_bytes(uint64_t gpu) {
@@ -3201,7 +3218,7 @@ index ff8d46a..d2705d6 100644
      build_sets(cb, stages, layout);
      p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
      bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
-@@ -254,7 +285,35 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
+@@ -254,13 +285,50 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
      g_vertex_pending = false, g_vertex_barriers++, g_vertex_visible_at = g_pass_serial;
  }
  
@@ -3235,9 +3252,35 @@ index ff8d46a..d2705d6 100644
  bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
 +    PhaseClock clock;
      g_stats.total++;
-     if (g_state.rasterizer_discard || !g_state.render_enable) return false;  // nothing reaches the targets
+-    if (g_state.rasterizer_discard || !g_state.render_enable) return false;  // nothing reaches the targets
++    // The storyboard lists the draws that never reach the GPU too, with why (Breath of the Wild's missing menu text:
++    // drawn and invisible, or never drawn).
++    auto skipped = [&](const char* why, const ShaderInfo* v, const ShaderInfo* f) {
++        if (diag_active())
++            diag_line(std::string("  skipped draw (") + why + ") vs " + (v ? v->hash : std::string("-")) + " fs " +
++                      (f ? f->hash : std::string("-")));
++        return false;
++    };
++    if (g_state.rasterizer_discard || !g_state.render_enable)  // nothing reaches the targets
++        return skipped(g_state.rasterizer_discard ? "rasterizer discard" : "rendering disabled", nullptr, nullptr);
      const auto* shaders = program_shaders(g_state.program);
-@@ -293,7 +352,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+     if (!shaders || shaders->empty()) {
+         g_stats.no_program++;
+-        return false;
++        return skipped("no program", nullptr, nullptr);
+     }
+     const ShaderInfo* vs = nullptr;
+     const ShaderInfo* fs = nullptr;
+@@ -270,7 +338,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+     }
+     if (!vs) {
+         g_stats.no_vertex++;
+-        return false;
++        return skipped("no vertex shader", nullptr, fs);
+     }
+     std::vector<const ShaderInfo*> swapped;  // NX_SWAP_FS / NX_SKIP_FS (nvn_draw_trace.cpp)
+     if (!debug_shader_overrides(shaders, fs, swapped)) return false;
+@@ -293,7 +361,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
              }
      }
      // Textures first: an upload or a layout change cannot happen inside the render pass.
@@ -3256,12 +3299,12 @@ index ff8d46a..d2705d6 100644
 +    clock.mark(kPhTextures);
 +    if (gathered & kTexturesPending) {
 +        g_stats.no_pipeline++;
-+        return false;
++        return skipped("textures pending", vs, fs);
 +    }
      // A pass that neither tests nor writes depth but keeps its depth image bound while sampling that same image (the
      // world map's depth-to-colour linearization, fs 0aa56d1b): on Metal the image is then attached and read in one
      // encoder, which is undefined, and the copy came out 0 everywhere; the composite then took the player for
-@@ -325,7 +399,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -325,15 +408,18 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          draw_end_rendering(cb, 1);
      }
  
@@ -3271,15 +3314,17 @@ index ff8d46a..d2705d6 100644
      // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
      // (nvn_written.cpp), which cannot be recorded inside a pass.
      DrawInputs in;
-@@ -334,6 +410,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
-         return false;
+     if (!draw_inputs_shared(cb, vs, indexed, c, in)) {
+         g_stats.no_indices++;
+-        return false;
++        return skipped("no vertex or index data", vs, fs);
      }
      check_vertex_ranges(vs, fs, indexed, c, in);  // NX_CHECK_VERTS (nvn_written.cpp)
 +    clock.mark(kPhInputs);
      if (!g_rendering) {
          if (gpu_profile_on()) {
              GpuImage* img = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
-@@ -344,6 +421,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -344,6 +430,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          }
          begin_rendering(cb, tt);
      }
@@ -3287,7 +3332,7 @@ index ff8d46a..d2705d6 100644
  
      // Pipeline.
      PipelineKey key;
-@@ -356,6 +434,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -356,6 +443,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
      std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
      std::copy_n(g_state.blend, 8, key.blend);
      key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
@@ -3297,7 +3342,7 @@ index ff8d46a..d2705d6 100644
      key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
      key.alpha_to_coverage = g_state.alpha_to_coverage;
      for (uint32_t k = 0; k < t.color_count; k++) {
-@@ -365,7 +446,8 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -365,10 +455,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
      }
      GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
      key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
@@ -3306,8 +3351,12 @@ index ff8d46a..d2705d6 100644
 +    clock.mark(kPhPipeline);
      if (!pipeline) {
          g_stats.no_pipeline++;
-         return false;
-@@ -420,6 +502,10 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+-        return false;
++        return skipped("no pipeline", vs, fs);
+     }
+ 
+     if (g_bound.cb != cb || draw_slow(kSlowState)) g_bound = Bound{}, g_bound.cb = cb;
+@@ -420,6 +511,10 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          if (q) zero_draws_end(cb);
      }
      g_stats.done++;
@@ -3318,7 +3367,7 @@ index ff8d46a..d2705d6 100644
      g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
      // NX_SNAP_FS=<hash>,<hash>[@<first draw>]: also snapshot after draws with those fragment shaders (8 at most, or
      // NX_SNAP_FS_MAX).
-@@ -478,6 +564,7 @@ void draw_begin_submit() {
+@@ -478,6 +573,7 @@ void draw_begin_submit() {
      sets_begin_submit();
      clears_begin_submit();
      g_submit_ns = plat::monotonic_ns();
@@ -3326,7 +3375,7 @@ index ff8d46a..d2705d6 100644
      dedup_reset();
      written_reset();
      pipeline_begin_submit();
-@@ -488,6 +575,7 @@ uint64_t recorded_draws();
+@@ -488,6 +584,7 @@ uint64_t recorded_draws();
  void draw_log_stats() {
      if (g_vertex_barriers) log("nvn passes: %llu vertex-read barriers (G4)", (unsigned long long)g_vertex_barriers);
      dedup_log();
@@ -3334,7 +3383,7 @@ index ff8d46a..d2705d6 100644
      render_pass_log();
      written_log();
      sampled_ready_log();
-@@ -541,10 +629,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
+@@ -541,10 +638,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
          p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
          g_vertex_pending |= narrow_pass_barrier();
      }
@@ -3354,7 +3403,7 @@ index ff8d46a..d2705d6 100644
      gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
  }
  void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)
-@@ -581,4 +677,8 @@ uint64_t draw_take_dump_request() {
+@@ -581,4 +686,8 @@ uint64_t draw_take_dump_request() {
      return r;
  }
  
@@ -3493,7 +3542,7 @@ index 9dded7d..e2ce469 100644
  
  // NX_TRACE_SKIN: skinned draws' inputs, vertex uniform blocks and the bone rows they select.
 diff --git a/runtime/src/nvn/nvn_draw_trace.cpp b/runtime/src/nvn/nvn_draw_trace.cpp
-index e75c126..95b576d 100644
+index e75c126..393e5a9 100644
 --- a/runtime/src/nvn/nvn_draw_trace.cpp
 +++ b/runtime/src/nvn/nvn_draw_trace.cpp
 @@ -51,6 +51,18 @@ void trace_cube_draw(const Targets& t, const ShaderInfo* vs, const ShaderInfo* f
@@ -3550,7 +3599,7 @@ index e75c126..95b576d 100644
  namespace {
  std::map<uint64_t, std::string> g_nan_writers;  // storage address -> the last compute shader bound to it
  bool trace_nan_on() {
-@@ -292,6 +332,61 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -292,6 +332,82 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
              fs ? fs->hash.c_str() : "-", indexed ? "indexed" : "arrays", count, instances);
      trace_cube_draw(t, vs, fs, tex_bindings, handles);
      frame_sig_draw(t, indexed, count, instances, fs, tex_bindings, handles);
@@ -3606,13 +3655,34 @@ index e75c126..95b576d 100644
 +            std::snprintf(b, sizeof b, " bias %g %g %g", double(g_state.bias_factor), double(g_state.bias_units),
 +                          double(g_state.bias_clamp));
 +            line += b;
++            // What can leave a UI draw invisible: where it lands (viewport origin, scissor), how it blends into
++            // target 0, logic op, alpha test, and its size (Breath of the Wild's menu text on the PS4).
++            std::snprintf(b, sizeof b, " at %d,%d", g_state.viewport[0], g_state.viewport[1]);
++            line += b;
++            if (g_state.has_scissor) {
++                std::snprintf(b, sizeof b, " sc %d,%d %dx%d", g_state.scissor[0], g_state.scissor[1], g_state.scissor[2],
++                              g_state.scissor[3]);
++                line += b;
++            }
++            if (g_state.color.blend_enable[0]) {
++                const BlendTarget& bt = g_state.blend[0];
++                std::snprintf(b, sizeof b, " blend %u:%u/%u a %u:%u/%u", bt.eq_rgb, bt.src_rgb, bt.dst_rgb, bt.eq_a,
++                              bt.src_a, bt.dst_a);
++                line += b;
++            }
++            if (g_state.color.logic_op || g_state.color.alpha_test) {
++                std::snprintf(b, sizeof b, " logic %u alpha test %u", g_state.color.logic_op, g_state.color.alpha_test);
++                line += b;
++            }
++            std::snprintf(b, sizeof b, " n %u x%u%s", count, instances, indexed ? " indexed" : "");
++            line += b;
 +        }
 +        diag_line(line);
 +    }
      // NX_TRACE_DRAWS=<first draw>: logs 80 draws from there.
      static const char* trace_env = std::getenv("NX_TRACE_DRAWS");
      static const uint64_t trace_from = trace_env ? std::strtoull(trace_env, nullptr, 10) : 0;
-@@ -358,6 +453,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -358,6 +474,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
              if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                  log("  vs c3 @%llx: %g %g %g %g | %g %g %g %g", (unsigned long long)u.address, f[0], f[1], f[2], f[3], f[4],
                      f[5], f[6], f[7]);
@@ -3623,7 +3693,7 @@ index e75c126..95b576d 100644
          if (const Range& u = g_state.uniforms[1][0]; u.address)
              if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                  for (uint64_t k = 0; k < std::min<uint64_t>(u.size / 16, 8); k++)
-@@ -384,6 +483,25 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -384,6 +504,25 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                          (unsigned long long)k, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11],
                          w[12], w[13], w[14], w[15]);
                  }
@@ -3649,7 +3719,7 @@ index e75c126..95b576d 100644
          for (int k = 0; k < 2; k++)
              if (const Range& r = g_state.storage[0][k]; r.address) {
                  auto* f = reinterpret_cast<const float*>(guest_bytes(r.address));
-@@ -391,6 +509,38 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -391,6 +530,38 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                      (unsigned long long)r.size, f ? f[0] : -1, f ? f[1] : -1, f ? f[2] : -1, f ? f[3] : -1,
                      f ? f[4] : -1, f ? f[5] : -1, f ? f[6] : -1, f ? f[7] : -1);
              }

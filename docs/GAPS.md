@@ -91,6 +91,10 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   CPU device; the runtime switched the render system at SDK 16.2's offsets (+0x2d0/+0x2d4), but BotW's SDK 7.3.2
   keeps them at +0x2d8/+0x2dc: every render failed with 0x40299 ("last result 40299" in nx.log). v00.11 reads the
   offsets from `GetExecutionMode` / `GetRenderingDevice`.
+- **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
+  each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
+  gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,
+  blend, logic op, alpha test and vertex count.
 - **v00.09: cutscene effects missing.** The opening's effects (`Event/Demo102_0.sbeventpack` →
   `Effect/Event_Demo102_0.sesetlist`, 10 shaders) were never extracted: the event packs carry their own effect lists.
   `prepare-game.sh` now scans `Event` too (`BOTW_SHADER_DIRS` default).
