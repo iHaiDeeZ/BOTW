@@ -9,6 +9,7 @@
 #include <set>
 
 #include "nvn.h"
+#include "nvn_tiling.h"
 #include "platform.h"
 
 namespace nx::nvn {
@@ -21,7 +22,7 @@ namespace {
 
 std::mutex g_gpu_lock;
 std::map<uint64_t, MemoryPool*> g_pools_by_gpu;  // gpu start -> pool
-std::atomic<uint64_t> g_pools_generation{1};     // bumped with every change of the map, under g_gpu_lock
+std::atomic<uint64_t> g_pools_generation{1};     // bumped when a pool leaves the map or is replaced, under g_gpu_lock
 uint64_t g_gpu_next = 0x100000000ull;  // NVN GPU addresses are 40-bit; keep 0 and low values invalid
 
 }  // namespace
@@ -33,9 +34,13 @@ uint64_t gpu_alloc(uint64_t size) {
     return a;
 }
 
+// A new pool at a new address leaves every cached range valid (pools do not overlap, and the caches keep only hits):
+// only a pool that leaves or is replaced empties them. Breath of the Wild's pool traffic emptied them all the time
+// (pool_at_gpu was ~3% of the replay thread).
 void pool_register(MemoryPool* p) {
     std::lock_guard lk(g_gpu_lock);
-    g_pools_by_gpu[p->gpu] = p, g_pools_generation.fetch_add(1);
+    auto [it, fresh] = g_pools_by_gpu.try_emplace(p->gpu, p);
+    if (!fresh) it->second = p, g_pools_generation.fetch_add(1);
 }
 
 void pool_unregister(MemoryPool* p) {
@@ -46,7 +51,7 @@ void pool_unregister(MemoryPool* p) {
 // Asked for every buffer a replayed draw binds, mostly in the same few pools: each thread keeps the last ranges it
 // found, good until a pool is registered or unregistered (a pool's address and size are final when it registers).
 MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset) {
-    thread_local struct { uint64_t generation, start, size; MemoryPool* pool; } hits[8] = {};
+    thread_local struct { uint64_t generation, start, size; MemoryPool* pool; } hits[16] = {};
     thread_local uint32_t next = 0;
     uint64_t generation = g_pools_generation.load(std::memory_order_acquire);
     for (const auto& h : hits)
@@ -60,7 +65,7 @@ MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset) {
     --it;
     MemoryPool* p = it->second;
     if (gpu - p->gpu >= p->size) return nullptr;
-    hits[next++ & 7] = {g_pools_generation.load(std::memory_order_relaxed), p->gpu, p->size, p};
+    hits[next++ & 15] = {g_pools_generation.load(std::memory_order_relaxed), p->gpu, p->size, p};
     if (offset) *offset = gpu - p->gpu;
     return p;
 }
@@ -637,9 +642,45 @@ void release_kept(uint64_t key) {
     g_released_kept++;
 }
 
+// What the driver does with nvnTextureWriteTexels: the texels go into the texture's memory, in its layout. The game may
+// sample that memory through other textures, uploaded from it: Breath of the Wild's save list showed its 256x144
+// pictures as plain rows read as tiles. Pitch-linear: rows at the stride (level 0); block-linear: the level's GOBs
+// (nvn_tiling.cpp), laid out as the upload untiles them. Called outside objects_lock: the write may fault into the
+// write watch. NX_TEXELS_TO_MEMORY=0: the GPU image only, as before.
+static void store_texels(const Texture& t, const Texture::TexelWrite& w) {
+    static const bool off = [] {
+        const char* e = std::getenv("NX_TEXELS_TO_MEMORY");
+        return e && e[0] == '0';
+    }();
+    if (off || !t.memory || !t.storage_size) return;
+    uint32_t bw = 1, bh = 1, bytes = 4;
+    format_block(t.format, bw, bh, bytes);
+    const uint32_t xb = w.x / bw, yb = w.y / bh, wb = (w.w + bw - 1) / bw, hb = (w.h + bh - 1) / bh;
+    const uint64_t row = uint64_t(wb) * bytes;
+    auto* mem = reinterpret_cast<uint8_t*>(t.memory);
+    if (t.stride) {
+        const uint64_t rows = (t.height + bh - 1) / bh;
+        for (uint32_t z = 0; z < w.d && !w.level; z++)
+            for (uint32_t r = 0; r < hb; r++) {
+                const uint64_t at = ((w.z + z) * rows + yb + r) * t.stride + uint64_t(xb) * bytes;
+                if (at + row > t.storage_size) return;
+                std::memcpy(mem + at, w.data.data() + (uint64_t(z) * hb + r) * row, row);
+            }
+        return;
+    }
+    const uint32_t layers = t.target == 8 ? std::max(6u, t.depth) : std::max(1u, t.depth);  // as the upload counts them
+    const TextureLayout l = block_linear_layout(t.width, t.height, layers, t.levels, bw, bh, bytes, t.block_height_gobs);
+    if (w.level >= l.levels.size() || l.tiled_size > t.storage_size) return;
+    const LinearLevel& lv = l.levels[w.level];
+    for (uint32_t z = 0; z < w.d && w.z + z < l.layers; z++)
+        swizzle_block_linear_region(w.data.data() + uint64_t(z) * hb * row, row,
+                                    mem + (w.z + z) * l.tiled_layer_stride + lv.tiled_offset, lv.width_blocks,
+                                    lv.height_blocks, bytes, lv.block_height_gobs, xb, yb, wb, hb);
+}
+
 // nvnTextureWriteTexels(const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*, const void* data) and the
 // Strided form (+ ptrdiff_t rowStride, ptrdiff_t imageStride). NVNcopyRegion: {int x, y, z, width, height, depth}.
-// The driver would swizzle the texels into the texture's memory; we keep them for the GPU image instead.
+// The texels go to the texture's memory (store_texels) and, kept, straight to its GPU image.
 void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
     adopt_texture(c, c.x[0]);
     auto* t = get<Texture>(c.x[0]);
@@ -661,6 +702,7 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
         for (uint64_t r = 0; r < rows; r++)
             std::memcpy(w.data.data() + (z * rows + r) * row,
                         reinterpret_cast<const void*>(data + z * image_stride + r * row_stride), row);
+    store_texels(*t, w);
     static std::map<uint64_t, uint64_t> counts;
     std::lock_guard lk(objects_lock());
     uint64_t n = ++counts[c.x[0]];
@@ -671,9 +713,13 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
         for (uint8_t b : w.data) nonzero += b != 0;
         uint32_t first[4] = {};
         std::memcpy(first, w.data.data(), std::min<size_t>(sizeof first, w.data.size()));
-        log("nvn: WriteTexels #%llu into %llx (%ux%u fmt %#x): %ux%ux%u at %u,%u,%u level %u, %llu of %zu bytes non-zero, "
-            "first %08x %08x %08x %08x", (unsigned long long)n, (unsigned long long)c.x[0], t->width, t->height,
-            t->format, w.w, w.h, w.d, w.x, w.y, w.z, w.level, (unsigned long long)nonzero, w.data.size(), first[0],
+        const bool inside = data < t->memory + t->storage_size && t->memory < data + image_stride * w.d;
+        log("nvn: WriteTexels #%llu into %llx (%ux%u fmt %#x, %s, memory %llx+%llx): %ux%ux%u at %u,%u,%u level %u from "
+            "%llx%s, %llu of %zu bytes non-zero, first %08x %08x %08x %08x", (unsigned long long)n,
+            (unsigned long long)c.x[0], t->width, t->height, t->format,
+            t->stride ? "pitch-linear" : "block-linear", (unsigned long long)t->memory,
+            (unsigned long long)t->storage_size, w.w, w.h, w.d, w.x, w.y, w.z, w.level, (unsigned long long)data,
+            inside ? " (inside the texture's own memory)" : "", (unsigned long long)nonzero, w.data.size(), first[0],
             first[1], first[2], first[3]);
     }
     t->writes.push_back(std::move(w));

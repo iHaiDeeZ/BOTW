@@ -98,6 +98,29 @@ void deswizzle_block_linear(const uint8_t* src, uint8_t* dst, uint32_t width_blo
     }
 }
 
+void swizzle_block_linear_region(const uint8_t* src, uint64_t src_pitch, uint8_t* dst, uint32_t width_blocks,
+                                 uint32_t height_blocks, uint32_t bytes_per_block, uint32_t block_height_gobs,
+                                 uint32_t x_blocks, uint32_t y_blocks, uint32_t w_blocks, uint32_t h_blocks) {
+    if (!src || !dst || !bytes_per_block || x_blocks >= width_blocks || y_blocks >= height_blocks) return;
+    w_blocks = std::min(w_blocks, width_blocks - x_blocks);
+    h_blocks = std::min(h_blocks, height_blocks - y_blocks);
+    const uint32_t bh_shift = gob_shift(block_height_gobs), bh_mask = (1u << bh_shift) - 1;
+    const uint64_t block = uint64_t(kGobSize) << bh_shift;
+    const uint64_t block_row = block * div_up(uint64_t(width_blocks) * bytes_per_block, kGobWidth);
+    const uint64_t x0 = uint64_t(x_blocks) * bytes_per_block, x1 = x0 + uint64_t(w_blocks) * bytes_per_block;
+    for (uint32_t r = 0; r < h_blocks; r++) {
+        const uint32_t y = y_blocks + r, gy = y / kGobHeight;
+        uint8_t* line = dst + (gy >> bh_shift) * block_row + (uint64_t(gy & bh_mask) << 9) + row_start(y % kGobHeight);
+        const uint8_t* s = src + r * src_pitch;
+        // Up to the end of each 16-byte piece of a GOB row at a time: those are contiguous in memory.
+        for (uint64_t x = x0; x < x1;) {
+            const uint64_t n = std::min<uint64_t>(16 - (x & 15), x1 - x);
+            std::memcpy(line + (x >> 6) * block + kPiece[(x & 63) >> 4] + (x & 15), s + (x - x0), n);
+            x += n;
+        }
+    }
+}
+
 uint32_t default_block_height_gobs(uint32_t rows) {
     uint32_t gobs = uint32_t(div_up(rows, kGobHeight)), h = 1;
     while (h < gobs && h < 16) h <<= 1;

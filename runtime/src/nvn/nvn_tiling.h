@@ -25,6 +25,13 @@ void deswizzle_block_linear(const uint8_t* src, uint8_t* dst, uint32_t width_blo
                             uint32_t depth, uint32_t bytes_per_block, uint32_t block_height_gobs,
                             uint32_t block_depth_gobs);
 
+// The other way, for a rectangle of one level of one layer (nvnTextureWriteTexels): `h_blocks` rows of `w_blocks`
+// blocks from `src`, `src_pitch` bytes apart, into the level at `dst` (`width_blocks` x `height_blocks` blocks) at
+// block (x_blocks, y_blocks). What falls outside the level is dropped.
+void swizzle_block_linear_region(const uint8_t* src, uint64_t src_pitch, uint8_t* dst, uint32_t width_blocks,
+                                 uint32_t height_blocks, uint32_t bytes_per_block, uint32_t block_height_gobs,
+                                 uint32_t x_blocks, uint32_t y_blocks, uint32_t w_blocks, uint32_t h_blocks);
+
 // Bytes deswizzle_block_linear reads for such a level (GOB-aligned width, block-aligned height and depth).
 uint64_t block_linear_size(uint32_t width_blocks, uint32_t height_blocks, uint32_t depth, uint32_t bytes_per_block,
                            uint32_t block_height_gobs, uint32_t block_depth_gobs);

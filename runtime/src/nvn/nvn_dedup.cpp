@@ -10,8 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "nvn_draw_state.h"
 
@@ -23,8 +25,46 @@ struct Entry {
     uint64_t size = 0, padded = 0;
     Upload upload;
 };
+
+// g_copies' nodes come from chunks that dedup_reset frees whole: thousands of nodes a submit each took a malloc, and a
+// free at the reset (the allocator was ~2% of Breath of the Wild's replay thread). Erased nodes wait for the reset.
+struct Arena {
+    std::vector<std::unique_ptr<char[]>> chunks;
+    size_t used = 0, size = 0;
+    void* take(size_t n) {
+        n = (n + 15) & ~size_t(15);
+        if (chunks.empty() || used + n > size) {
+            size = std::max<size_t>(n, 256 << 10);
+            chunks.emplace_back(new char[size]);
+            used = 0;
+        }
+        void* p = chunks.back().get() + used;
+        used += n;
+        return p;
+    }
+    void reset() {  // the last chunk stays for the next submit
+        if (chunks.size() > 1) chunks.erase(chunks.begin(), chunks.end() - 1);
+        used = 0;
+    }
+};
+Arena g_arena;
+
+template <class T>
+struct ArenaAlloc {
+    using value_type = T;
+    ArenaAlloc() = default;
+    template <class U>
+    ArenaAlloc(const ArenaAlloc<U>&) {}
+    T* allocate(size_t n) { return static_cast<T*>(g_arena.take(n * sizeof(T))); }
+    void deallocate(T*, size_t) {}
+    template <class U>
+    bool operator==(const ArenaAlloc<U>&) const { return true; }
+    template <class U>
+    bool operator!=(const ArenaAlloc<U>&) const { return false; }
+};
+
 // By host address; several sizes of one address are rare, so the latest one is kept.
-std::map<const uint8_t*, Entry> g_copies;
+std::map<const uint8_t*, Entry, std::less<const uint8_t*>, ArenaAlloc<std::pair<const uint8_t* const, Entry>>> g_copies;
 uint64_t g_copies_max = 0;  // the largest copy in g_copies (how far back an overlap can start)
 uint64_t g_saved = 0, g_copied = 0;
 uint64_t g_kind_copied[5] = {}, g_kind_saved[5] = {}, g_kind_calls[5] = {};
@@ -37,9 +77,10 @@ struct Front {
     uint64_t generation = 0;
     Entry entry;
 };
-Front g_front[1024];
+// 4096 slots: Breath of the Wild binds ~16,000 buffers a frame outdoors, and 1024 sent many hits to the tree walk.
+Front g_front[4096];
 uint64_t g_generation = 1;
-Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 1023]; }
+Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 4095]; }
 
 }  // namespace
 
@@ -52,11 +93,15 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
     static const bool off = std::getenv("NX_NO_DEDUP") != nullptr;  // bisecting: a fresh copy every time
     Front& f = front_of(p);
     const Entry* e = nullptr;
+    auto at = g_copies.end();  // where p is or would go, when the tree was walked: the insert below starts there
     if (!off && f.generation == g_generation && f.p == p) {
         e = &f.entry;  // the map's entry for p
-    } else if (auto it = off ? g_copies.end() : g_copies.find(p); it != g_copies.end()) {
-        f = {p, g_generation, it->second};
-        e = &f.entry;
+    } else if (!off) {
+        at = g_copies.lower_bound(p);
+        if (at != g_copies.end() && at->first == p) {
+            f = {p, g_generation, at->second};
+            e = &f.entry;
+        }
     }
     const int kind = g_upload_kind >= 0 && g_upload_kind < 5 ? g_upload_kind : 0;
     g_kind_calls[kind]++;
@@ -68,14 +113,14 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
     Upload u = upload_alloc(padded, align);
     std::memcpy(u.ptr, p, size);
     if (padded > size) std::memset(u.ptr + size, 0, padded - size);
-    g_copies[p] = {size, padded, u};
+    g_copies.insert_or_assign(at, p, Entry{size, padded, u});
     g_copies_max = std::max(g_copies_max, size);
     f = {p, g_generation, {size, padded, u}};
     g_copied += padded, g_kind_copied[kind] += padded;
     return u;
 }
 
-void dedup_reset() { g_copies.clear(), g_generation++, g_copies_max = 0; }
+void dedup_reset() { g_copies.clear(), g_arena.reset(), g_generation++, g_copies_max = 0; }
 
 void dedup_invalidate(const uint8_t* p, uint64_t size) {
     // Entries starting before p may still reach into it: look back over the few that can.
