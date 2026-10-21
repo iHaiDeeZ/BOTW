@@ -44,7 +44,7 @@ void CopyTextureToTexture(CPU& c) {
     adopt_texture(c, c.x[1]);
     adopt_texture(c, c.x[4]);
     Cmd cmd{Cmd::CopyTextureToTexture};
-    cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
+    cmd.a[0] = stable_texture_key(c.x[1]), cmd.a[1] = stable_texture_key(c.x[4]);  // the incarnations as recorded
     record(c.x[0], cmd, &info, sizeof info);
 }
 
@@ -187,7 +187,7 @@ void CopyTextureToBuffer(CPU& c) {
     info.flags = uint32_t(c.x[5]);
     adopt_texture(c, c.x[1]);
     Cmd cmd{Cmd::CopyTextureToBuffer};
-    cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
+    cmd.a[0] = stable_texture_key(c.x[1]), cmd.a[1] = c.x[4];  // the incarnation as recorded
     record(c.x[0], cmd, &info, sizeof info);
 }
 

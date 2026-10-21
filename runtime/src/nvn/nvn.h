@@ -238,6 +238,9 @@ struct Texture : Object {
 // the one known at its address (the game copied an initialized struct there) becomes that texture. Game threads only,
 // before the pointer is recorded or used; free when the struct is the one initialized there.
 void adopt_texture(CPU& c, uint64_t guest);
+// The key that names `guest`'s current texture for the rest of a recording: for a struct adopted as a copy, a host key
+// of that incarnation (the struct may hold another texture by the time the command is replayed); else `guest`.
+uint64_t stable_texture_key(uint64_t guest);
 
 struct Window : Object {
     std::vector<uint64_t> textures;  // guest NVNtexture*

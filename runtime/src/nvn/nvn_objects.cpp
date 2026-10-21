@@ -821,17 +821,29 @@ void DeviceGetTextureHandle(CPU& c) { c.x[0] = (c.x[1] & 0xFFFFF) | ((c.x[2] & 0
 void DeviceGetTexelFetchHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
 void DeviceGetImageHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
 
-}  // namespace
+// ---- adopted incarnations under host keys --------------------------------------------------------------------
+// agl renders through holder structs it copies one texture after another into: in one frame Breath of the Wild's
+// 509c0b14e8 held ~10 textures (quarter-res R8 blur targets, the shadow/transmittance target, ...). A replay looks
+// textures up by address at one mark per submit (nvn_incarnation.cpp), so every pass through a holder rendered into
+// its last incarnation of the recording: the blur and mask passes overwrote the shadow/transmittance target the
+// full-res lighting multiplies by, and the shrine's lit surfaces came out black. NVN takes a render target's state when
+// the command is recorded; here each adopted incarnation is also published under a host key nothing re-initializes,
+// and SetRenderTargets records that key (stable_texture_key). NX_ADOPT_KEYS=0: the address, as before.
+constexpr uint64_t kAdoptedTexture = 0xD000000000000000ull;
+constexpr size_t kAdoptedKeep = 8192;  // ~250 frames of BotW's ~32 adoptions per frame; a replay lags a few frames
+uint64_t g_next_adopted = 0;
+std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> g_adopted_now;  // holder -> (serial, host key)
+std::deque<std::pair<uint64_t, uint64_t>> g_adopted_order;                   // (host key, holder), oldest first
 
-// The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
-// key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
-void adopt_texture(CPU&, uint64_t guest) {
-    TextureStamp s;
-    if (!read_stamp(guest, s)) return;
-    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
-    auto guard = reinit_guard();
-    auto fresh = std::make_unique<Texture>();
-    Texture& t = *fresh;
+bool adopt_keys() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_ADOPT_KEYS");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
+void texture_from_stamp(Texture& t, const TextureStamp& s) {
     t.serial = s.serial;
     t.target = s.target, t.format = s.format, t.flags = s.flags, t.levels = s.levels, t.samples = s.samples;
     t.depth_stencil_mode = s.depth_stencil_mode;
@@ -843,6 +855,48 @@ void adopt_texture(CPU&, uint64_t guest) {
         t.memory = pool_host(*p, t.offset);
         t.gpu = p->gpu + t.offset;
     }
+}
+
+// Under objects_lock: `guest`'s new incarnation (`copy`, built before the lock: get<> takes it) also at a fresh host
+// key; the oldest keys go (deferred).
+void publish_adopted_key(uint64_t guest, std::unique_ptr<Texture> copy) {
+    uint64_t serial = copy->serial;
+    uint64_t key = kAdoptedTexture | ++g_next_adopted;
+    publish_locked(key, std::move(copy));
+    g_adopted_now[guest] = {serial, key};
+    g_adopted_order.push_back({key, guest});
+    while (g_adopted_order.size() > kAdoptedKeep) {
+        auto [old, holder] = g_adopted_order.front();
+        g_adopted_order.pop_front();
+        if (auto o = objects().find(old); o != objects().end()) defer_object(std::move(o->second)), objects().erase(o);
+        if (auto h = g_adopted_now.find(holder); h != g_adopted_now.end() && h->second.second == old) g_adopted_now.erase(h);
+    }
+}
+
+}  // namespace
+
+uint64_t stable_texture_key(uint64_t guest) {
+    if (!guest || !adopt_keys()) return guest;
+    std::lock_guard lk(objects_lock());
+    auto h = g_adopted_now.find(guest);
+    if (h == g_adopted_now.end()) return guest;
+    auto o = objects().find(guest);
+    auto* t = o == objects().end() ? nullptr : dynamic_cast<Texture*>(o->second.get());
+    return t && t->serial == h->second.first ? h->second.second : guest;  // not a holder any more: the address
+}
+
+// The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
+// key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
+void adopt_texture(CPU&, uint64_t guest) {
+    TextureStamp s;
+    if (!read_stamp(guest, s)) return;
+    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
+    auto guard = reinit_guard();
+    auto fresh = std::make_unique<Texture>();
+    Texture& t = *fresh;
+    texture_from_stamp(t, s);
+    std::unique_ptr<Texture> keyed;
+    if (adopt_keys()) keyed = std::make_unique<Texture>(), texture_from_stamp(*keyed, s);
     static std::atomic<uint64_t> adopted{0};
     uint64_t n = ++adopted;
     if (n <= 10 || (n & (n - 1)) == 0 || trace_textures())
@@ -855,6 +909,7 @@ void adopt_texture(CPU&, uint64_t guest) {
     hand_image_to_snapshots(guest);
     list_pool_texture(t.pool, guest);
     publish_locked(guest, std::move(fresh));
+    if (keyed) publish_adopted_key(guest, std::move(keyed));
 }
 
 NX_HLE("nvnMemoryPoolInitialize", MemoryPoolInitialize);
