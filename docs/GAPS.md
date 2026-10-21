@@ -91,6 +91,14 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   CPU device; the runtime switched the render system at SDK 16.2's offsets (+0x2d0/+0x2d4), but BotW's SDK 7.3.2
   keeps them at +0x2d8/+0x2dc: every render failed with 0x40299 ("last result 40299" in nx.log). v00.11 reads the
   offsets from `GetExecutionMode` / `GetRenderingDevice`.
+- **v00.12 captures (console): text.** The title menu's labels do render (Caption_00, drawn after a glow pass);
+  the loading screens' tip text did not. Cause: R8 textures read with alpha = R (`NormalS_00`'s block-linear
+  sheet, UI masks) become RGBA8 images, and only pitch-linear ones were expanded; block-linear ones were cleared
+  ("upload short ... format 0x1"). v00.13 expands them. Sound works since v00.11 (renders return 0, ~0.7 ms each).
+- **Frame rate (v00.12, outdoors):** 9 fps, ~3,100 draws a frame, replay ~100 ms, but the replay thread was on a
+  CPU only 59% of the time (~62 blocking waits a frame; `NX_PS4_CORES=spread` also puts game threads on its core).
+  v00.13 runs with `/data/BOTW/profile.txt` (samples.log, `port/ps4_sampler.cpp`) to find what it computes and
+  what it waits on before cutting it.
 - **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
   each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
   gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,
