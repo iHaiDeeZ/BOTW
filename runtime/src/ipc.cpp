@@ -2,6 +2,7 @@
 #include "ipc.h"
 
 #include <mutex>
+#include <string>
 #include <unordered_map>
 
 namespace nx {
@@ -43,7 +44,17 @@ std::shared_ptr<Service> make_service(const std::string& name) {
 uint32_t Service::handle(IpcCtx& ctx) {
     auto it = cmds.find(ctx.cmd);
     if (it != cmds.end()) return it->second(ctx);
-    log("ipc: %s cmd %u not implemented (stub ok)", name.c_str(), ctx.cmd);
+    // The first 3 calls of each, then at powers of two: Breath of the Wild asks ICommonStateGetter 50 ten times a
+    // second (11,049 lines in one session).
+    static std::mutex m;
+    static std::unordered_map<std::string, uint64_t> calls;  // "service cmd" -> calls
+    uint64_t n;
+    {
+        std::lock_guard lk(m);
+        n = ++calls[name + " " + std::to_string(ctx.cmd)];
+    }
+    if (n <= 3 || !(n & (n - 1)))
+        log("ipc: %s cmd %u not implemented (stub ok, %llu calls)", name.c_str(), ctx.cmd, (unsigned long long)n);
     return 0;
 }
 

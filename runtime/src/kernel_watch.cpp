@@ -156,7 +156,9 @@ static void watchdog(void*) {
 
 
 // Stalls: while no frame comes for more than 60 ms, sample where every guest thread is (its lr, every 5 ms); a
-// stall over 100 ms is logged with each thread's most frequent place, to tell what the frame waited for.
+// stall over 100 ms is logged with each thread's most frequent place, to tell what the frame waited for. Both limits
+// grow with the recent frame time (2x and 3x its average, up to 0.7 and 1 s): at Breath of the Wild's 9 fps every
+// frame was a "stall", ~45 lines a frame (41 MB of nx.log in 20 minutes, written by the console's disk).
 // NX_THREAD_DUMP_AT=<seconds>: once, every guest thread's call chain (frame-pointer walk), to see what a stuck game
 // waits for.
 static void dump_threads() {
@@ -182,6 +184,7 @@ static void stall_sampler(void*) {
     static const char* dump_env = std::getenv("NX_THREAD_DUMP_AT");
     uint64_t dump_at = dump_env ? plat::monotonic_ns() + uint64_t(std::atof(dump_env) * 1e9) : 0;
     uint64_t last_frame = 0, since = plat::monotonic_ns();
+    uint64_t avg_ms = 0;  // recent frame interval, an exponential average
     std::map<std::pair<uint64_t, uint64_t>, uint32_t> hits;  // (thread id, guest lr) -> samples
     for (;;) {
         plat::sleep_ns(5'000'000);
@@ -189,7 +192,7 @@ static void stall_sampler(void*) {
         if (dump_at && now >= dump_at) dump_threads(), dump_at = 0;
         if (f != last_frame || plat::window_minimized()) {
             uint64_t ms = (now - since) / 1'000'000;
-            if (last_frame && ms > 100 && !hits.empty()) {
+            if (last_frame && ms > std::clamp<uint64_t>(3 * avg_ms, 100, 1000) && !hits.empty()) {
                 log("stall: %llu ms without a frame after frame %llu; where the threads were:", (unsigned long long)ms,
                     (unsigned long long)last_frame);
                 std::map<uint64_t, std::pair<uint64_t, uint32_t>> top;  // thread -> (lr, samples)
@@ -202,12 +205,16 @@ static void stall_sampler(void*) {
                     log("  thread %llx: %s (%u of %u samples)", (unsigned long long)id, describe(t.first).c_str(),
                         t.second, total[id]);
             }
+            if (last_frame && f > last_frame) {
+                uint64_t per = ms / (f - last_frame);
+                avg_ms = avg_ms ? (avg_ms * 7 + per) / 8 : per;
+            }
             hits.clear();
             last_frame = f;
             since = now;
             continue;
         }
-        if (!f || now - since < 60'000'000) continue;
+        if (!f || now - since < std::clamp<uint64_t>(2 * avg_ms, 60, 700) * 1'000'000) continue;
         std::lock_guard al(g_all_lock);
         for (auto& w : g_all)
             if (auto t = w.lock(); t && t->started && !t->exited) hits[{t->id, t->ctx.x[30]}]++;
