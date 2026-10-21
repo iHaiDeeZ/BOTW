@@ -135,7 +135,7 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   - 192 passes a frame end before a draw of the decal shader `19d434c4`, which samples its own targets.
   - Draws by pass (v00.12 storyboard 3151): G-buffer 1,115; shadow cascades (896x896x3 depth) ~850; 16x16 cube
     probes 300; half resolution 248.
-  - v00.16 trims lookups:
+  - v00.16 trims lookups (v00.17 also stops the per-frame stall reports at low frame rates: 41 MB of nx.log in 20 minutes):
     - 4096-slot resolve and dedup caches;
     - dedup map nodes from a per-submit arena, with one tree walk per miss;
     - pool caches kept when a pool registers.
