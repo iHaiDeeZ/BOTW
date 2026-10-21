@@ -2011,7 +2011,7 @@ index 0000000..dc27ec9
 +
 +}  // namespace nx::plat
 diff --git a/runtime/src/nvn/nvn.h b/runtime/src/nvn/nvn.h
-index ee52901..113f271 100644
+index ee52901..6378df6 100644
 --- a/runtime/src/nvn/nvn.h
 +++ b/runtime/src/nvn/nvn.h
 @@ -17,6 +17,7 @@
@@ -2022,20 +2022,23 @@ index ee52901..113f271 100644
  #include <vector>
  
  #include <nx/runtime.h>
-@@ -102,7 +103,11 @@ T* get(uint64_t guest) {
+@@ -102,8 +103,13 @@ T* get(uint64_t guest) {
              uint64_t guest = 0, serial = 0;
              T* object = nullptr;
          };
 -        thread_local Slot table[1024];
+-        Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 1023];
 +        // On the heap, made by the first replay on a thread: as a thread_local array the nine types' tables were 221
 +        // KB of every thread's static TLS, game threads included (PS4: the system thread library allocates each
 +        // thread's TLS from a small pool, and with ~50 threads it ran dry: "mutex lock failed: Out of memory").
++        // 4096 slots: Breath of the Wild samples ~2,000 distinct textures a frame outdoors, and 1024 kept evicting.
 +        thread_local Slot* table = nullptr;
-+        if (!table) table = new Slot[1024]();  // one per replaying thread, for its lifetime
-         Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 1023];
++        if (!table) table = new Slot[4096]();  // one per replaying thread, for its lifetime
++        Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 4095];
          if (s.serial == serial && s.guest == guest) return s.object;
          T* p;
-@@ -184,12 +189,16 @@ uint64_t gpu_alloc(uint64_t size);
+         {
+@@ -184,12 +190,16 @@ uint64_t gpu_alloc(uint64_t size);
  MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset);
  void pool_register(MemoryPool* pool);
  void pool_unregister(MemoryPool* pool);
@@ -2052,7 +2055,7 @@ index ee52901..113f271 100644
      uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
      uint32_t width = 0, height = 0, depth = 0, stride = 0;
      uint64_t pool = 0, offset = 0, storage_size = 0;
-@@ -226,6 +235,14 @@ struct Texture : Object {
+@@ -226,6 +236,14 @@ struct Texture : Object {
      ~Texture();  // nvn_vk.cpp: the image is freed once the GPU is done with it
  };
  
@@ -2067,7 +2070,7 @@ index ee52901..113f271 100644
  struct Window : Object {
      std::vector<uint64_t> textures;  // guest NVNtexture*
      int active = 0, next = 0, interval = 1;
-@@ -282,7 +299,8 @@ uint32_t format_aspect(uint32_t format);
+@@ -282,7 +300,8 @@ uint32_t format_aspect(uint32_t format);
  void set_astc_native(bool native);
  bool astc_native();
  bool is_astc(uint32_t format);
@@ -2077,7 +2080,7 @@ index ee52901..113f271 100644
  // Bytes per texel of a Vulkan format as buffer-image copies count them (nvn_format.cpp); 0 for block-compressed and
  // combined depth/stencil formats, whose NVN size (format_block) is the host's. Differs from the NVN size where a
  // format is stored wider than the game's: 0x3f R11G11B10F is 4 bytes in NVN, RGBA16F (8) here.
-@@ -311,10 +329,12 @@ struct Cmd {
+@@ -311,10 +330,12 @@ struct Cmd {
          BindVertexAttribs, BindVertexStreams, BindBlendState, BindColorState, BindChannelMaskState,
          BindDepthStencilState, BindPolygonState, SetBlendColor, UpdateUniformBuffer, SetTexturePool, SetSamplerPool,
          DrawArrays, DrawElements, ReportCounter, SetRasterizerDiscard, SetRenderEnable, CopyTextureToTexture,
@@ -2090,7 +2093,7 @@ index ee52901..113f271 100644
      } op;
      uint32_t n = 0, mask = 0;
      uint64_t a[9] = {};  // textures (render targets: colors then depth), handles, GPU addresses, sizes, ...
-@@ -323,9 +343,31 @@ struct Cmd {
+@@ -323,9 +344,31 @@ struct Cmd {
      uint32_t blob = 0;  // index into CmdList::blobs (decoded state, inline data)
  };
  
@@ -2123,7 +2126,7 @@ index ee52901..113f271 100644
      uint64_t handle = 0;     // its NVNcommandHandle
      uint64_t epoch = 0;      // the texture epoch when its recording ended (nvn_incarnation.cpp): what its draws name
      uint32_t skinned = 0;    // NX_TRACE_SKINLISTS: binds of skinned programs (a vertex input at location 6) in it
-@@ -367,6 +409,7 @@ struct PolygonInfo {
+@@ -367,6 +410,7 @@ struct PolygonInfo {
  // nvn_raster.cpp: an EQUAL colour pass after a depth pre-pass (tested, not written), drawn with a small depth bias
  // toward the camera (DEBUG.md #60). NX_EQUAL_SLACK=<units> (default 4, 0: off); the slope term is 1 per unit of it.
  bool equal_slack_pass(const DepthStencilInfo& d);
@@ -3121,10 +3124,10 @@ index 4f1910e..6450e72 100644
              write_ppm(snap.s, snap.w, snap.h, 0, snap.draw);  // frames/00000_<draw in hex>.ppm
          }
 diff --git a/runtime/src/nvn/nvn_dedup.cpp b/runtime/src/nvn/nvn_dedup.cpp
-index d57d68f..121cc7c 100644
+index d57d68f..3a87f49 100644
 --- a/runtime/src/nvn/nvn_dedup.cpp
 +++ b/runtime/src/nvn/nvn_dedup.cpp
-@@ -4,11 +4,14 @@
+@@ -4,11 +4,16 @@
  // inline uniform updates (UpdateUniformBuffer, which invalidates what it overlaps) and compute results (ranges a
  // dispatch writes are read from their written copy, nvn_written.cpp, and invalidated here): a copy made once can
  // serve every later draw of the submit that binds the same bytes.
@@ -3134,24 +3137,93 @@ index d57d68f..121cc7c 100644
  #include <cstdlib>
  #include <cstring>
  #include <map>
++#include <memory>
 +#include <cstdio>
 +#include <string>
++#include <vector>
  
  #include "nvn_draw_state.h"
  
-@@ -22,7 +25,9 @@ struct Entry {
+@@ -20,9 +25,49 @@ struct Entry {
+     uint64_t size = 0, padded = 0;
+     Upload upload;
  };
++
++// g_copies' nodes come from chunks that dedup_reset frees whole: thousands of nodes a submit each took a malloc, and a
++// free at the reset (the allocator was ~2% of Breath of the Wild's replay thread). Erased nodes wait for the reset.
++struct Arena {
++    std::vector<std::unique_ptr<char[]>> chunks;
++    size_t used = 0, size = 0;
++    void* take(size_t n) {
++        n = (n + 15) & ~size_t(15);
++        if (chunks.empty() || used + n > size) {
++            size = std::max<size_t>(n, 256 << 10);
++            chunks.emplace_back(new char[size]);
++            used = 0;
++        }
++        void* p = chunks.back().get() + used;
++        used += n;
++        return p;
++    }
++    void reset() {  // the last chunk stays for the next submit
++        if (chunks.size() > 1) chunks.erase(chunks.begin(), chunks.end() - 1);
++        used = 0;
++    }
++};
++Arena g_arena;
++
++template <class T>
++struct ArenaAlloc {
++    using value_type = T;
++    ArenaAlloc() = default;
++    template <class U>
++    ArenaAlloc(const ArenaAlloc<U>&) {}
++    T* allocate(size_t n) { return static_cast<T*>(g_arena.take(n * sizeof(T))); }
++    void deallocate(T*, size_t) {}
++    template <class U>
++    bool operator==(const ArenaAlloc<U>&) const { return true; }
++    template <class U>
++    bool operator!=(const ArenaAlloc<U>&) const { return false; }
++};
++
  // By host address; several sizes of one address are rare, so the latest one is kept.
- std::map<const uint8_t*, Entry> g_copies;
+-std::map<const uint8_t*, Entry> g_copies;
++std::map<const uint8_t*, Entry, std::less<const uint8_t*>, ArenaAlloc<std::pair<const uint8_t* const, Entry>>> g_copies;
 +uint64_t g_copies_max = 0;  // the largest copy in g_copies (how far back an overlap can start)
  uint64_t g_saved = 0, g_copied = 0;
 +uint64_t g_kind_copied[5] = {}, g_kind_saved[5] = {}, g_kind_calls[5] = {};
  
  // In front of the map (a tree walk per bound buffer of every draw, and most are hits): a slot per address hash with a
  // copy of that address's entry in g_copies. A slot of the current generation always equals the map's entry: both are
-@@ -53,20 +58,24 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
-         f = {p, g_generation, it->second};
-         e = &f.entry;
+@@ -32,9 +77,10 @@ struct Front {
+     uint64_t generation = 0;
+     Entry entry;
+ };
+-Front g_front[1024];
++// 4096 slots: Breath of the Wild binds ~16,000 buffers a frame outdoors, and 1024 sent many hits to the tree walk.
++Front g_front[4096];
+ uint64_t g_generation = 1;
+-Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 1023]; }
++Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 4095]; }
+ 
+ }  // namespace
+ 
+@@ -47,26 +93,34 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
+     static const bool off = std::getenv("NX_NO_DEDUP") != nullptr;  // bisecting: a fresh copy every time
+     Front& f = front_of(p);
+     const Entry* e = nullptr;
++    auto at = g_copies.end();  // where p is or would go, when the tree was walked: the insert below starts there
+     if (!off && f.generation == g_generation && f.p == p) {
+         e = &f.entry;  // the map's entry for p
+-    } else if (auto it = off ? g_copies.end() : g_copies.find(p); it != g_copies.end()) {
+-        f = {p, g_generation, it->second};
+-        e = &f.entry;
++    } else if (!off) {
++        at = g_copies.lower_bound(p);
++        if (at != g_copies.end() && at->first == p) {
++            f = {p, g_generation, at->second};
++            e = &f.entry;
++        }
      }
 -    if (e && e->size == size && e->padded == padded && e->upload.offset % align == 0) {
 -        g_saved += padded;
@@ -3165,7 +3237,8 @@ index d57d68f..121cc7c 100644
      Upload u = upload_alloc(padded, align);
      std::memcpy(u.ptr, p, size);
      if (padded > size) std::memset(u.ptr + size, 0, padded - size);
-     g_copies[p] = {size, padded, u};
+-    g_copies[p] = {size, padded, u};
++    g_copies.insert_or_assign(at, p, Entry{size, padded, u});
 +    g_copies_max = std::max(g_copies_max, size);
      f = {p, g_generation, {size, padded, u}};
 -    g_copied += padded;
@@ -3174,11 +3247,11 @@ index d57d68f..121cc7c 100644
  }
  
 -void dedup_reset() { g_copies.clear(), g_generation++; }
-+void dedup_reset() { g_copies.clear(), g_generation++, g_copies_max = 0; }
++void dedup_reset() { g_copies.clear(), g_arena.reset(), g_generation++, g_copies_max = 0; }
  
  void dedup_invalidate(const uint8_t* p, uint64_t size) {
      // Entries starting before p may still reach into it: look back over the few that can.
-@@ -74,7 +83,9 @@ void dedup_invalidate(const uint8_t* p, uint64_t size) {
+@@ -74,7 +128,9 @@ void dedup_invalidate(const uint8_t* p, uint64_t size) {
      while (it != g_copies.begin()) {
          --it;
          if (it->first + it->second.size <= p) {
@@ -3189,7 +3262,7 @@ index d57d68f..121cc7c 100644
              continue;
          }
          if (Front& f = front_of(it->first); f.p == it->first) f.generation = 0;
-@@ -105,9 +116,32 @@ std::array<uint8_t, 0x1000> driver_constants(ShaderStage stage, int st) {
+@@ -105,9 +161,32 @@ std::array<uint8_t, 0x1000> driver_constants(ShaderStage stage, int st) {
      return c0;
  }
  
@@ -4336,10 +4409,60 @@ index 45e9b2a..7a07fd6 100644
  
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_objects.cpp b/runtime/src/nvn/nvn_objects.cpp
-index a2a7dd0..53d211d 100644
+index a2a7dd0..b67f553 100644
 --- a/runtime/src/nvn/nvn_objects.cpp
 +++ b/runtime/src/nvn/nvn_objects.cpp
-@@ -83,12 +83,13 @@ ViewInfo read_view(CPU& c, uint64_t view) {
+@@ -9,6 +9,7 @@
+ #include <set>
+ 
+ #include "nvn.h"
++#include "nvn_tiling.h"
+ #include "platform.h"
+ 
+ namespace nx::nvn {
+@@ -21,7 +22,7 @@ namespace {
+ 
+ std::mutex g_gpu_lock;
+ std::map<uint64_t, MemoryPool*> g_pools_by_gpu;  // gpu start -> pool
+-std::atomic<uint64_t> g_pools_generation{1};     // bumped with every change of the map, under g_gpu_lock
++std::atomic<uint64_t> g_pools_generation{1};     // bumped when a pool leaves the map or is replaced, under g_gpu_lock
+ uint64_t g_gpu_next = 0x100000000ull;  // NVN GPU addresses are 40-bit; keep 0 and low values invalid
+ 
+ }  // namespace
+@@ -33,9 +34,13 @@ uint64_t gpu_alloc(uint64_t size) {
+     return a;
+ }
+ 
++// A new pool at a new address leaves every cached range valid (pools do not overlap, and the caches keep only hits):
++// only a pool that leaves or is replaced empties them. Breath of the Wild's pool traffic emptied them all the time
++// (pool_at_gpu was ~3% of the replay thread).
+ void pool_register(MemoryPool* p) {
+     std::lock_guard lk(g_gpu_lock);
+-    g_pools_by_gpu[p->gpu] = p, g_pools_generation.fetch_add(1);
++    auto [it, fresh] = g_pools_by_gpu.try_emplace(p->gpu, p);
++    if (!fresh) it->second = p, g_pools_generation.fetch_add(1);
+ }
+ 
+ void pool_unregister(MemoryPool* p) {
+@@ -46,7 +51,7 @@ void pool_unregister(MemoryPool* p) {
+ // Asked for every buffer a replayed draw binds, mostly in the same few pools: each thread keeps the last ranges it
+ // found, good until a pool is registered or unregistered (a pool's address and size are final when it registers).
+ MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset) {
+-    thread_local struct { uint64_t generation, start, size; MemoryPool* pool; } hits[8] = {};
++    thread_local struct { uint64_t generation, start, size; MemoryPool* pool; } hits[16] = {};
+     thread_local uint32_t next = 0;
+     uint64_t generation = g_pools_generation.load(std::memory_order_acquire);
+     for (const auto& h : hits)
+@@ -60,7 +65,7 @@ MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset) {
+     --it;
+     MemoryPool* p = it->second;
+     if (gpu - p->gpu >= p->size) return nullptr;
+-    hits[next++ & 7] = {g_pools_generation.load(std::memory_order_relaxed), p->gpu, p->size, p};
++    hits[next++ & 15] = {g_pools_generation.load(std::memory_order_relaxed), p->gpu, p->size, p};
+     if (offset) *offset = gpu - p->gpu;
+     return p;
+ }
+@@ -83,12 +88,13 @@ ViewInfo read_view(CPU& c, uint64_t view) {
  
  uint64_t pool_host(const MemoryPool& pool, uint64_t offset) {
      if (pool.memory) return pool.memory + offset;
@@ -4355,7 +4478,7 @@ index a2a7dd0..53d211d 100644
      return phys && phys->memory ? phys->memory + it->second.physical_offset + (offset - it->first) : 0;
  }
  
-@@ -112,10 +113,13 @@ void MemoryPoolInitialize(CPU& c) {
+@@ -112,10 +118,13 @@ void MemoryPoolInitialize(CPU& c) {
  }
  
  void MemoryPoolFinalize(CPU& c) {
@@ -4371,7 +4494,7 @@ index a2a7dd0..53d211d 100644
      destroy(c.x[0]);
  }
  
-@@ -172,12 +176,38 @@ std::map<uint64_t, std::set<uint64_t>>& pool_textures() {
+@@ -172,12 +181,38 @@ std::map<uint64_t, std::set<uint64_t>>& pool_textures() {
      return m;
  }
  
@@ -4411,7 +4534,7 @@ index a2a7dd0..53d211d 100644
      auto it = pool_textures().find(pool);
      if (it == pool_textures().end()) return;
      for (uint64_t guest : it->second) {
-@@ -191,8 +221,17 @@ void MemoryPoolFlushMappedRange(CPU& c) {
+@@ -191,8 +226,17 @@ void MemoryPoolFlushMappedRange(CPU& c) {
      }
  }
  // The CPU is about to read what the GPU wrote: with NX_ASYNC_GPU, compute results still in flight are waited for.
@@ -4430,7 +4553,7 @@ index a2a7dd0..53d211d 100644
      worker_finish();  // compute results reach guest memory when their submit is replayed and done
      gpu_wait(gpu_write_back_serial());
  }
-@@ -245,7 +284,9 @@ void BufferGetMemoryOffset(CPU& c) {
+@@ -245,7 +289,9 @@ void BufferGetMemoryOffset(CPU& c) {
      c.x[0] = b ? b->offset : 0;
  }
  
@@ -4441,7 +4564,7 @@ index a2a7dd0..53d211d 100644
  void BufferInvalidateMappedRange(CPU&) {}
  
  // ---- textures ---------------------------------------------------------------------------------------------------
-@@ -268,6 +309,79 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
+@@ -268,6 +314,79 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
      return wait ? std::unique_lock<std::recursive_mutex>(gpu_lock()) : std::unique_lock<std::recursive_mutex>();
  }
  
@@ -4521,7 +4644,7 @@ index a2a7dd0..53d211d 100644
  void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBuilder*)
      auto guard = reinit_guard();
      uint64_t guest = c.x[0], builder = c.x[1];
-@@ -301,7 +415,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
+@@ -301,7 +420,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
      t.storage_size = texture_storage_size(c, builder);
      if (old) {
          std::lock_guard lk(objects_lock());
@@ -4530,7 +4653,7 @@ index a2a7dd0..53d211d 100644
      }
      // Packaged (BNTX) textures were tiled offline with a block height often one step below the default
      // (docs/nvn/TILING.md). The layout the builder returns does not carry it (it reads 1 for every texture in
-@@ -329,6 +443,8 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
+@@ -329,6 +448,8 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
          t.memory = pool_host(*p, t.offset);
          t.gpu = p->gpu + t.offset;
      }
@@ -4539,7 +4662,7 @@ index a2a7dd0..53d211d 100644
      if (g_trace || trace_textures())
          log("nvn: texture %llx: memory %llx target %u format %#x %ux%ux%u levels %u samples %u flags %x size %llx block height %u "
              "swizzle %u%u%u%u", (unsigned long long)guest, (unsigned long long)t.memory, t.target, t.format, t.width, t.height, t.depth, t.levels,
-@@ -339,7 +455,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
+@@ -339,7 +460,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
          note_replaced(guest);
          keep_for_slots(guest);
          hand_image_to_snapshots(guest);
@@ -4548,7 +4671,7 @@ index a2a7dd0..53d211d 100644
          publish_locked(guest, std::move(fresh));
      }
      c.x[0] = 1;
-@@ -357,11 +473,15 @@ constexpr uint64_t kKeptTexture = 0xF000000000000000ull;  // host keys of finali
+@@ -357,11 +478,15 @@ constexpr uint64_t kKeptTexture = 0xF000000000000000ull;  // host keys of finali
  // pointed at, and is destroyed once no slot names it.
  // Moves the texture at `guest` to a host key when a pool slot still names it, and points those slots there (under
  // objects_lock). Returns the key, or 0 when no slot names it.
@@ -4568,7 +4691,7 @@ index a2a7dd0..53d211d 100644
      auto reg = g_registered.find(guest);
      uint64_t kept = 0;
      if (reg == g_registered.end()) return 0;
-@@ -387,8 +507,7 @@ uint64_t keep_for_slots(uint64_t guest) {
+@@ -387,8 +512,7 @@ uint64_t keep_for_slots(uint64_t guest) {
          if (g_registered[kept].size() == 1) g_kept_order.push_back({kept, plat::monotonic_ns()});
      }
      g_registered.erase(guest);
@@ -4578,7 +4701,7 @@ index a2a7dd0..53d211d 100644
      return kept;
  }
  
-@@ -406,7 +525,7 @@ void expire_kept() {
+@@ -406,7 +530,7 @@ void expire_kept() {
          g_kept_order.pop_front();
          if (!t) continue;
          g_registered.erase(key);
@@ -4587,7 +4710,7 @@ index a2a7dd0..53d211d 100644
          defer_object(std::move(o->second));
          objects().erase(o);
          g_released_kept++;
-@@ -417,13 +536,14 @@ void TextureFinalize(CPU& c) {
+@@ -417,13 +541,14 @@ void TextureFinalize(CPU& c) {
      auto guard = reinit_guard();
      uint64_t guest = c.x[0];
      if (trace_textures()) log("nvn: texture %llx finalized", (unsigned long long)guest);
@@ -4603,7 +4726,7 @@ index a2a7dd0..53d211d 100644
          expire_kept();
          if (kept) return;
          if (!old) {  // in the same section (#55)
-@@ -512,7 +632,7 @@ void release_kept(uint64_t key) {
+@@ -512,15 +637,52 @@ void release_kept(uint64_t key) {
              if (d && d->textures.count(id) && d->textures[id] == key) return;  // still named
          }
      g_registered.erase(key);
@@ -4612,15 +4735,57 @@ index a2a7dd0..53d211d 100644
      if (auto o = objects().find(key); o != objects().end()) defer_object(std::move(o->second)), objects().erase(o);
      g_released_kept++;
  }
-@@ -521,6 +641,7 @@ void release_kept(uint64_t key) {
+ 
++// What the driver does with nvnTextureWriteTexels: the texels go into the texture's memory, in its layout. The game may
++// sample that memory through other textures, uploaded from it: Breath of the Wild's save list showed its 256x144
++// pictures as plain rows read as tiles. Pitch-linear: rows at the stride (level 0); block-linear: the level's GOBs
++// (nvn_tiling.cpp), laid out as the upload untiles them. Called outside objects_lock: the write may fault into the
++// write watch. NX_TEXELS_TO_MEMORY=0: the GPU image only, as before.
++static void store_texels(const Texture& t, const Texture::TexelWrite& w) {
++    static const bool off = [] {
++        const char* e = std::getenv("NX_TEXELS_TO_MEMORY");
++        return e && e[0] == '0';
++    }();
++    if (off || !t.memory || !t.storage_size) return;
++    uint32_t bw = 1, bh = 1, bytes = 4;
++    format_block(t.format, bw, bh, bytes);
++    const uint32_t xb = w.x / bw, yb = w.y / bh, wb = (w.w + bw - 1) / bw, hb = (w.h + bh - 1) / bh;
++    const uint64_t row = uint64_t(wb) * bytes;
++    auto* mem = reinterpret_cast<uint8_t*>(t.memory);
++    if (t.stride) {
++        const uint64_t rows = (t.height + bh - 1) / bh;
++        for (uint32_t z = 0; z < w.d && !w.level; z++)
++            for (uint32_t r = 0; r < hb; r++) {
++                const uint64_t at = ((w.z + z) * rows + yb + r) * t.stride + uint64_t(xb) * bytes;
++                if (at + row > t.storage_size) return;
++                std::memcpy(mem + at, w.data.data() + (uint64_t(z) * hb + r) * row, row);
++            }
++        return;
++    }
++    const uint32_t layers = t.target == 8 ? std::max(6u, t.depth) : std::max(1u, t.depth);  // as the upload counts them
++    const TextureLayout l = block_linear_layout(t.width, t.height, layers, t.levels, bw, bh, bytes, t.block_height_gobs);
++    if (w.level >= l.levels.size() || l.tiled_size > t.storage_size) return;
++    const LinearLevel& lv = l.levels[w.level];
++    for (uint32_t z = 0; z < w.d && w.z + z < l.layers; z++)
++        swizzle_block_linear_region(w.data.data() + uint64_t(z) * hb * row, row,
++                                    mem + (w.z + z) * l.tiled_layer_stride + lv.tiled_offset, lv.width_blocks,
++                                    lv.height_blocks, bytes, lv.block_height_gobs, xb, yb, wb, hb);
++}
++
+ // nvnTextureWriteTexels(const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*, const void* data) and the
  // Strided form (+ ptrdiff_t rowStride, ptrdiff_t imageStride). NVNcopyRegion: {int x, y, z, width, height, depth}.
- // The driver would swizzle the texels into the texture's memory; we keep them for the GPU image instead.
+-// The driver would swizzle the texels into the texture's memory; we keep them for the GPU image instead.
++// The texels go to the texture's memory (store_texels) and, kept, straight to its GPU image.
  void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
 +    adopt_texture(c, c.x[0]);
      auto* t = get<Texture>(c.x[0]);
      uint64_t region = c.x[2], data = c.x[3];
      if (!t || !region || !data) return;
-@@ -543,9 +664,18 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
+@@ -540,12 +702,26 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
+         for (uint64_t r = 0; r < rows; r++)
+             std::memcpy(w.data.data() + (z * rows + r) * row,
+                         reinterpret_cast<const void*>(data + z * image_stride + r * row_stride), row);
++    store_texels(*t, w);
      static std::map<uint64_t, uint64_t> counts;
      std::lock_guard lk(objects_lock());
      uint64_t n = ++counts[c.x[0]];
@@ -4634,15 +4799,19 @@ index a2a7dd0..53d211d 100644
 +        for (uint8_t b : w.data) nonzero += b != 0;
 +        uint32_t first[4] = {};
 +        std::memcpy(first, w.data.data(), std::min<size_t>(sizeof first, w.data.size()));
-+        log("nvn: WriteTexels #%llu into %llx (%ux%u fmt %#x): %ux%ux%u at %u,%u,%u level %u, %llu of %zu bytes non-zero, "
-+            "first %08x %08x %08x %08x", (unsigned long long)n, (unsigned long long)c.x[0], t->width, t->height,
-+            t->format, w.w, w.h, w.d, w.x, w.y, w.z, w.level, (unsigned long long)nonzero, w.data.size(), first[0],
++        const bool inside = data < t->memory + t->storage_size && t->memory < data + image_stride * w.d;
++        log("nvn: WriteTexels #%llu into %llx (%ux%u fmt %#x, %s, memory %llx+%llx): %ux%ux%u at %u,%u,%u level %u from "
++            "%llx%s, %llu of %zu bytes non-zero, first %08x %08x %08x %08x", (unsigned long long)n,
++            (unsigned long long)c.x[0], t->width, t->height, t->format,
++            t->stride ? "pitch-linear" : "block-linear", (unsigned long long)t->memory,
++            (unsigned long long)t->storage_size, w.w, w.h, w.d, w.x, w.y, w.z, w.level, (unsigned long long)data,
++            inside ? " (inside the texture's own memory)" : "", (unsigned long long)nonzero, w.data.size(), first[0],
 +            first[1], first[2], first[3]);
 +    }
      t->writes.push_back(std::move(w));
      t->has_writes.store(true, std::memory_order_release);
  }
-@@ -556,6 +686,7 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
+@@ -556,6 +732,7 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
  
  #define NX_TEXTURE_GETTER(fn, field)          \
      void fn(CPU& c) {                         \
@@ -4650,7 +4819,7 @@ index a2a7dd0..53d211d 100644
          auto* t = get<Texture>(c.x[0]);       \
          c.x[0] = t ? uint64_t(t->field) : 0;  \
      }
-@@ -574,6 +705,15 @@ NX_TEXTURE_GETTER(TextureGetStorageSize, storage_size)
+@@ -574,6 +751,15 @@ NX_TEXTURE_GETTER(TextureGetStorageSize, storage_size)
  NX_TEXTURE_GETTER(TextureGetDepthStencilMode, depth_stencil_mode)
  #undef NX_TEXTURE_GETTER
  
@@ -4666,7 +4835,7 @@ index a2a7dd0..53d211d 100644
  // ---- samplers and descriptor pools ----------------------------------------------------------------------------
  
  // NVNboolean nvn{Texture,Sampler}PoolInitialize(pool, const NVNmemoryPool*, ptrdiff_t offset, int numDescriptors)
-@@ -587,10 +727,42 @@ void DescriptorPoolInitialize(CPU& c) {
+@@ -587,10 +773,42 @@ void DescriptorPoolInitialize(CPU& c) {
  
  void DescriptorPoolFinalize(CPU& c) { destroy(c.x[0]); }
  
@@ -4709,7 +4878,7 @@ index a2a7dd0..53d211d 100644
      ViewInfo v = read_view(c, c.x[3]);
      if (trace_textures()) {
          auto* tt = get<Texture>(c.x[2]);
-@@ -602,8 +774,12 @@ void TexturePoolRegister(CPU& c) {
+@@ -602,8 +820,12 @@ void TexturePoolRegister(CPU& c) {
      if (v.swizzle)
          if (auto* t = get<Texture>(c.x[2])) t->pool_swizzle = v.swizzle;
      if (auto* d = get<DescriptorPool>(c.x[0])) {
@@ -4723,7 +4892,7 @@ index a2a7dd0..53d211d 100644
          PoolEntry before;  // what a replay in flight still has to see in this slot (nvn_incarnation.cpp)
          if (auto it = d->textures.find(id); it != d->textures.end()) before.has = true, before.texture = it->second;
          if (auto it = d->snapshots.find(id); it != d->snapshots.end()) before.snapshot = it->second;
-@@ -613,9 +789,13 @@ void TexturePoolRegister(CPU& c) {
+@@ -613,9 +835,13 @@ void TexturePoolRegister(CPU& c) {
          d->textures[id] = c.x[2];
          if (auto s = d->snapshots.find(uint32_t(c.x[1])); s != d->snapshots.end()) drop_snapshot(s->second);
          if (uint64_t snap = make_snapshot(c.x[2])) d->snapshots[uint32_t(c.x[1])] = snap;
@@ -4740,7 +4909,7 @@ index a2a7dd0..53d211d 100644
          if (old && old != c.x[2]) release_kept(old);
          // A view setting only a base level, first layer or format counts too (it was dropped: level 0 sampled).
          if (v.base_level || v.levels || v.min_layer || v.layers || v.swizzle || v.format)
-@@ -646,8 +826,110 @@ void DeviceGetTextureHandle(CPU& c) { c.x[0] = (c.x[1] & 0xFFFFF) | ((c.x[2] & 0
+@@ -646,8 +872,110 @@ void DeviceGetTextureHandle(CPU& c) { c.x[0] = (c.x[1] & 0xFFFFF) | ((c.x[2] & 0
  void DeviceGetTexelFetchHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
  void DeviceGetImageHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
  
@@ -4851,7 +5020,7 @@ index a2a7dd0..53d211d 100644
  NX_HLE("nvnMemoryPoolInitialize", MemoryPoolInitialize);
  NX_HLE("nvnMemoryPoolFinalize", MemoryPoolFinalize);
  NX_HLE("nvnMemoryPoolMap", MemoryPoolMap);
-@@ -671,6 +953,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
+@@ -671,6 +999,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
  NX_HLE("nvnBufferInvalidateMappedRange", BufferInvalidateMappedRange);
  NX_HLE("nvnTextureInitialize", TextureInitialize);
  NX_HLE("nvnTextureFinalize", TextureFinalize);
@@ -4859,7 +5028,7 @@ index a2a7dd0..53d211d 100644
  NX_HLE("nvnTextureGetWidth", TextureGetWidth);
  NX_HLE("nvnTextureGetHeight", TextureGetHeight);
  NX_HLE("nvnTextureGetDepth", TextureGetDepth);
-@@ -684,6 +967,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
+@@ -684,6 +1013,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
  NX_HLE("nvnTextureGetMemoryOffset", TextureGetMemoryOffset);
  NX_HLE("nvnTextureGetStorageSize", TextureGetStorageSize);
  NX_HLE("nvnTextureGetDepthStencilMode", TextureGetDepthStencilMode);
@@ -6606,6 +6775,58 @@ index 99383fc..b7b29a5 100644
  NX_HLE("nvnTextureBuilderGetStorageAlignment", GetStorageAlignment);
  NX_HLE("nvnTextureBuilderGetStorageClass", GetStorageClass);
  NX_HLE("nvnTextureBuilderGetRawStorageClass", GetStorageClass);
+diff --git a/runtime/src/nvn/nvn_tiling.cpp b/runtime/src/nvn/nvn_tiling.cpp
+index 42e37f0..f14a573 100644
+--- a/runtime/src/nvn/nvn_tiling.cpp
++++ b/runtime/src/nvn/nvn_tiling.cpp
+@@ -98,6 +98,29 @@ void deswizzle_block_linear(const uint8_t* src, uint8_t* dst, uint32_t width_blo
+     }
+ }
+ 
++void swizzle_block_linear_region(const uint8_t* src, uint64_t src_pitch, uint8_t* dst, uint32_t width_blocks,
++                                 uint32_t height_blocks, uint32_t bytes_per_block, uint32_t block_height_gobs,
++                                 uint32_t x_blocks, uint32_t y_blocks, uint32_t w_blocks, uint32_t h_blocks) {
++    if (!src || !dst || !bytes_per_block || x_blocks >= width_blocks || y_blocks >= height_blocks) return;
++    w_blocks = std::min(w_blocks, width_blocks - x_blocks);
++    h_blocks = std::min(h_blocks, height_blocks - y_blocks);
++    const uint32_t bh_shift = gob_shift(block_height_gobs), bh_mask = (1u << bh_shift) - 1;
++    const uint64_t block = uint64_t(kGobSize) << bh_shift;
++    const uint64_t block_row = block * div_up(uint64_t(width_blocks) * bytes_per_block, kGobWidth);
++    const uint64_t x0 = uint64_t(x_blocks) * bytes_per_block, x1 = x0 + uint64_t(w_blocks) * bytes_per_block;
++    for (uint32_t r = 0; r < h_blocks; r++) {
++        const uint32_t y = y_blocks + r, gy = y / kGobHeight;
++        uint8_t* line = dst + (gy >> bh_shift) * block_row + (uint64_t(gy & bh_mask) << 9) + row_start(y % kGobHeight);
++        const uint8_t* s = src + r * src_pitch;
++        // Up to the end of each 16-byte piece of a GOB row at a time: those are contiguous in memory.
++        for (uint64_t x = x0; x < x1;) {
++            const uint64_t n = std::min<uint64_t>(16 - (x & 15), x1 - x);
++            std::memcpy(line + (x >> 6) * block + kPiece[(x & 63) >> 4] + (x & 15), s + (x - x0), n);
++            x += n;
++        }
++    }
++}
++
+ uint32_t default_block_height_gobs(uint32_t rows) {
+     uint32_t gobs = uint32_t(div_up(rows, kGobHeight)), h = 1;
+     while (h < gobs && h < 16) h <<= 1;
+diff --git a/runtime/src/nvn/nvn_tiling.h b/runtime/src/nvn/nvn_tiling.h
+index 8949afe..3c9547a 100644
+--- a/runtime/src/nvn/nvn_tiling.h
++++ b/runtime/src/nvn/nvn_tiling.h
+@@ -25,6 +25,13 @@ void deswizzle_block_linear(const uint8_t* src, uint8_t* dst, uint32_t width_blo
+                             uint32_t depth, uint32_t bytes_per_block, uint32_t block_height_gobs,
+                             uint32_t block_depth_gobs);
+ 
++// The other way, for a rectangle of one level of one layer (nvnTextureWriteTexels): `h_blocks` rows of `w_blocks`
++// blocks from `src`, `src_pitch` bytes apart, into the level at `dst` (`width_blocks` x `height_blocks` blocks) at
++// block (x_blocks, y_blocks). What falls outside the level is dropped.
++void swizzle_block_linear_region(const uint8_t* src, uint64_t src_pitch, uint8_t* dst, uint32_t width_blocks,
++                                 uint32_t height_blocks, uint32_t bytes_per_block, uint32_t block_height_gobs,
++                                 uint32_t x_blocks, uint32_t y_blocks, uint32_t w_blocks, uint32_t h_blocks);
++
+ // Bytes deswizzle_block_linear reads for such a level (GOB-aligned width, block-aligned height and depth).
+ uint64_t block_linear_size(uint32_t width_blocks, uint32_t height_blocks, uint32_t depth, uint32_t bytes_per_block,
+                            uint32_t block_height_gobs, uint32_t block_depth_gobs);
 diff --git a/runtime/src/nvn/nvn_trace.cpp b/runtime/src/nvn/nvn_trace.cpp
 index bed8ce6..4fdcf92 100644
 --- a/runtime/src/nvn/nvn_trace.cpp

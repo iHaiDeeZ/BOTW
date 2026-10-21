@@ -113,6 +113,34 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   - sampler stamps as an index (`a371aee`);
   - texture stamp checks without lookups or exclusive locks (`f1f7c0d`; BotW copies textures from boot, so it
     compares serials).
+- **v00.15 on the console: the loading-screen tips show** (the R8 fix of v00.13 works).
+- **v00.15: save pictures scrambled.** The 256x144 pictures in the "Select save data to load" list showed the right
+  colours in a grid of tiles (`logs/v00.15/media`, from the PS4's background recording). The left of each thumbnail
+  held the top rows of the photo: plain rows read as tiles.
+  - Each save's `caption.jpg` is correct on disk (slots 2 and 3; slots 0 and 1 were saved black by early versions).
+  - The game decodes it with the SDK's `JpegDecoder` and hands the pixels to `nvnTextureWriteTexels`: RGBA8 sRGB,
+    correct values in nx.log.
+  - The runtime kept written texels for that texture's GPU image only. The Switch driver stores them in the
+    texture's memory, and the list's texture read that memory.
+  - v00.16 (recomp `49a8750`) also writes them into the memory, in the texture's layout
+    (`swizzle_block_linear_region`, checked against the GOB formula and the untiler; `NX_TEXELS_TO_MEMORY=0`: off).
+    Each texture's first write now logs its layout, memory and source address.
+  - Still to explain: the loading screen's picture area is plain cream.
+- **Frame rate (v00.15, outdoors): 8.8 fps.**
+  - The replay takes 105 ms for ~3,017 draws: sets 31 ms, binds and draws 25, textures 20, vertex/index 14,
+    pipelines 4, passes 3.
+  - The replay thread is on a CPU 95% of the time and 90% in its own code, so it is CPU-bound (~33 us per draw).
+  - The profile is flat: `dedup_upload` 6%, `build_sets` 3.3%, `pool_at_gpu` 3%, `bind_sets` 2.5%,
+    `get<Texture>` 2%, RADV ~12% in all.
+  - 192 passes a frame end before a draw of the decal shader `19d434c4`, which samples its own targets.
+  - Draws by pass (v00.12 storyboard 3151): G-buffer 1,115; shadow cascades (896x896x3 depth) ~850; 16x16 cube
+    probes 300; half resolution 248.
+  - v00.16 trims lookups:
+    - 4096-slot resolve and dedup caches;
+    - dedup map nodes from a per-submit arena, with one tree walk per miss;
+    - pool caches kept when a pool registers.
+
+  30 fps needs ~11 us per draw: a replay on several cores, or fewer draws.
 - **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
   each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
   gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,
