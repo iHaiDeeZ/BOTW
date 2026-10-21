@@ -35,6 +35,11 @@ void game::after_init() {
     setenv("NX_GRAPHICS_WRITE_BACK", "0", 0);
     // Depth clamp on the PS4's RADV put every clamped fragment at depth 0 (TOTK's shadow maps): clipped instead.
     setenv("NX_DEPTH_CLAMP", "0", 0);
+    // Depth EQUAL kept exact. The deferred lighting classifies materials by depth: fs 4f2551d4 writes
+    // FragDepth = (G-buffer material bits & mask) / 255 into a D16 target (k * 257 exactly), and each light's
+    // fullscreen quad sits at z = (k / 255) * 2 - 1 and tests EQUAL. Wonder's EQUAL -> LEQUAL with a bias toward the
+    // camera lets a light through on every material at or behind its own. TOTK's lighting works this way too.
+    setenv("NX_EQUAL_EXACT", "1", 0);
 }
 void game::renderer_start() {}
 void game::first_frame() {}

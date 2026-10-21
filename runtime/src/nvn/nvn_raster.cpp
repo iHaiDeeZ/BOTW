@@ -147,7 +147,13 @@ void raster_dynamic(VkCommandBuffer cb, bool slack) {
     // A non-zero clamp needs the depthBiasClamp feature (MoltenVK has it: Metal's setDepthBias clamp).
     float clamp = vk_features().depthBiasClamp ? s.bias_clamp : 0.0f;
     float units = s.bias_units * units_scale, factor = s.bias_factor;
-    if (slack) units -= equal_slack_units(), factor -= equal_slack_units() / 4.0f, clamp = 0.0f;
+    if (slack) {
+        // The slack turns the bias on for the whole pipeline: the game's own offset counts only where its polygon state
+        // enables one (Breath of the Wild's light quads got another pass's -86.8 units on top of the slack).
+        uint32_t offset_bit = s.polygon.mode <= 2 ? 1u << s.polygon.mode : 4u;
+        if (!(s.polygon.offset_enables & offset_bit)) units = factor = 0.0f;
+        units -= equal_slack_units(), factor -= equal_slack_units() / 4.0f, clamp = 0.0f;
+    }
     p_vkCmdSetDepthBias(cb, units, clamp, factor);
 }
 

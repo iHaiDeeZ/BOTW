@@ -557,6 +557,7 @@ bool g_diag_on = false;
 int g_diag_seq = 0;
 FILE* g_diag_index = nullptr;
 constexpr int kDiagMax = 400;
+std::map<const GpuImage*, int> g_diag_pictures;  // pictures of each image in this storyboard
 }  // namespace
 
 void diag_line(const std::string& line) {
@@ -598,6 +599,7 @@ void diag_frame_boundary(uint64_t presents) {
         plat::make_dirs(dir);
         g_diag_index = plat::fopen_utf8(dir + "/passes.txt", "w");
         g_diag_seq = 0;
+        g_diag_pictures.clear();
         g_diag_on = true;
         log("diag: storyboard of the next frame (after present %llu)", (unsigned long long)presents);
     }
@@ -605,6 +607,16 @@ void diag_frame_boundary(uint64_t presents) {
 
 void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs) {
     if (!g_diag_on || g_diag_seq >= kDiagMax || !img.image || !(img.aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return;
+    // A pass of one or two draws on an image pictured that many times already is left out: Breath of the Wild draws
+    // its decals one per 8-target pass (62 in the shrine), and the 400 pictures ran out before the lighting, after a
+    // 20 s capture. NX_DIAG_PER_IMAGE=<n> (default 4, 0: every pass).
+    static const int per_image = [] {
+        const char* e = std::getenv("NX_DIAG_PER_IMAGE");
+        return e ? std::atoi(e) : 4;
+    }();
+    int& pictured = g_diag_pictures[&img];
+    if (per_image > 0 && draws <= 2 && pictured >= per_image) return;
+    pictured++;
     Snap snap;
     snap.w = std::min(img.width, 480u);
     snap.h = std::max(1u, uint32_t(uint64_t(img.height) * snap.w / std::max(1u, img.width)));
