@@ -476,14 +476,26 @@ void OpenAudioRenderer(CPU& c) {
     log("audio: renderer opened (result %llx), impl %llx", (unsigned long long)rc, (unsigned long long)impl);
     if (!impl) return;
     // ExecuteAudioRendererRendering only renders in the manual execution mode on the CPU rendering device
-    // (AudioRenderSystem::GetExecutionMode / GetRenderingDevice == 1, at render system + 0x2d0 / + 0x2d4); the game
-    // opens the renderer in the automatic mode, where the ADSP renders on its own. Our 5 ms thread is that ADSP, so
-    // the renderer is switched to manual/CPU; otherwise every call failed with 0x40299 and nothing was ever rendered
-    // (streamed music never advanced, and the opening cutscene waited for it forever).
+    // (AudioRenderSystem::GetExecutionMode / GetRenderingDevice == 1); the game opens the renderer in the automatic
+    // mode, where the ADSP renders on its own. Our 5 ms thread is that ADSP, so the renderer is switched to
+    // manual/CPU; otherwise every call failed with 0x40299 and nothing was ever rendered (streamed music never
+    // advanced, and the opening cutscene waited for it forever). The two fields move with the SDK (Wonder's 16.2:
+    // render system + 0x2d0 / + 0x2d4; Breath of the Wild's 7.3.2: + 0x2d8 / + 0x2dc, where writing the old offsets
+    // left every render failing and no sound): taken from the getters' own `ldr w0, [x0, #imm]`.
+    auto field = [](const char* getter, uint32_t fallback) {
+        uint64_t fn = find_symbol(getter);
+        uint32_t insn = fn ? ld<uint32_t>(fn) : 0;
+        if ((insn & 0xFFC003FFu) == 0xB9400000u) return ((insn >> 10) & 0xFFFu) * 4;  // LDR Wt, [X0, #imm]: w0, x0
+        log("audio: %s not an ldr w0, [x0, #imm] (%08x): offset %#x assumed", getter, insn, fallback);
+        return fallback;
+    };
+    static const uint32_t mode_at = field("_ZNK2nn5audio6server17AudioRenderSystem16GetExecutionModeEv", 0x2d0);
+    static const uint32_t device_at = field("_ZNK2nn5audio6server17AudioRenderSystem18GetRenderingDeviceEv", 0x2d4);
     uint64_t system = impl + 0x60;
-    log("audio: execution mode %u, rendering device %u -> 1, 1", ld<uint32_t>(system + 0x2d0), ld<uint32_t>(system + 0x2d4));
-    st<uint32_t>(system + 0x2d0, 1);
-    st<uint32_t>(system + 0x2d4, 1);
+    log("audio: execution mode %u (+%#x), rendering device %u (+%#x) -> 1, 1", ld<uint32_t>(system + mode_at), mode_at,
+        ld<uint32_t>(system + device_at), device_at);
+    st<uint32_t>(system + mode_at, 1);
+    st<uint32_t>(system + device_at, 1);
     {
         std::lock_guard lk(g_renderers_lock);
         g_renderers.push_back(impl);
