@@ -83,6 +83,14 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   channel the lighting multiplies by. v00.10 (recomp `a6ebcb1`): render targets, clears and copies record a key of
   the texture the holder held when recorded (`NX_ADOPT_KEYS=0`: the address). On PC the shrine is lit with exact
   EQUAL; a haze and orange bands on Link's skin remain. On PC the title menu text shows with the console's save.
+- **v00.10 on the console: lit.** Link and the shrine render with lighting (capture of frame 6135). Still missing on
+  the PS4 only: the title menu's option text and the loading screens' text (the PC shows them; being reproduced on
+  PC with the console's settings, `NX_RENDER_RES=1280x720` and FSR). 10-11 fps in the shrine: the replay costs
+  35-40 us per draw (2,100-2,800 draws: descriptor sets 26-28 ms, textures 19-20 ms, binds 17-21 ms).
+- **No sound (all versions until v00.11).** `ExecuteAudioRendererRendering` renders only in the manual mode on the
+  CPU device; the runtime switched the render system at SDK 16.2's offsets (+0x2d0/+0x2d4), but BotW's SDK 7.3.2
+  keeps them at +0x2d8/+0x2dc: every render failed with 0x40299 ("last result 40299" in nx.log). v00.11 reads the
+  offsets from `GetExecutionMode` / `GetRenderingDevice`.
 - **v00.09: cutscene effects missing.** The opening's effects (`Event/Demo102_0.sbeventpack` →
   `Effect/Event_Demo102_0.sesetlist`, 10 shaders) were never extracted: the event packs carry their own effect lists.
   `prepare-game.sh` now scans `Event` too (`BOTW_SHADER_DIRS` default).
