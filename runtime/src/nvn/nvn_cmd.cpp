@@ -30,7 +30,7 @@ namespace {
 struct CommandBuffer : Object {
     std::mutex lock;
     std::shared_ptr<CmdList> recording = std::make_shared<CmdList>();
-    size_t last_cmds = 0, last_blobs = 0;  // the previous list's sizes: the next one is reserved that much up front
+    size_t last_cmds = 0, last_blobs = 0, last_blob_bytes = 0;  // the previous list's sizes: reserved up front
     // The memory the game hands over (AddCommandMemory / AddControlMemory) and what recording "uses" of it. Engines
     // look at the used amounts right after EndRecording (a list that used nothing is dropped, never submitted) and
     // at the free ones (to add memory in time), so usage grows with the commands recorded, survives EndRecording
@@ -152,7 +152,7 @@ void CommandBufferBeginRecording(CPU& c) {
         // A command buffer records much the same each frame: one allocation instead of ~log2(n) regrowths of
         // ~128-byte commands.
         cb->recording->cmds.reserve(cb->last_cmds);
-        cb->recording->blobs.reserve(cb->last_blobs);
+        cb->recording->blobs.reserve(cb->last_blobs, cb->last_blob_bytes);
     }
 }
 
@@ -208,6 +208,7 @@ void CommandBufferEndRecording(CPU& c) {  // NVNcommandHandle
         std::lock_guard lk(cb->lock);
         size_t n = cb->recording->cmds.size() + 1;  // + the end of the list, so even an empty one used something
         cb->last_cmds = cb->recording->cmds.size(), cb->last_blobs = cb->recording->blobs.size();
+        cb->last_blob_bytes = cb->recording->blobs.byte_size();
         start = cb->command_memory + cb->command_base;
         pool = cb->command_pool;
         cb->command_base = used(cb->command_size, cb->command_base, n, kCommandBytes);

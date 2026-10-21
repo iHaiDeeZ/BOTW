@@ -17,6 +17,7 @@
 #include <shared_mutex>
 #include <unordered_map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nx/runtime.h>
@@ -342,9 +343,31 @@ struct Cmd {
     uint32_t blob = 0;  // index into CmdList::blobs (decoded state, inline data)
 };
 
+// A list's blobs in one buffer: one allocation per list, not one per blob. The game's threads record thousands of
+// blobs a frame, and every allocation took the host allocator's one lock, which the replay thread holds often too
+// (2-3% of Tears of the Kingdom's main and job threads waited on it on the PS4, v00.43). blobs[i] reads as before.
+struct BlobView {
+    const uint8_t* p;
+    size_t n;
+    const uint8_t* data() const { return p; }
+    size_t size() const { return n; }
+};
+struct Blobs {
+    std::vector<uint8_t> bytes;
+    std::vector<std::pair<uint32_t, uint32_t>> spans;  // offset in bytes, size
+    size_t size() const { return spans.size(); }
+    size_t byte_size() const { return bytes.size(); }
+    void reserve(size_t count, size_t total) { spans.reserve(count), bytes.reserve(total); }
+    void emplace_back(const uint8_t* from, const uint8_t* to) {
+        spans.push_back({uint32_t(bytes.size()), uint32_t(to - from)});
+        bytes.insert(bytes.end(), from, to);
+    }
+    BlobView operator[](size_t i) const { return {bytes.data() + spans[i].first, spans[i].second}; }
+};
+
 struct CmdList {
     std::vector<Cmd> cmds;
-    std::vector<std::vector<uint8_t>> blobs;
+    Blobs blobs;
     uint64_t handle = 0;     // its NVNcommandHandle
     uint64_t epoch = 0;      // the texture epoch when its recording ended (nvn_incarnation.cpp): what its draws name
     uint32_t skinned = 0;    // NX_TRACE_SKINLISTS: binds of skinned programs (a vertex input at location 6) in it
