@@ -186,6 +186,7 @@ void WindowInitialize(CPU& c) {  // NVNboolean (NVNwindow*, const NVNwindowBuild
     auto& w = make<Window>(guest);
     int n = int(driver(c, "nvnWindowBuilderGetNumTextures", {builder}));
     for (int k = 0; k < n; k++) w.textures.push_back(driver(c, "nvnWindowBuilderGetTexture", {builder, uint64_t(k)}));
+    for (uint64_t t : w.textures) adopt_texture(c, t);
     w.active = int(driver(c, "nvnWindowBuilderGetNumActiveTextures", {builder}));
     if (w.active <= 0 || w.active > n) w.active = n;
     w.interval = int(driver(c, "nvnWindowBuilderGetPresentInterval", {builder}));
@@ -206,6 +207,14 @@ void WindowAcquireTexture(CPU& c) {
     if (c.x[2]) st<int32_t>(c.x[2], index);
     signal_sync(c.x[1]);
     c.x[0] = 0;
+}
+
+// NVNqueueAcquireTextureResult nvnQueueAcquireTexture(NVNqueue*, NVNwindow*, int* textureIndex): the older form of
+// nvnWindowAcquireTexture, with no sync (the texture is ready for the queue's next commands). Breath of the Wild (NVN
+// 53) calls it once at boot; the trace stub left its index unwritten.
+void QueueAcquireTexture(CPU& c) {
+    c.x[0] = c.x[1], c.x[1] = 0;  // (window, no sync, index)
+    WindowAcquireTexture(c);
 }
 
 void WindowGetNumTextures(CPU& c) {
@@ -424,6 +433,7 @@ NX_HLE("nvnQueuePresentTexture", QueuePresentTexture);
 NX_HLE("nvnWindowInitialize", WindowInitialize);
 NX_HLE("nvnWindowFinalize", WindowFinalize);
 NX_HLE("nvnWindowAcquireTexture", WindowAcquireTexture);
+NX_HLE("nvnQueueAcquireTexture", QueueAcquireTexture);
 NX_HLE("nvnWindowGetNumTextures", WindowGetNumTextures);
 NX_HLE("nvnWindowGetNumActiveTextures", WindowGetNumActiveTextures);
 NX_HLE("nvnWindowSetNumActiveTextures", WindowSetNumActiveTextures);

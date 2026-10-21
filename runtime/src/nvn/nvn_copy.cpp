@@ -41,6 +41,8 @@ void CopyTextureToTexture(CPU& c) {
         info.dst[k] = c.x[6] ? ld<int32_t>(c.x[6] + 4ull * k) : 0;
     }
     info.flags = uint32_t(c.x[7]);
+    adopt_texture(c, c.x[1]);
+    adopt_texture(c, c.x[4]);
     Cmd cmd{Cmd::CopyTextureToTexture};
     cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
     record(c.x[0], cmd, &info, sizeof info);
@@ -183,6 +185,7 @@ void CopyTextureToBuffer(CPU& c) {
     info.view = read_view(c, c.x[2]);
     for (int k = 0; k < 6; k++) info.region[k] = c.x[3] ? ld<int32_t>(c.x[3] + 4ull * k) : 0;
     info.flags = uint32_t(c.x[5]);
+    adopt_texture(c, c.x[1]);
     Cmd cmd{Cmd::CopyTextureToBuffer};
     cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
     record(c.x[0], cmd, &info, sizeof info);
@@ -221,6 +224,7 @@ void ReadTexelsStrided(CPU& c) {  // (texture, view, region, void* dst, ptrdiff_
     ViewInfo v = read_view(c, c.x[1]);
     int32_t r[6];
     for (int k = 0; k < 6; k++) r[k] = c.x[2] ? ld<int32_t>(c.x[2] + 4ull * k) : 0;
+    adopt_texture(c, texture);
     std::lock_guard lk(gpu_lock());
     Texture* t = get<Texture>(texture);
     GpuImage* img = t ? image_of(texture) : nullptr;

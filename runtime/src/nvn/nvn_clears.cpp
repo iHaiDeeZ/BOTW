@@ -307,4 +307,94 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     pass_mark_written(color ? 1u << c.n : 1u << 8);  // a later draw sampling it needs a fresh pass
 }
 
+// nvnCommandBufferClearTexture(cmd, const NVNtexture*, const NVNtextureView*, const NVNcopyRegion*, const float* rgba,
+// int mask): a colour texture cleared without being bound as a target. Breath of the Wild's agl clears its targets
+// this way (main+1283a4c), not with ClearColor; it was a trace stub, so nothing of the game's was ever cleared.
+// NVNcopyRegion {x, y, z, width, height, depth}: z/depth are layers of an array, slices of a 3D texture.
+namespace {
+
+struct ClearTextureInfo {
+    ViewInfo view;
+    int32_t region[6] = {};
+    float rgba[4] = {};
+};
+
+void ClearTexture(CPU& c) {
+    adopt_texture(c, c.x[1]);
+    ClearTextureInfo info;
+    info.view = read_view(c, c.x[2]);
+    for (int k = 0; k < 6; k++) info.region[k] = c.x[3] ? ld<int32_t>(c.x[3] + 4ull * k) : 0;
+    if (c.x[4]) std::memcpy(info.rgba, reinterpret_cast<const void*>(c.x[4]), sizeof info.rgba);
+    Cmd cmd{Cmd::ClearTexture};
+    cmd.a[0] = c.x[1];
+    cmd.mask = uint32_t(c.x[5]);
+    record(c.x[0], cmd, &info, sizeof info);
+}
+
+}  // namespace
+
+// Each layer (or slice) of the region, at the view's level, as a clear of a pass on that texture alone: a whole layer
+// goes through draw_clear (deferred into the next pass on it, as the game's own clears), a rectangle is cleared in
+// such a pass.
+void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
+    if (c.blob >= list.blobs.size() || list.blobs[c.blob].size() != sizeof(ClearTextureInfo)) return;
+    ClearTextureInfo info;
+    std::memcpy(&info, list.blobs[c.blob].data(), sizeof info);
+    GpuImage* img = c.a[0] ? image_of(c.a[0]) : nullptr;
+    if (!img || img->aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
+        static int logged = 0;
+        if (logged++ < 10)
+            log("nvn: ClearTexture of %llx skipped (%s)", (unsigned long long)c.a[0],
+                img ? "not a colour texture" : "unknown texture");
+        return;
+    }
+    if (!replay::g_state.render_enable || !(c.mask & 0xF)) return;
+    const int32_t* r = info.region;
+    uint32_t level = std::min(info.view.base_level, img->levels - 1);
+    VkExtent2D full{std::max(1u, img->width >> level), std::max(1u, img->height >> level)};
+    bool whole = r[3] <= 0 || r[4] <= 0 ||
+                 (r[0] <= 0 && r[1] <= 0 && int64_t(r[0]) + r[3] >= int64_t(full.width) &&
+                  int64_t(r[1]) + r[4] >= int64_t(full.height));
+    bool is3d = img->view_type == VK_IMAGE_VIEW_TYPE_3D;
+    uint32_t slices = is3d ? std::max(1u, img->depth >> level) : img->layers;
+    uint32_t first = std::min<uint32_t>(uint32_t(std::max(r[2], 0)) + (is3d ? 0 : info.view.min_layer), slices - 1);
+    uint32_t count = std::min<uint32_t>(uint32_t(std::max(r[5], 1)), slices - first);
+    Cmd clear{Cmd::ClearColor};
+    clear.n = 0, clear.mask = c.mask & 0xF;
+    std::memcpy(clear.f, info.rgba, sizeof clear.f);
+    for (uint32_t layer = first; layer < first + count; layer++) {
+        Targets t;
+        t.color_count = 1;
+        t.colors[0] = c.a[0];
+        t.views.level[0] = uint8_t(level);
+        t.views.layer[0] = uint16_t(layer);
+        t.views.format[0] = uint16_t(info.view.format);
+        if (whole) {
+            draw_clear(cb, t, clear);
+            continue;
+        }
+        if (!pass_open_on(t)) {
+            draw_end_rendering(cb, 3);
+            pass_begin(cb, t);
+        }
+        VkExtent2D pe = pass_extent();
+        int64_t x0 = std::max(0, r[0]), y0 = std::max(0, r[1]);
+        int64_t x1 = std::min<int64_t>(int64_t(r[0]) + r[3], pe.width), y1 = std::min<int64_t>(int64_t(r[1]) + r[4], pe.height);
+        if (x1 <= x0 || y1 <= y0) continue;
+        VkRect2D rect{{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+        if (clear.mask != 0xF && mask_clear(cb, t, 0, clear.mask, clear.f, rect)) {
+            pass_mark_written(1);
+            continue;
+        }
+        VkClearAttachment a{};
+        a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = 0;
+        std::memcpy(a.clearValue.color.float32, clear.f, 16);
+        VkClearRect cr{rect, 0, 1};
+        p_vkCmdClearAttachments(cb, 1, &a, 1, &cr);
+        pass_mark_written(1);
+    }
+}
+
+NX_HLE("nvnCommandBufferClearTexture", ClearTexture);
+
 }  // namespace nx::nvn

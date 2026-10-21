@@ -132,6 +132,7 @@ void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth
                 draw_end_rendering(cb, 5);
                 replay_copy_to_buffer(cb, c, list);
                 break;
+            case Cmd::ClearTexture: replay_clear_texture(cb, c, list); break;
             default:
                 draw_command(cb, c, list, st);
                 // NX_PIPELINED: after the submit's last dispatch the rest goes into a second command buffer.

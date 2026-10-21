@@ -309,6 +309,74 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
     return wait ? std::unique_lock<std::recursive_mutex>(gpu_lock()) : std::unique_lock<std::recursive_mutex>();
 }
 
+// The description an NVNtexture struct carries. The SDK driver keeps all of a texture's state in its NVNtexture (192
+// bytes the game allocates), so a copy of the struct is the same texture, and games copy them: Breath of the Wild's
+// agl initializes each texture in a stack temporary, registers it in the texture pool, then memcpys the struct into its
+// own object (main+1289ad0) and renders, clears and copies through that copy. Ours are host objects keyed by the
+// struct's address, so every copy was unknown: no render target or clear reached the GPU and the screen stayed black.
+// TextureInitialize writes the texture's description into the struct; adopt_texture makes a struct whose description
+// is not the one known at its address (a copy, or a struct a copy overwrote) that texture there.
+// NX_TEXTURE_STAMPS=0: neither (bisecting).
+constexpr uint64_t kStampMagic = 0x3130504D41545358ull;  // "XSTAMP01"
+struct TextureStamp {
+    uint64_t magic, serial;
+    uint32_t target, format, flags, levels, samples, depth_stencil_mode;
+    uint32_t width, height, depth, stride, block_height_gobs;
+    uint8_t swizzle[4];
+    uint64_t pool, offset, storage_size;
+    uint64_t check;  // over everything before it: a struct that merely starts with the magic is not one
+};
+static_assert(sizeof(TextureStamp) == 96, "no padding (the check hashes the bytes), within NVNtexture's 192");
+std::atomic<uint64_t> g_texture_serial{0};
+
+bool texture_stamps() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_TEXTURE_STAMPS");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
+uint64_t stamp_check(const TextureStamp& s) {
+    uint64_t h = 14695981039346656037ull;
+    const auto* p = reinterpret_cast<const uint8_t*>(&s);
+    for (size_t k = 0; k < sizeof s - sizeof s.check; k++) h = (h ^ p[k]) * 1099511628211ull;
+    return h;
+}
+
+void write_stamp(uint64_t guest, const Texture& t) {
+    TextureStamp s{};
+    s.magic = kStampMagic, s.serial = t.serial;
+    s.target = t.target, s.format = t.format, s.flags = t.flags, s.levels = t.levels, s.samples = t.samples;
+    s.depth_stencil_mode = t.depth_stencil_mode;
+    s.width = t.width, s.height = t.height, s.depth = t.depth, s.stride = t.stride;
+    s.block_height_gobs = t.block_height_gobs;
+    std::memcpy(s.swizzle, t.swizzle, sizeof s.swizzle);
+    s.pool = t.pool, s.offset = t.offset, s.storage_size = t.storage_size;
+    s.check = stamp_check(s);
+    std::memcpy(reinterpret_cast<void*>(guest), &s, sizeof s);
+}
+
+bool read_stamp(uint64_t guest, TextureStamp& s) {
+    if (!guest || !texture_stamps()) return false;
+    std::memcpy(&s, reinterpret_cast<const void*>(guest), sizeof s);
+    return s.magic == kStampMagic && s.check == stamp_check(s);
+}
+
+// NVNboolean nvnTextureCompare(const NVNtexture*, const NVNtexture*): true when both describe the same texture. agl
+// asks it before replacing a texture it holds (true: it finalizes the new one and keeps its own). The trace stub's
+// false made it re-register every texture it set up.
+void TextureCompare(CPU& c) {
+    TextureStamp a, b;
+    bool same = read_stamp(c.x[0], a) && read_stamp(c.x[1], b);
+    if (same) {
+        a.serial = b.serial = 0;
+        a.check = b.check = 0;
+        same = std::memcmp(&a, &b, sizeof a) == 0;
+    }
+    c.x[0] = same ? 1 : 0;
+}
+
 void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBuilder*)
     auto guard = reinit_guard();
     uint64_t guest = c.x[0], builder = c.x[1];
@@ -370,6 +438,8 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
         t.memory = pool_host(*p, t.offset);
         t.gpu = p->gpu + t.offset;
     }
+    t.serial = ++g_texture_serial;
+    if (texture_stamps()) write_stamp(guest, t);
     if (g_trace || trace_textures())
         log("nvn: texture %llx: memory %llx target %u format %#x %ux%ux%u levels %u samples %u flags %x size %llx block height %u "
             "swizzle %u%u%u%u", (unsigned long long)guest, (unsigned long long)t.memory, t.target, t.format, t.width, t.height, t.depth, t.levels,
@@ -461,6 +531,7 @@ void TextureFinalize(CPU& c) {
     auto guard = reinit_guard();
     uint64_t guest = c.x[0];
     if (trace_textures()) log("nvn: texture %llx finalized", (unsigned long long)guest);
+    if (TextureStamp s; read_stamp(guest, s)) st<uint64_t>(guest, 0);  // no longer a texture (its copies still are)
     static const bool old = texture_race_old();
     {
         std::lock_guard lk(objects_lock());
@@ -565,6 +636,7 @@ void release_kept(uint64_t key) {
 // Strided form (+ ptrdiff_t rowStride, ptrdiff_t imageStride). NVNcopyRegion: {int x, y, z, width, height, depth}.
 // The driver would swizzle the texels into the texture's memory; we keep them for the GPU image instead.
 void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
+    adopt_texture(c, c.x[0]);
     auto* t = get<Texture>(c.x[0]);
     uint64_t region = c.x[2], data = c.x[3];
     if (!t || !region || !data) return;
@@ -609,6 +681,7 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
 
 #define NX_TEXTURE_GETTER(fn, field)          \
     void fn(CPU& c) {                         \
+        adopt_texture(c, c.x[0]);             \
         auto* t = get<Texture>(c.x[0]);       \
         c.x[0] = t ? uint64_t(t->field) : 0;  \
     }
@@ -630,6 +703,7 @@ NX_TEXTURE_GETTER(TextureGetDepthStencilMode, depth_stencil_mode)
 // nvnTextureGetSwizzle(const NVNtexture*, NVNtextureSwizzle* r, g, b, a). It was a trace stub, which wrote nothing:
 // the game read whatever was in its four out variables (thousands of calls once the world loads).
 void TextureGetSwizzle(CPU& c) {
+    adopt_texture(c, c.x[0]);
     auto* t = get<Texture>(c.x[0]);
     for (int k = 0; k < 4; k++)
         if (uint64_t out = c.x[1 + k]) st<uint32_t>(out, t ? t->swizzle[k] : uint32_t(2 + k));
@@ -683,6 +757,7 @@ bool same_registration(const DescriptorPool& d, uint32_t id, uint64_t guest, con
 void TexturePoolRegister(CPU& c) {
     // The view may pick levels or layers (a bloom chain samples one mip of its target) and override the swizzle
     // (a font atlas in R8 is registered with alpha = R).
+    adopt_texture(c, c.x[2]);
     ViewInfo v = read_view(c, c.x[3]);
     if (trace_textures()) {
         auto* tt = get<Texture>(c.x[2]);
@@ -748,6 +823,40 @@ void DeviceGetImageHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
 
 }  // namespace
 
+// The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
+// key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
+void adopt_texture(CPU&, uint64_t guest) {
+    TextureStamp s;
+    if (!read_stamp(guest, s)) return;
+    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
+    auto guard = reinit_guard();
+    auto fresh = std::make_unique<Texture>();
+    Texture& t = *fresh;
+    t.serial = s.serial;
+    t.target = s.target, t.format = s.format, t.flags = s.flags, t.levels = s.levels, t.samples = s.samples;
+    t.depth_stencil_mode = s.depth_stencil_mode;
+    t.width = s.width, t.height = s.height, t.depth = s.depth, t.stride = s.stride;
+    t.block_height_gobs = s.block_height_gobs;
+    std::memcpy(t.swizzle, s.swizzle, sizeof t.swizzle);
+    t.pool = s.pool, t.offset = s.offset, t.storage_size = s.storage_size;
+    if (auto* p = get<MemoryPool>(t.pool)) {
+        t.memory = pool_host(*p, t.offset);
+        t.gpu = p->gpu + t.offset;
+    }
+    static std::atomic<uint64_t> adopted{0};
+    uint64_t n = ++adopted;
+    if (n <= 10 || (n & (n - 1)) == 0 || trace_textures())
+        log("nvn: texture %llx is a copy of initialization #%llu (%ux%u format %#x, memory %llx): adopted (%llu so far)",
+            (unsigned long long)guest, (unsigned long long)s.serial, t.width, t.height, t.format,
+            (unsigned long long)t.memory, (unsigned long long)n);
+    std::lock_guard lk(objects_lock());
+    note_replaced(guest);
+    keep_for_slots(guest);
+    hand_image_to_snapshots(guest);
+    list_pool_texture(t.pool, guest);
+    publish_locked(guest, std::move(fresh));
+}
+
 NX_HLE("nvnMemoryPoolInitialize", MemoryPoolInitialize);
 NX_HLE("nvnMemoryPoolFinalize", MemoryPoolFinalize);
 NX_HLE("nvnMemoryPoolMap", MemoryPoolMap);
@@ -771,6 +880,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
 NX_HLE("nvnBufferInvalidateMappedRange", BufferInvalidateMappedRange);
 NX_HLE("nvnTextureInitialize", TextureInitialize);
 NX_HLE("nvnTextureFinalize", TextureFinalize);
+NX_HLE("nvnTextureCompare", TextureCompare);
 NX_HLE("nvnTextureGetWidth", TextureGetWidth);
 NX_HLE("nvnTextureGetHeight", TextureGetHeight);
 NX_HLE("nvnTextureGetDepth", TextureGetDepth);

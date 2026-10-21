@@ -214,6 +214,7 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
 void draw_end_rendering(VkCommandBuffer cb, int reason = 0);  // before transfers (clears, copies, present) and at the end
 // ClearColor / ClearDepthStencil inside the render pass of the current targets (nvn_draw.cpp).
 void draw_clear(VkCommandBuffer cb, const Targets& targets, const Cmd& c);  // nvn_clears.cpp
+void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list);  // nvnCommandBufferClearTexture
 // nvn_clears.cpp: clears pending as the next pass's loadOps; nvn_draw.cpp: the open pass, for it.
 bool clears_pending_image(const GpuImage* img);
 bool clears_pending_other(const Targets& t);

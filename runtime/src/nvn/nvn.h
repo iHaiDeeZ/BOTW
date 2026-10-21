@@ -197,6 +197,7 @@ void vcache_dirty(const void* p, uint64_t size);
 struct GpuImage;  // the Vulkan side of a texture (nvn_vk.cpp)
 
 struct Texture : Object {
+    uint64_t serial = 0;  // the initialization its NVNtexture struct describes (adopt_texture, nvn_objects.cpp)
     uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
     uint32_t width = 0, height = 0, depth = 0, stride = 0;
     uint64_t pool = 0, offset = 0, storage_size = 0;
@@ -232,6 +233,11 @@ struct Texture : Object {
     std::atomic<uint64_t> last_sampled{0};  // host ns of the last draw that sampled it (kept textures, nvn_objects.cpp)
     ~Texture();  // nvn_vk.cpp: the image is freed once the GPU is done with it
 };
+
+// nvn_objects.cpp: a guest NVNtexture* the game hands over. A struct holding a texture's description that is not
+// the one known at its address (the game copied an initialized struct there) becomes that texture. Game threads only,
+// before the pointer is recorded or used; free when the struct is the one initialized there.
+void adopt_texture(CPU& c, uint64_t guest);
 
 struct Window : Object {
     std::vector<uint64_t> textures;  // guest NVNtexture*
@@ -324,6 +330,7 @@ struct Cmd {
         SetStencilRef, SetStencilMask, SetStencilValueMask, SetPolygonOffsetClamp, SetDepthBounds, SetDepthClamp,
         BindDeferred,  // mask: 0 textures, 1 images, 2 uniform buffers, 3 storage buffers; a[0] the guest array
         BindMultisampleState,  // n: alpha to coverage enabled (nvn_state.cpp)
+        ClearTexture,          // a[0] the texture; blob: view, region and colour (nvn_clears.cpp)
     } op;
     uint32_t n = 0, mask = 0;
     uint64_t a[9] = {};  // textures (render targets: colors then depth), handles, GPU addresses, sizes, ...

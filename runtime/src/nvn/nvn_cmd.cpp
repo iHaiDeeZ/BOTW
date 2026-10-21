@@ -316,6 +316,7 @@ void SetRenderTargets(CPU& c) {
     cmd.n = n;
     for (uint32_t k = 0; k < n && c.x[2]; k++) cmd.a[k] = ld<uint64_t>(c.x[2] + 8 * k);
     cmd.a[8] = c.x[4];  // depth/stencil
+    for (uint32_t k = 0; k < 9; k++) adopt_texture(c, cmd.a[k]);  // copies of initialized structs (agl's)
     // The views pick the level and layer rendered to (a bloom chain renders each mip of one texture in turn).
     TargetViews tv;
     for (uint32_t k = 0; k < n && c.x[3]; k++) {

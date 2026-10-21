@@ -116,6 +116,7 @@ Layout compute(CPU& c, uint64_t builder) {
 // in the layout compute() sizes (each layer holds every level, block-aligned). Tears of the Kingdom streams texture
 // mips (TexToGo) into pool memory at these offsets; the SDK driver cannot answer (its device is never initialized).
 void GetViewOffset(CPU& c) {
+    adopt_texture(c, c.x[0]);
     Texture* t = c.x[0] ? get<Texture>(c.x[0]) : nullptr;
     ViewInfo v = read_view(c, c.x[1]);
     if (!t || (!v.base_level && !v.min_layer)) {
