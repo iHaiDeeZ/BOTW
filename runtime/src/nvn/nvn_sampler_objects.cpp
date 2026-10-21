@@ -6,8 +6,13 @@
 //   GetMinMagFilter(s, &min, &mag)   GetWrapMode(s, &s, &t, &r)   GetLodClamp(s, &min, &max)   GetLodBias(s) -> float
 //   GetCompare(s, &mode, &func)      GetBorderColor(s, float[4])  GetMaxAnisotropy(s) -> float
 //   GetReductionFilter(s) -> enum
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #include "nvn.h"
 
@@ -46,16 +51,31 @@ void log_sampler(const SamplerInfo& s) {
             double(s.lod_bias), s.compare_mode, s.compare_func, double(s.max_anisotropy), s.reduction);
 }
 
-// The sampler's state in its NVNsampler struct (96 bytes the game allocates), as the SDK driver keeps it: a copy of
-// the struct is the same sampler, and agl copies them as it copies textures (nvn_objects.cpp, TextureStamp). A
-// pointer with no object of ours answers from the struct. NX_TEXTURE_STAMPS=0: off.
-constexpr uint64_t kSamplerMagic = 0x3130504D41545353ull;  // "SSTAMP01"
+// The sampler's state through its NVNsampler struct, as the SDK driver keeps it there: a copy of the struct is the same
+// sampler, and agl copies them as it copies textures (nvn_objects.cpp, TextureStamp). A pointer with no object of ours
+// answers from the struct. The struct holds only an index into the table of distinct states (a few hundred): NVNsampler
+// is 96 bytes in Breath of the Wild's NVN 53 but 64 in Tears of the Kingdom's driver (its nvnSamplerInitialize clears
+// 0x40 bytes), and a stamp carrying the whole state (80 bytes) overwrote the 16 bytes after it in the game's own sampler
+// object: Tears of the Kingdom stayed on white frames from boot. NX_TEXTURE_STAMPS=0: off.
+constexpr uint64_t kSamplerMagic = 0x3230504D41545353ull;  // "SSTAMP02"
 struct SamplerStamp {
     uint64_t magic;
-    SamplerInfo info;
+    uint32_t index, zero;  // index into g_states
     uint64_t check;
 };
-static_assert(sizeof(SamplerStamp) == 80, "no padding (the check hashes the bytes), within NVNsampler's 96");
+static_assert(sizeof(SamplerStamp) == 24, "no padding (the check hashes the bytes), within NVNsampler's 64 or 96");
+
+std::mutex g_states_lock;
+std::vector<SamplerInfo> g_states;              // every distinct state stamped, by index
+std::map<std::string, uint32_t> g_state_index;  // a state's bytes -> its index
+
+uint32_t state_index(const SamplerInfo& info) {
+    std::string key(reinterpret_cast<const char*>(&info), sizeof info);
+    std::lock_guard lk(g_states_lock);
+    auto [it, fresh] = g_state_index.try_emplace(std::move(key), uint32_t(g_states.size()));
+    if (fresh) g_states.push_back(info);
+    return it->second;
+}
 
 bool sampler_stamps() {
     static const bool on = [] {
@@ -75,15 +95,24 @@ uint64_t sampler_check(const SamplerStamp& s) {
 bool read_sampler_stamp(uint64_t guest, SamplerStamp& s) {
     if (!guest || !sampler_stamps()) return false;
     std::memcpy(&s, reinterpret_cast<const void*>(guest), sizeof s);
-    return s.magic == kSamplerMagic && s.check == sampler_check(s);
+    return s.magic == kSamplerMagic && !s.zero && s.check == sampler_check(s);
 }
 
-// The sampler at `guest`: our object, else the state its struct carries (a copy). False: neither.
+// The sampler at `guest`: our object, else the state its struct names (a copy). False: neither.
 bool sampler_info(uint64_t guest, SamplerInfo& out) {
     if (auto* s = get<Sampler>(guest)) return out = s->info, true;
     SamplerStamp st;
     if (!read_sampler_stamp(guest, st)) return false;
-    out = st.info;
+    {
+        std::lock_guard lk(g_states_lock);
+        if (st.index >= g_states.size()) return false;
+        out = g_states[st.index];
+    }
+    static std::atomic<uint64_t> copies{0};
+    uint64_t n = ++copies;
+    if (n <= 10 || (n & (n - 1)) == 0)
+        log("nvn: sampler %llx is a copy (state #%u): answered from its struct (%llu so far)", (unsigned long long)guest,
+            st.index, (unsigned long long)n);
     return true;
 }
 
@@ -93,7 +122,7 @@ void SamplerInitialize(CPU& c) {  // NVNboolean (NVNsampler*, const NVNsamplerBu
     make<Sampler>(guest).info = info;
     if (sampler_stamps()) {
         SamplerStamp s{};
-        s.magic = kSamplerMagic, s.info = info;
+        s.magic = kSamplerMagic, s.index = state_index(info);
         s.check = sampler_check(s);
         std::memcpy(reinterpret_cast<void*>(guest), &s, sizeof s);
     }

@@ -310,7 +310,9 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
 }
 
 // The description an NVNtexture struct carries. The SDK driver keeps all of a texture's state in its NVNtexture (192
-// bytes the game allocates), so a copy of the struct is the same texture, and games copy them: Breath of the Wild's
+// bytes the game allocates in NVN 53, 128 in Tears of the Kingdom's driver: its nvnTextureInitialize clears 0x80 bytes,
+// and the game's texture objects are 0x88 apart; the stamp must stay within the smallest), so a copy of the struct is
+// the same texture, and games copy them: Breath of the Wild's
 // agl initializes each texture in a stack temporary, registers it in the texture pool, then memcpys the struct into its
 // own object (main+1289ad0) and renders, clears and copies through that copy. Ours are host objects keyed by the
 // struct's address, so every copy was unknown: no render target or clear reached the GPU and the screen stayed black.
@@ -326,7 +328,7 @@ struct TextureStamp {
     uint64_t pool, offset, storage_size;
     uint64_t check;  // over everything before it: a struct that merely starts with the magic is not one
 };
-static_assert(sizeof(TextureStamp) == 96, "no padding (the check hashes the bytes), within NVNtexture's 192");
+static_assert(sizeof(TextureStamp) == 96, "no padding (the check hashes the bytes), within NVNtexture's 128 or 192");
 std::atomic<uint64_t> g_texture_serial{0};
 
 bool texture_stamps() {
