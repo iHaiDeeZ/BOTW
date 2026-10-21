@@ -1902,7 +1902,7 @@ index 0000000..dc27ec9
 +
 +}  // namespace nx::plat
 diff --git a/runtime/src/nvn/nvn.h b/runtime/src/nvn/nvn.h
-index ee52901..3eb5024 100644
+index ee52901..8b68809 100644
 --- a/runtime/src/nvn/nvn.h
 +++ b/runtime/src/nvn/nvn.h
 @@ -102,7 +102,11 @@ T* get(uint64_t guest) {
@@ -1935,7 +1935,7 @@ index ee52901..3eb5024 100644
      uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
      uint32_t width = 0, height = 0, depth = 0, stride = 0;
      uint64_t pool = 0, offset = 0, storage_size = 0;
-@@ -226,6 +234,11 @@ struct Texture : Object {
+@@ -226,6 +234,14 @@ struct Texture : Object {
      ~Texture();  // nvn_vk.cpp: the image is freed once the GPU is done with it
  };
  
@@ -1943,11 +1943,14 @@ index ee52901..3eb5024 100644
 +// the one known at its address (the game copied an initialized struct there) becomes that texture. Game threads only,
 +// before the pointer is recorded or used; free when the struct is the one initialized there.
 +void adopt_texture(CPU& c, uint64_t guest);
++// The key that names `guest`'s current texture for the rest of a recording: for a struct adopted as a copy, a host key
++// of that incarnation (the struct may hold another texture by the time the command is replayed); else `guest`.
++uint64_t stable_texture_key(uint64_t guest);
 +
  struct Window : Object {
      std::vector<uint64_t> textures;  // guest NVNtexture*
      int active = 0, next = 0, interval = 1;
-@@ -282,7 +295,8 @@ uint32_t format_aspect(uint32_t format);
+@@ -282,7 +298,8 @@ uint32_t format_aspect(uint32_t format);
  void set_astc_native(bool native);
  bool astc_native();
  bool is_astc(uint32_t format);
@@ -1957,7 +1960,7 @@ index ee52901..3eb5024 100644
  // Bytes per texel of a Vulkan format as buffer-image copies count them (nvn_format.cpp); 0 for block-compressed and
  // combined depth/stencil formats, whose NVN size (format_block) is the host's. Differs from the NVN size where a
  // format is stored wider than the game's: 0x3f R11G11B10F is 4 bytes in NVN, RGBA16F (8) here.
-@@ -311,10 +325,12 @@ struct Cmd {
+@@ -311,10 +328,12 @@ struct Cmd {
          BindVertexAttribs, BindVertexStreams, BindBlendState, BindColorState, BindChannelMaskState,
          BindDepthStencilState, BindPolygonState, SetBlendColor, UpdateUniformBuffer, SetTexturePool, SetSamplerPool,
          DrawArrays, DrawElements, ReportCounter, SetRasterizerDiscard, SetRenderEnable, CopyTextureToTexture,
@@ -1970,7 +1973,7 @@ index ee52901..3eb5024 100644
      } op;
      uint32_t n = 0, mask = 0;
      uint64_t a[9] = {};  // textures (render targets: colors then depth), handles, GPU addresses, sizes, ...
-@@ -367,6 +383,7 @@ struct PolygonInfo {
+@@ -367,6 +386,7 @@ struct PolygonInfo {
  // nvn_raster.cpp: an EQUAL colour pass after a depth pre-pass (tested, not written), drawn with a small depth bias
  // toward the camera (DEBUG.md #60). NX_EQUAL_SLACK=<units> (default 4, 0: off); the slope term is 1 per unit of it.
  bool equal_slack_pass(const DepthStencilInfo& d);
@@ -2129,7 +2132,7 @@ index 7f11ab5..10033ea 100644
          p_vkGetPhysicalDeviceMemoryProperties(vk_physical(), &mp);
          for (uint32_t k = 0; k < mp.memoryTypeCount; k++)
 diff --git a/runtime/src/nvn/nvn_clears.cpp b/runtime/src/nvn/nvn_clears.cpp
-index f7fb931..aad3497 100644
+index f7fb931..12afd04 100644
 --- a/runtime/src/nvn/nvn_clears.cpp
 +++ b/runtime/src/nvn/nvn_clears.cpp
 @@ -152,6 +152,7 @@ bool clears_transfer(VkCommandBuffer cb, const Targets& t) {
@@ -2202,7 +2205,7 @@ index f7fb931..aad3497 100644
 +    for (int k = 0; k < 6; k++) info.region[k] = c.x[3] ? ld<int32_t>(c.x[3] + 4ull * k) : 0;
 +    if (c.x[4]) std::memcpy(info.rgba, reinterpret_cast<const void*>(c.x[4]), sizeof info.rgba);
 +    Cmd cmd{Cmd::ClearTexture};
-+    cmd.a[0] = c.x[1];
++    cmd.a[0] = stable_texture_key(c.x[1]);  // the incarnation as recorded (agl clears through holder structs)
 +    cmd.mask = uint32_t(c.x[5]);
 +    record(c.x[0], cmd, &info, sizeof info);
 +}
@@ -2275,7 +2278,7 @@ index f7fb931..aad3497 100644
 +
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_cmd.cpp b/runtime/src/nvn/nvn_cmd.cpp
-index 52ef32d..19c3e7f 100644
+index 52ef32d..863d533 100644
 --- a/runtime/src/nvn/nvn_cmd.cpp
 +++ b/runtime/src/nvn/nvn_cmd.cpp
 @@ -14,6 +14,9 @@
@@ -2315,15 +2318,16 @@ index 52ef32d..19c3e7f 100644
          start = cb->command_memory + cb->command_base;
          pool = cb->command_pool;
          cb->command_base = used(cb->command_size, cb->command_base, n, kCommandBytes);
-@@ -307,6 +316,7 @@ void SetRenderTargets(CPU& c) {
+@@ -307,6 +316,8 @@ void SetRenderTargets(CPU& c) {
      cmd.n = n;
      for (uint32_t k = 0; k < n && c.x[2]; k++) cmd.a[k] = ld<uint64_t>(c.x[2] + 8 * k);
      cmd.a[8] = c.x[4];  // depth/stencil
 +    for (uint32_t k = 0; k < 9; k++) adopt_texture(c, cmd.a[k]);  // copies of initialized structs (agl's)
++    for (uint32_t k = 0; k < 9; k++) cmd.a[k] = stable_texture_key(cmd.a[k]);  // the incarnation as recorded
      // The views pick the level and layer rendered to (a bloom chain renders each mip of one texture in turn).
      TargetViews tv;
      for (uint32_t k = 0; k < n && c.x[3]; k++) {
-@@ -331,6 +341,15 @@ void ClearDepthStencil(CPU& c) {
+@@ -331,6 +342,15 @@ void ClearDepthStencil(CPU& c) {
      cmd.f[0] = c.v[0].f32[0];
      cmd.mask = (c.x[1] & 1) | ((uint32_t(c.x[3]) & 0xFF) << 8);  // depth mask, stencil mask
      cmd.i[0] = int32_t(c.x[2]);
@@ -2340,7 +2344,7 @@ index 52ef32d..19c3e7f 100644
  }
  
 diff --git a/runtime/src/nvn/nvn_copy.cpp b/runtime/src/nvn/nvn_copy.cpp
-index ea6c20c..06b4cd7 100644
+index ea6c20c..17ed618 100644
 --- a/runtime/src/nvn/nvn_copy.cpp
 +++ b/runtime/src/nvn/nvn_copy.cpp
 @@ -10,7 +10,9 @@
@@ -2364,15 +2368,18 @@ index ea6c20c..06b4cd7 100644
  namespace {
  
  struct CopyInfo {
-@@ -35,6 +41,8 @@ void CopyTextureToTexture(CPU& c) {
+@@ -35,8 +41,10 @@ void CopyTextureToTexture(CPU& c) {
          info.dst[k] = c.x[6] ? ld<int32_t>(c.x[6] + 4ull * k) : 0;
      }
      info.flags = uint32_t(c.x[7]);
 +    adopt_texture(c, c.x[1]);
 +    adopt_texture(c, c.x[4]);
      Cmd cmd{Cmd::CopyTextureToTexture};
-     cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
+-    cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
++    cmd.a[0] = stable_texture_key(c.x[1]), cmd.a[1] = stable_texture_key(c.x[4]);  // the incarnations as recorded
      record(c.x[0], cmd, &info, sizeof info);
+ }
+ 
 @@ -73,6 +81,14 @@ void replay_copy(VkCommandBuffer cb, const Cmd& c, const CmdList& list) {
      std::memcpy(&info, list.blobs[c.blob].data(), sizeof info);
      GpuImage* src = ensure_contents(cb, c.a[0]);
@@ -2417,7 +2424,7 @@ index ea6c20c..06b4cd7 100644
 +    info.flags = uint32_t(c.x[5]);
 +    adopt_texture(c, c.x[1]);
 +    Cmd cmd{Cmd::CopyTextureToBuffer};
-+    cmd.a[0] = c.x[1], cmd.a[1] = c.x[4];
++    cmd.a[0] = stable_texture_key(c.x[1]), cmd.a[1] = c.x[4];  // the incarnation as recorded
 +    record(c.x[0], cmd, &info, sizeof info);
 +}
 +
@@ -2577,7 +2584,7 @@ index ea6c20c..06b4cd7 100644
  
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_debug.cpp b/runtime/src/nvn/nvn_debug.cpp
-index 4f1910e..b7dc51e 100644
+index 4f1910e..5cf10a2 100644
 --- a/runtime/src/nvn/nvn_debug.cpp
 +++ b/runtime/src/nvn/nvn_debug.cpp
 @@ -6,7 +6,10 @@
@@ -2623,7 +2630,7 @@ index 4f1910e..b7dc51e 100644
  
  }  // namespace
  
-@@ -476,6 +484,206 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
+@@ -476,6 +484,216 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
  
  bool debug_snapshots_pending() { return !g_snaps.empty(); }
  
@@ -2748,8 +2755,18 @@ index 4f1910e..b7dc51e 100644
 +    }
 +}
 +
-+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs) {
++void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs,
++               uint32_t level, uint32_t layer) {
 +    if (!g_diag_on || g_diag_seq >= kDiagMax || !img.image || !(img.aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return;
++    // The level and layer the pass rendered to, not always level 0 layer 0: Breath of the Wild renders its lighting
++    // into the two layers of one RGBA16F array, each bound as its own target. The name gets L<layer> (an array) and
++    // m<level> (not level 0) after the slot.
++    level = std::min(level, img.levels ? img.levels - 1 : 0u);
++    layer = std::min(layer, img.layers ? img.layers - 1 : 0u);
++    const uint32_t lw = std::max(1u, img.width >> level), lh = std::max(1u, img.height >> level);
++    char sub[24] = "";
++    if (img.layers > 1) std::snprintf(sub, sizeof sub, "L%u", layer);
++    if (level) std::snprintf(sub + std::strlen(sub), sizeof sub - std::strlen(sub), "m%u", level);
 +    // A pass of one or two draws on an image pictured that many times already is left out: Breath of the Wild draws
 +    // its decals one per 8-target pass (62 in the shrine), and the 400 pictures ran out before the lighting, after a
 +    // 20 s capture. NX_DIAG_PER_IMAGE=<n> (default 4, 0: every pass).
@@ -2761,10 +2778,10 @@ index 4f1910e..b7dc51e 100644
 +    if (per_image > 0 && draws <= 2 && pictured >= per_image) return;
 +    pictured++;
 +    Snap snap;
-+    snap.w = std::min(img.width, 480u);
-+    snap.h = std::max(1u, uint32_t(uint64_t(img.height) * snap.w / std::max(1u, img.width)));
++    snap.w = std::min(lw, 480u);
++    snap.h = std::max(1u, uint32_t(uint64_t(lh) * snap.w / lw));
 +    char name[160];
-+    std::snprintf(name, sizeof name, "%03d_c%u_%ux%u_f%d_d%u_%s", g_diag_seq, slot, img.width, img.height,
++    std::snprintf(name, sizeof name, "%03d_c%u%s_%ux%u_f%d_d%u_%s", g_diag_seq, slot, sub, img.width, img.height,
 +                  int(img.format), draws, fs.empty() ? "-" : fs.c_str());
 +    snap.name = name;
 +    if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
@@ -2774,13 +2791,13 @@ index 4f1910e..b7dc51e 100644
 +    static const bool floats = std::getenv("NX_DIAG_FLOAT") != nullptr;
 +    if (floats && (img.format == VK_FORMAT_R16G16B16A16_SFLOAT || img.format == VK_FORMAT_R32_SFLOAT ||
 +                   img.format == VK_FORMAT_R16G16_SFLOAT || img.format == VK_FORMAT_R8G8B8A8_UNORM)) {
-+        snap.w = img.width, snap.h = img.height, snap.float_format = img.format;
++        snap.w = lw, snap.h = lh, snap.float_format = img.format;
 +        uint32_t bytes = img.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
 +        if (!make_scratch(snap.s, snap.w, snap.h, bytes)) return snap.s.destroy(vk_device());
 +        VkImageLayout back = img.layout;
 +        transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 +        VkBufferImageCopy r{};
-+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
++        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
 +        r.imageExtent = {snap.w, snap.h, 1};
 +        p_vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.buffer, 1, &r);
 +        if (back != VK_IMAGE_LAYOUT_UNDEFINED) transition(cb, img, back);
@@ -2798,9 +2815,9 @@ index 4f1910e..b7dc51e 100644
 +    dst.format = VK_FORMAT_R8G8B8A8_UNORM;
 +    transition(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 +    VkImageBlit blit{};
-+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-+    blit.srcOffsets[1] = {int32_t(img.width), int32_t(img.height), 1};
-+    blit.dstSubresource = blit.srcSubresource;
++    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
++    blit.srcOffsets[1] = {int32_t(lw), int32_t(lh), 1};
++    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 +    blit.dstOffsets[1] = {int32_t(snap.w), int32_t(snap.h), 1};
 +    p_vkCmdBlitImage(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.image,
 +                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
@@ -2830,7 +2847,7 @@ index 4f1910e..b7dc51e 100644
  void debug_snapshots_write() {  // after the submit's fence
      for (Snap& snap : g_snaps) {
          void* p = nullptr;
-@@ -489,6 +697,103 @@ void debug_snapshots_write() {  // after the submit's fence
+@@ -489,6 +707,103 @@ void debug_snapshots_write() {  // after the submit's fence
                  std::fclose(f);
              }
              p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
@@ -3083,7 +3100,7 @@ index 564fd74..aabbd23 100644
  
  }  // namespace
 diff --git a/runtime/src/nvn/nvn_draw.cpp b/runtime/src/nvn/nvn_draw.cpp
-index ff8d46a..bb90d0b 100644
+index ff8d46a..d2705d6 100644
 --- a/runtime/src/nvn/nvn_draw.cpp
 +++ b/runtime/src/nvn/nvn_draw.cpp
 @@ -31,6 +31,7 @@ const uint8_t* guest_bytes(uint64_t gpu) {
@@ -3283,14 +3300,15 @@ index ff8d46a..bb90d0b 100644
      render_pass_log();
      written_log();
      sampled_ready_log();
-@@ -541,10 +629,17 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
+@@ -541,10 +629,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
          p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
          g_vertex_pending |= narrow_pass_barrier();
      }
 +    diag_textures(cb);  // the last storyboard frame's sampled textures (once)
 +    if (diag_active()) {  // the storyboard: what this pass left in its colour targets
 +        for (uint32_t k = 0; k < g_pass.color_count && k < 8; k++)
-+            if (g_pass_images[k]) diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs);
++            if (g_pass_images[k])
++                diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs, g_pass.views.level[k], g_pass.views.layer[k]);
 +        if (g_pass.depth && g_pass_images[8]) diag_pass_depth(cb, *g_pass_images[8], g_pass.depth, g_diag_draws, g_diag_fs);
 +        g_diag_draws = 0, g_diag_fs.clear();
 +    }
@@ -3302,7 +3320,7 @@ index ff8d46a..bb90d0b 100644
      gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
  }
  void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)
-@@ -581,4 +676,8 @@ uint64_t draw_take_dump_request() {
+@@ -581,4 +677,8 @@ uint64_t draw_take_dump_request() {
      return r;
  }
  
@@ -3441,7 +3459,7 @@ index 9dded7d..e2ce469 100644
  
  // NX_TRACE_SKIN: skinned draws' inputs, vertex uniform blocks and the bone rows they select.
 diff --git a/runtime/src/nvn/nvn_draw_trace.cpp b/runtime/src/nvn/nvn_draw_trace.cpp
-index e75c126..df3b7b8 100644
+index e75c126..95b576d 100644
 --- a/runtime/src/nvn/nvn_draw_trace.cpp
 +++ b/runtime/src/nvn/nvn_draw_trace.cpp
 @@ -51,6 +51,18 @@ void trace_cube_draw(const Targets& t, const ShaderInfo* vs, const ShaderInfo* f
@@ -3498,7 +3516,7 @@ index e75c126..df3b7b8 100644
  namespace {
  std::map<uint64_t, std::string> g_nan_writers;  // storage address -> the last compute shader bound to it
  bool trace_nan_on() {
-@@ -292,6 +332,54 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -292,6 +332,61 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
              fs ? fs->hash.c_str() : "-", indexed ? "indexed" : "arrays", count, instances);
      trace_cube_draw(t, vs, fs, tex_bindings, handles);
      frame_sig_draw(t, indexed, count, instances, fs, tex_bindings, handles);
@@ -3512,12 +3530,16 @@ index e75c126..df3b7b8 100644
 +            GpuImage* img = texture ? image_of(texture) : nullptr;
 +            char b[200];
 +            Texture* tx = texture ? get<Texture>(texture) : nullptr;
-+            std::snprintf(b, sizeof b, " t%zu=%llx@%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g)", k,
++            // i<image>: the Vulkan image's handle (low 32 bits), to see which textures and targets are one image;
++            // v<first>+<count>: the layers the sampler's view selects (0 count: all).
++            std::snprintf(b, sizeof b, " t%zu=%llx@%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g i%llx v%u+%u)", k,
 +                          (unsigned long long)texture, (unsigned long long)(tx ? tx->memory : 0),
 +                          img ? img->width : 0, img ? img->height : 0,
 +                          img ? int(img->format) : 0, img ? img->levels : 0, img ? img->layers : 0,
 +                          img && img->rendered ? " rt" : "", img && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? " depth" : "",
-+                          si.compare_mode, double(si.lod_min), double(si.lod_max));
++                          si.compare_mode, double(si.lod_min), double(si.lod_max),
++                          img ? (unsigned long long)(reinterpret_cast<uintptr_t>(img->image) & 0xffffffffu) : 0ull,
++                          vw.min_layer, vw.layers);
 +            line += b;
 +            diag_want_texture(texture);
 +        }
@@ -3525,10 +3547,11 @@ index e75c126..df3b7b8 100644
 +            auto shape = [](uint64_t texture) {
 +                GpuImage* img = texture ? image_of(texture) : nullptr;
 +                Texture* tx = texture ? get<Texture>(texture) : nullptr;
-+                char s[128];
-+                std::snprintf(s, sizeof s, "%llx@%llx(%ux%u vk%d)", (unsigned long long)texture,
++                char s[160];
++                std::snprintf(s, sizeof s, "%llx@%llx(%ux%u vk%d L%u i%llx)", (unsigned long long)texture,
 +                              (unsigned long long)(tx ? tx->memory : 0), img ? img->width : 0,
-+                              img ? img->height : 0, img ? int(img->format) : 0);
++                              img ? img->height : 0, img ? int(img->format) : 0, img ? img->layers : 0,
++                              img ? (unsigned long long)(reinterpret_cast<uintptr_t>(img->image) & 0xffffffffu) : 0ull);
 +                return std::string(s);
 +            };
 +            const DepthStencilInfo& d = g_state.depth;
@@ -3537,7 +3560,9 @@ index e75c126..df3b7b8 100644
 +            line += b;
 +            for (uint32_t k = 0; k < t.color_count && k < 8; k++)
 +                if (t.colors[k])
-+                    line += " c" + std::to_string(k) + "=" + shape(t.colors[k]) + "m" + std::to_string(g_state.mask.mask[k]);
++                    line += " c" + std::to_string(k) + "=" + shape(t.colors[k]) + "m" + std::to_string(g_state.mask.mask[k]) +
++                            "/L" + std::to_string(t.views.layer[k]) +
++                            (t.views.level[k] ? "/l" + std::to_string(t.views.level[k]) : std::string());
 +            if (t.depth) line += " d=" + shape(t.depth) + " L" + std::to_string(t.views.layer[8]);
 +            std::snprintf(b, sizeof b, " z test %u write %u func %u range %g..%g clamp %u offset %x cull %u vp %dx%d",
 +                          d.depth_test, d.depth_write, d.depth_func, double(g_state.depth_near),
@@ -3553,7 +3578,7 @@ index e75c126..df3b7b8 100644
      // NX_TRACE_DRAWS=<first draw>: logs 80 draws from there.
      static const char* trace_env = std::getenv("NX_TRACE_DRAWS");
      static const uint64_t trace_from = trace_env ? std::strtoull(trace_env, nullptr, 10) : 0;
-@@ -358,6 +446,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -358,6 +453,10 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
              if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                  log("  vs c3 @%llx: %g %g %g %g | %g %g %g %g", (unsigned long long)u.address, f[0], f[1], f[2], f[3], f[4],
                      f[5], f[6], f[7]);
@@ -3564,7 +3589,7 @@ index e75c126..df3b7b8 100644
          if (const Range& u = g_state.uniforms[1][0]; u.address)
              if (auto* f = reinterpret_cast<const float*>(guest_bytes(u.address)))
                  for (uint64_t k = 0; k < std::min<uint64_t>(u.size / 16, 8); k++)
-@@ -384,6 +476,25 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -384,6 +483,25 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                          (unsigned long long)k, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11],
                          w[12], w[13], w[14], w[15]);
                  }
@@ -3590,7 +3615,7 @@ index e75c126..df3b7b8 100644
          for (int k = 0; k < 2; k++)
              if (const Range& r = g_state.storage[0][k]; r.address) {
                  auto* f = reinterpret_cast<const float*>(guest_bytes(r.address));
-@@ -391,6 +502,38 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
+@@ -391,6 +509,38 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
                      (unsigned long long)r.size, f ? f[0] : -1, f ? f[1] : -1, f ? f[2] : -1, f ? f[3] : -1,
                      f ? f[4] : -1, f ? f[5] : -1, f ? f[6] : -1, f ? f[7] : -1);
              }
@@ -4079,7 +4104,7 @@ index 45e9b2a..47b2530 100644
  
  void janitor_wait(const std::atomic<bool>& done) {
 diff --git a/runtime/src/nvn/nvn_objects.cpp b/runtime/src/nvn/nvn_objects.cpp
-index a2a7dd0..6e5a863 100644
+index a2a7dd0..1e8d801 100644
 --- a/runtime/src/nvn/nvn_objects.cpp
 +++ b/runtime/src/nvn/nvn_objects.cpp
 @@ -83,12 +83,13 @@ ViewInfo read_view(CPU& c, uint64_t view) {
@@ -4478,19 +4503,33 @@ index a2a7dd0..6e5a863 100644
          if (old && old != c.x[2]) release_kept(old);
          // A view setting only a base level, first layer or format counts too (it was dropped: level 0 sampled).
          if (v.base_level || v.levels || v.min_layer || v.layers || v.swizzle || v.format)
-@@ -648,6 +823,40 @@ void DeviceGetImageHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
+@@ -646,8 +821,97 @@ void DeviceGetTextureHandle(CPU& c) { c.x[0] = (c.x[1] & 0xFFFFF) | ((c.x[2] & 0
+ void DeviceGetTexelFetchHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
+ void DeviceGetImageHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
  
- }  // namespace
- 
-+// The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
-+// key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
-+void adopt_texture(CPU&, uint64_t guest) {
-+    TextureStamp s;
-+    if (!read_stamp(guest, s)) return;
-+    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
-+    auto guard = reinit_guard();
-+    auto fresh = std::make_unique<Texture>();
-+    Texture& t = *fresh;
++// ---- adopted incarnations under host keys --------------------------------------------------------------------
++// agl renders through holder structs it copies one texture after another into: in one frame Breath of the Wild's
++// 509c0b14e8 held ~10 textures (quarter-res R8 blur targets, the shadow/transmittance target, ...). A replay looks
++// textures up by address at one mark per submit (nvn_incarnation.cpp), so every pass through a holder rendered into
++// its last incarnation of the recording: the blur and mask passes overwrote the shadow/transmittance target the
++// full-res lighting multiplies by, and the shrine's lit surfaces came out black. NVN takes a render target's state when
++// the command is recorded; here each adopted incarnation is also published under a host key nothing re-initializes,
++// and SetRenderTargets records that key (stable_texture_key). NX_ADOPT_KEYS=0: the address, as before.
++constexpr uint64_t kAdoptedTexture = 0xD000000000000000ull;
++constexpr size_t kAdoptedKeep = 8192;  // ~250 frames of BotW's ~32 adoptions per frame; a replay lags a few frames
++uint64_t g_next_adopted = 0;
++std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> g_adopted_now;  // holder -> (serial, host key)
++std::deque<std::pair<uint64_t, uint64_t>> g_adopted_order;                   // (host key, holder), oldest first
++
++bool adopt_keys() {
++    static const bool on = [] {
++        const char* e = std::getenv("NX_ADOPT_KEYS");
++        return !(e && e[0] == '0');
++    }();
++    return on;
++}
++
++void texture_from_stamp(Texture& t, const TextureStamp& s) {
 +    t.serial = s.serial;
 +    t.target = s.target, t.format = s.format, t.flags = s.flags, t.levels = s.levels, t.samples = s.samples;
 +    t.depth_stencil_mode = s.depth_stencil_mode;
@@ -4502,6 +4541,48 @@ index a2a7dd0..6e5a863 100644
 +        t.memory = pool_host(*p, t.offset);
 +        t.gpu = p->gpu + t.offset;
 +    }
++}
++
++// Under objects_lock: `guest`'s new incarnation (`copy`, built before the lock: get<> takes it) also at a fresh host
++// key; the oldest keys go (deferred).
++void publish_adopted_key(uint64_t guest, std::unique_ptr<Texture> copy) {
++    uint64_t serial = copy->serial;
++    uint64_t key = kAdoptedTexture | ++g_next_adopted;
++    publish_locked(key, std::move(copy));
++    g_adopted_now[guest] = {serial, key};
++    g_adopted_order.push_back({key, guest});
++    while (g_adopted_order.size() > kAdoptedKeep) {
++        auto [old, holder] = g_adopted_order.front();
++        g_adopted_order.pop_front();
++        if (auto o = objects().find(old); o != objects().end()) defer_object(std::move(o->second)), objects().erase(o);
++        if (auto h = g_adopted_now.find(holder); h != g_adopted_now.end() && h->second.second == old) g_adopted_now.erase(h);
++    }
++}
++
+ }  // namespace
+ 
++uint64_t stable_texture_key(uint64_t guest) {
++    if (!guest || !adopt_keys()) return guest;
++    std::lock_guard lk(objects_lock());
++    auto h = g_adopted_now.find(guest);
++    if (h == g_adopted_now.end()) return guest;
++    auto o = objects().find(guest);
++    auto* t = o == objects().end() ? nullptr : dynamic_cast<Texture*>(o->second.get());
++    return t && t->serial == h->second.first ? h->second.second : guest;  // not a holder any more: the address
++}
++
++// The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
++// key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
++void adopt_texture(CPU&, uint64_t guest) {
++    TextureStamp s;
++    if (!read_stamp(guest, s)) return;
++    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
++    auto guard = reinit_guard();
++    auto fresh = std::make_unique<Texture>();
++    Texture& t = *fresh;
++    texture_from_stamp(t, s);
++    std::unique_ptr<Texture> keyed;
++    if (adopt_keys()) keyed = std::make_unique<Texture>(), texture_from_stamp(*keyed, s);
 +    static std::atomic<uint64_t> adopted{0};
 +    uint64_t n = ++adopted;
 +    if (n <= 10 || (n & (n - 1)) == 0 || trace_textures())
@@ -4514,12 +4595,13 @@ index a2a7dd0..6e5a863 100644
 +    hand_image_to_snapshots(guest);
 +    list_pool_texture(t.pool, guest);
 +    publish_locked(guest, std::move(fresh));
++    if (keyed) publish_adopted_key(guest, std::move(keyed));
 +}
 +
  NX_HLE("nvnMemoryPoolInitialize", MemoryPoolInitialize);
  NX_HLE("nvnMemoryPoolFinalize", MemoryPoolFinalize);
  NX_HLE("nvnMemoryPoolMap", MemoryPoolMap);
-@@ -671,6 +880,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
+@@ -671,6 +935,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
  NX_HLE("nvnBufferInvalidateMappedRange", BufferInvalidateMappedRange);
  NX_HLE("nvnTextureInitialize", TextureInitialize);
  NX_HLE("nvnTextureFinalize", TextureFinalize);
@@ -4527,7 +4609,7 @@ index a2a7dd0..6e5a863 100644
  NX_HLE("nvnTextureGetWidth", TextureGetWidth);
  NX_HLE("nvnTextureGetHeight", TextureGetHeight);
  NX_HLE("nvnTextureGetDepth", TextureGetDepth);
-@@ -684,6 +894,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
+@@ -684,6 +949,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
  NX_HLE("nvnTextureGetMemoryOffset", TextureGetMemoryOffset);
  NX_HLE("nvnTextureGetStorageSize", TextureGetStorageSize);
  NX_HLE("nvnTextureGetDepthStencilMode", TextureGetDepthStencilMode);
@@ -6957,7 +7039,7 @@ index fac2914..5d0842f 100644
      // the swapchain's transform is not the display's (a Galaxy S23 did for Hades), a rebuild per frame.
      bool remake = r == VK_ERROR_OUT_OF_DATE_KHR;
 diff --git a/runtime/src/nvn/nvn_vk.h b/runtime/src/nvn/nvn_vk.h
-index b899dbd..4360567 100644
+index b899dbd..e87cbf6 100644
 --- a/runtime/src/nvn/nvn_vk.h
 +++ b/runtime/src/nvn/nvn_vk.h
 @@ -32,6 +32,14 @@ struct GpuImage {
@@ -7034,7 +7116,7 @@ index b899dbd..4360567 100644
  void forget_image_views(const GpuImage& img);
  // nvn_debug.cpp: NX_SNAP_DRAWS mid-frame snapshots of colour target 0.
  bool debug_snap_wanted(uint64_t draw);
-@@ -235,7 +262,16 @@ void zero_draws_collect();
+@@ -235,7 +262,17 @@ void zero_draws_collect();
  void zero_draws_log();
  void frame_sig_flush(uint64_t presents);  // NX_FRAME_SIG=1: the frame's draw signature, logged (nvn_draw_trace.cpp)
  void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw);
@@ -7044,7 +7126,8 @@ index b899dbd..4360567 100644
 +void diag_request();
 +bool diag_active();
 +void diag_frame_boundary(uint64_t presents);
-+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs);
++void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs,
++               uint32_t level = 0, uint32_t layer = 0);  // the level and layer the pass rendered to
 +void diag_pass_depth(VkCommandBuffer cb, GpuImage& img, uint64_t texture, uint32_t draws, const std::string& fs);
 +void diag_line(const std::string& line);   // into diag/passes.txt
 +void diag_want_texture(uint64_t texture);  // sampled by the storyboard frame: pictured on the next one

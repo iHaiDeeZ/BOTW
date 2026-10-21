@@ -76,8 +76,13 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
     around them instead of using barriers), so the replay ends the pass before each of those draws.
   - **20 s freezes** came from the diagnostic storyboard itself (400 pictures); it now pictures each image at most
     4 times in passes of one or two draws (`NX_DIAG_PER_IMAGE`).
-- **v00.09: surfaces still black** with `NX_EQUAL_EXACT=1`: the lighting is debugged on a Windows PC build next
-  (`E:\botw-win`, as TOTK's black world was).
+- **v00.09: surfaces still black** with `NX_EQUAL_EXACT=1`. Found on the Windows PC build (`docs/WINDOWS.md`): agl
+  renders, clears and copies through "holder" structs, copying one texture after another into the same object
+  (one held ~10 textures a frame). Commands kept the holder's address and the replay resolved it once per submit,
+  so every pass through it drew into its last texture of the frame; the character-mask pass then zeroed the
+  channel the lighting multiplies by. v00.10 (recomp `a6ebcb1`): render targets, clears and copies record a key of
+  the texture the holder held when recorded (`NX_ADOPT_KEYS=0`: the address). On PC the shrine is lit with exact
+  EQUAL; a haze and orange bands on Link's skin remain. On PC the title menu text shows with the console's save.
 - **v00.09: cutscene effects missing.** The opening's effects (`Event/Demo102_0.sbeventpack` →
   `Effect/Event_Demo102_0.sesetlist`, 10 shaders) were never extracted: the event packs carry their own effect lists.
   `prepare-game.sh` now scans `Event` too (`BOTW_SHADER_DIRS` default).
