@@ -124,7 +124,9 @@ if has shaders; then
     # magic, programs start at 0 with no NVN header) and the agl, gsys and KSys archives (BAHS) in System/*.ssarc.
     # The effects (Effect/*.sesetlist: VFXB with BNSH) and layouts (*.sblarc: bgsh/__ArchiveShader.bnsh) are both
     # loose and inside other packs: v00.05 drew from Bootup.pack's Effect/GameResident.sesetlist and
-    # Layout/Common.sblarc (1,593 misses). containers.py only decompresses the Yaz0 members that can hold shaders.
+    # Layout/Common.sblarc (1,593 misses). Cutscenes bring their own effects: Event/*.sbeventpack holds
+    # Effect/Event_*.sesetlist (v00.09: 10 shaders of the opening's Demo102_0 missing). containers.py only
+    # decompresses the Yaz0 members that can hold shaders.
     # BOTW_SHADER_DIRS names other files or folders of the RomFS; BOTW_SHADER_DIRS=all scans all of it (slow: one
     # process per file). The PS4 has no translator at run time, so this set must be complete: a shader the game asks
     # for and spirv/ lacks is logged by the runtime ("no .../spirv/<hash>.spv"; NX_DUMP_SHADER_MISSES=1 saves its
@@ -133,7 +135,7 @@ if has shaders; then
     if [ "${BOTW_SHADER_DIRS:-}" = all ]; then
         dirs=("$R")
     else
-        for d in ${BOTW_SHADER_DIRS:-Pack Effect Layout System}; do
+        for d in ${BOTW_SHADER_DIRS:-Pack Effect Event Layout System}; do
             [ -e "$R/$d" ] && dirs+=("$R/$d")
         done
     fi

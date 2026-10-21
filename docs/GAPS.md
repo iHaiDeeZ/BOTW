@@ -76,6 +76,16 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
     around them instead of using barriers), so the replay ends the pass before each of those draws.
   - **20 s freezes** came from the diagnostic storyboard itself (400 pictures); it now pictures each image at most
     4 times in passes of one or two draws (`NX_DIAG_PER_IMAGE`).
+- **v00.09: surfaces still black** with `NX_EQUAL_EXACT=1`: the lighting is debugged on a Windows PC build next
+  (`E:\botw-win`, as TOTK's black world was).
+- **v00.09: cutscene effects missing.** The opening's effects (`Event/Demo102_0.sbeventpack` →
+  `Effect/Event_Demo102_0.sesetlist`, 10 shaders) were never extracted: the event packs carry their own effect lists.
+  `prepare-game.sh` now scans `Event` too (`BOTW_SHADER_DIRS` default).
+- **v00.09: menu text missing.** The main menu's options and the overwrite dialog's Yes/No have no text, while the
+  dialog's message shows. Both use the R8 font `NormalS_00` (the other five fonts are BC4 sheets, which also work:
+  the subtitles use `Normal_00`), so the font is not the difference; the labels sit in button parts
+  (`PaCommonBtnThin*_00`). Next data: a diagnostics frame (L3 + R3 menu) on the main menu, to see whether the label
+  draws exist.
 
 ## To check at the first import
 
