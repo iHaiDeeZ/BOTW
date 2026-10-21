@@ -605,8 +605,18 @@ void diag_frame_boundary(uint64_t presents) {
     }
 }
 
-void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs) {
+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs,
+               uint32_t level, uint32_t layer) {
     if (!g_diag_on || g_diag_seq >= kDiagMax || !img.image || !(img.aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return;
+    // The level and layer the pass rendered to, not always level 0 layer 0: Breath of the Wild renders its lighting
+    // into the two layers of one RGBA16F array, each bound as its own target. The name gets L<layer> (an array) and
+    // m<level> (not level 0) after the slot.
+    level = std::min(level, img.levels ? img.levels - 1 : 0u);
+    layer = std::min(layer, img.layers ? img.layers - 1 : 0u);
+    const uint32_t lw = std::max(1u, img.width >> level), lh = std::max(1u, img.height >> level);
+    char sub[24] = "";
+    if (img.layers > 1) std::snprintf(sub, sizeof sub, "L%u", layer);
+    if (level) std::snprintf(sub + std::strlen(sub), sizeof sub - std::strlen(sub), "m%u", level);
     // A pass of one or two draws on an image pictured that many times already is left out: Breath of the Wild draws
     // its decals one per 8-target pass (62 in the shrine), and the 400 pictures ran out before the lighting, after a
     // 20 s capture. NX_DIAG_PER_IMAGE=<n> (default 4, 0: every pass).
@@ -618,10 +628,10 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     if (per_image > 0 && draws <= 2 && pictured >= per_image) return;
     pictured++;
     Snap snap;
-    snap.w = std::min(img.width, 480u);
-    snap.h = std::max(1u, uint32_t(uint64_t(img.height) * snap.w / std::max(1u, img.width)));
+    snap.w = std::min(lw, 480u);
+    snap.h = std::max(1u, uint32_t(uint64_t(lh) * snap.w / lw));
     char name[160];
-    std::snprintf(name, sizeof name, "%03d_c%u_%ux%u_f%d_d%u_%s", g_diag_seq, slot, img.width, img.height,
+    std::snprintf(name, sizeof name, "%03d_c%u%s_%ux%u_f%d_d%u_%s", g_diag_seq, slot, sub, img.width, img.height,
                   int(img.format), draws, fs.empty() ? "-" : fs.c_str());
     snap.name = name;
     if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
@@ -631,13 +641,13 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     static const bool floats = std::getenv("NX_DIAG_FLOAT") != nullptr;
     if (floats && (img.format == VK_FORMAT_R16G16B16A16_SFLOAT || img.format == VK_FORMAT_R32_SFLOAT ||
                    img.format == VK_FORMAT_R16G16_SFLOAT || img.format == VK_FORMAT_R8G8B8A8_UNORM)) {
-        snap.w = img.width, snap.h = img.height, snap.float_format = img.format;
+        snap.w = lw, snap.h = lh, snap.float_format = img.format;
         uint32_t bytes = img.format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
         if (!make_scratch(snap.s, snap.w, snap.h, bytes)) return snap.s.destroy(vk_device());
         VkImageLayout back = img.layout;
         transition(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkBufferImageCopy r{};
-        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
         r.imageExtent = {snap.w, snap.h, 1};
         p_vkCmdCopyImageToBuffer(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.buffer, 1, &r);
         if (back != VK_IMAGE_LAYOUT_UNDEFINED) transition(cb, img, back);
@@ -655,9 +665,9 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     dst.format = VK_FORMAT_R8G8B8A8_UNORM;
     transition(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkImageBlit blit{};
-    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[1] = {int32_t(img.width), int32_t(img.height), 1};
-    blit.dstSubresource = blit.srcSubresource;
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1};
+    blit.srcOffsets[1] = {int32_t(lw), int32_t(lh), 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[1] = {int32_t(snap.w), int32_t(snap.h), 1};
     p_vkCmdBlitImage(cb, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snap.s.image,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);

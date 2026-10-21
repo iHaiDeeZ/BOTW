@@ -342,12 +342,16 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             GpuImage* img = texture ? image_of(texture) : nullptr;
             char b[200];
             Texture* tx = texture ? get<Texture>(texture) : nullptr;
-            std::snprintf(b, sizeof b, " t%zu=%llx@%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g)", k,
+            // i<image>: the Vulkan image's handle (low 32 bits), to see which textures and targets are one image;
+            // v<first>+<count>: the layers the sampler's view selects (0 count: all).
+            std::snprintf(b, sizeof b, " t%zu=%llx@%llx(%ux%u vk%d l%u L%u%s%s cmp%u lod%g..%g i%llx v%u+%u)", k,
                           (unsigned long long)texture, (unsigned long long)(tx ? tx->memory : 0),
                           img ? img->width : 0, img ? img->height : 0,
                           img ? int(img->format) : 0, img ? img->levels : 0, img ? img->layers : 0,
                           img && img->rendered ? " rt" : "", img && (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? " depth" : "",
-                          si.compare_mode, double(si.lod_min), double(si.lod_max));
+                          si.compare_mode, double(si.lod_min), double(si.lod_max),
+                          img ? (unsigned long long)(reinterpret_cast<uintptr_t>(img->image) & 0xffffffffu) : 0ull,
+                          vw.min_layer, vw.layers);
             line += b;
             diag_want_texture(texture);
         }
@@ -355,10 +359,11 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             auto shape = [](uint64_t texture) {
                 GpuImage* img = texture ? image_of(texture) : nullptr;
                 Texture* tx = texture ? get<Texture>(texture) : nullptr;
-                char s[128];
-                std::snprintf(s, sizeof s, "%llx@%llx(%ux%u vk%d)", (unsigned long long)texture,
+                char s[160];
+                std::snprintf(s, sizeof s, "%llx@%llx(%ux%u vk%d L%u i%llx)", (unsigned long long)texture,
                               (unsigned long long)(tx ? tx->memory : 0), img ? img->width : 0,
-                              img ? img->height : 0, img ? int(img->format) : 0);
+                              img ? img->height : 0, img ? int(img->format) : 0, img ? img->layers : 0,
+                              img ? (unsigned long long)(reinterpret_cast<uintptr_t>(img->image) & 0xffffffffu) : 0ull);
                 return std::string(s);
             };
             const DepthStencilInfo& d = g_state.depth;
@@ -367,7 +372,9 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             line += b;
             for (uint32_t k = 0; k < t.color_count && k < 8; k++)
                 if (t.colors[k])
-                    line += " c" + std::to_string(k) + "=" + shape(t.colors[k]) + "m" + std::to_string(g_state.mask.mask[k]);
+                    line += " c" + std::to_string(k) + "=" + shape(t.colors[k]) + "m" + std::to_string(g_state.mask.mask[k]) +
+                            "/L" + std::to_string(t.views.layer[k]) +
+                            (t.views.level[k] ? "/l" + std::to_string(t.views.level[k]) : std::string());
             if (t.depth) line += " d=" + shape(t.depth) + " L" + std::to_string(t.views.layer[8]);
             std::snprintf(b, sizeof b, " z test %u write %u func %u range %g..%g clamp %u offset %x cull %u vp %dx%d",
                           d.depth_test, d.depth_write, d.depth_func, double(g_state.depth_near),

@@ -267,7 +267,8 @@ void debug_snapshots_write();
 void diag_request();
 bool diag_active();
 void diag_frame_boundary(uint64_t presents);
-void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs);
+void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs,
+               uint32_t level = 0, uint32_t layer = 0);  // the level and layer the pass rendered to
 void diag_pass_depth(VkCommandBuffer cb, GpuImage& img, uint64_t texture, uint32_t draws, const std::string& fs);
 void diag_line(const std::string& line);   // into diag/passes.txt
 void diag_want_texture(uint64_t texture);  // sampled by the storyboard frame: pictured on the next one

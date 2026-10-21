@@ -632,7 +632,8 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     diag_textures(cb);  // the last storyboard frame's sampled textures (once)
     if (diag_active()) {  // the storyboard: what this pass left in its colour targets
         for (uint32_t k = 0; k < g_pass.color_count && k < 8; k++)
-            if (g_pass_images[k]) diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs);
+            if (g_pass_images[k])
+                diag_pass(cb, *g_pass_images[k], k, g_diag_draws, g_diag_fs, g_pass.views.level[k], g_pass.views.layer[k]);
         if (g_pass.depth && g_pass_images[8]) diag_pass_depth(cb, *g_pass_images[8], g_pass.depth, g_diag_draws, g_diag_fs);
         g_diag_draws = 0, g_diag_fs.clear();
     }
