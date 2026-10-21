@@ -459,12 +459,23 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
         else
             bw = bh = 1, bytes = host_bytes = 4;
     }
-    // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel).
-    uint64_t scale = widen ? 2 : 1;
+    // An R8 texture read with alpha = R (a font sheet, UI masks) is an RGBA8 image (255, 255, 255, R), alpha_from_r:
+    // its untiled bytes are expanded 4x here. Only the pitch-linear ones were (above); block-linear ones went to the
+    // RGBA8 image as R8, came out short and were cleared ("upload short ... format 0x1"): Breath of the Wild's
+    // NormalS_00 font sheet, so every loading-screen tip and much of the menus' text was invisible on the PS4.
+    const bool widen_r8 = img.alpha_from_r && bytes == 1 && bw == 1 && bh == 1;
+    if (widen_r8) host_bytes = 4;
+    // Widened, every offset in the linear buffer doubles (level offsets are multiples of the 4-byte texel), or
+    // quadruples for R8 -> RGBA8.
+    uint64_t scale = widen ? 2 : widen_r8 ? 4 : 1;
     Upload u;
     if (widen) {
         u = texel_alloc(linear.size() * 2, 16);
         widen_r11g11b10(linear.data(), u.ptr, linear.size() / 4);
+    } else if (widen_r8) {
+        u = texel_alloc(linear.size() * 4, 16);
+        uint32_t* d = reinterpret_cast<uint32_t*>(u.ptr);
+        for (size_t k = 0; k < linear.size(); k++) d[k] = 0x00FFFFFFu | (uint32_t(linear[k]) << 24);
     } else if (linear.size() >= (1u << 20) && !staging_ring() && staging_wanted(linear.size())) {
         // 1 MB and up: a staging buffer of its own, so a scene load cannot wrap the ring over itself (DEBUG-2 #72).
         // NX_STAGING_RING=1: through the ring, as before (bisecting).
