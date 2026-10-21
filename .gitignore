@@ -12,3 +12,5 @@ private/
 # frame dumps and storyboard pictures from the console (tens of MB per run)
 logs/**/*.ppm
 logs/**/*.pgm
+logs/**/*.mp4
+logs/**/*.h264

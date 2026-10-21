@@ -65,6 +65,17 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   v00.08: textures and samplers write their description into their struct, and a copy becomes the same texture
   (`adopt_texture`, `NX_TEXTURE_STAMPS=0` turns it off). Also new: `ClearTexture`, `nvnTextureCompare` /
   `nvnSamplerCompare`, and `nvnQueueAcquireTexture`.
+- **v00.08: the opening plays.** "Nintendo Presents", the title text, "Open your eyes", the Shrine of Resurrection
+  and the camera pan after "Wake up, Link" (a cutscene: Link cannot be moved until it ends). Open problems:
+  - **Surfaces black.** Only emissive lights and fog show. The lighting classifies materials by depth (fs
+    `4f2551d4` writes `(material bits & mask) / 255` into a D16; light quads at `z = k/255` test EQUAL), which
+    needs `NX_EQUAL_EXACT=1` as TOTK has (v00.09). Not yet confirmed as the cause.
+  - **Frame rate.** 9-14 fps in the shrine: the replay costs ~25 us per draw over 3,000-4,400 draws (80-105 ms per
+    frame: descriptor sets 24-31 ms, binds 20-26 ms, textures 13-18 ms). The GPU is not the limit.
+  - **One pass per decal.** fs `19d434c4` samples two of its own 8 targets (agl turns the Switch's tiled cache off
+    around them instead of using barriers), so the replay ends the pass before each of those draws.
+  - **20 s freezes** came from the diagnostic storyboard itself (400 pictures); it now pictures each image at most
+    4 times in passes of one or two draws (`NX_DIAG_PER_IMAGE`).
 
 ## To check at the first import
 

@@ -202,10 +202,10 @@ index 29198e9..aae698c 100644
          if (rename(part.c_str(), final_path.c_str()) != 0) fail("cannot rename %s (%s)", part.c_str(), strerror(errno));
 diff --git a/games/botw/game.cpp b/games/botw/game.cpp
 new file mode 100644
-index 0000000..7a85740
+index 0000000..61e14d8
 --- /dev/null
 +++ b/games/botw/game.cpp
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,47 @@
 +// The Legend of Zelda: Breath of the Wild (01007EF00011E000, 1.5.0, the version zeldaret/botw decompiles): what the
 +// shared runtime needs to know about the game. It draws through NVN (agl/gsys, an older SDK than Wonder's). Modules:
 +// main, sdk and any subsdk (modules.cmake), generated with --base 0x4000000000 (main), 0x4018000000 (+0x8000000 per
@@ -243,6 +243,11 @@ index 0000000..7a85740
 +    setenv("NX_GRAPHICS_WRITE_BACK", "0", 0);
 +    // Depth clamp on the PS4's RADV put every clamped fragment at depth 0 (TOTK's shadow maps): clipped instead.
 +    setenv("NX_DEPTH_CLAMP", "0", 0);
++    // Depth EQUAL kept exact. The deferred lighting classifies materials by depth: fs 4f2551d4 writes
++    // FragDepth = (G-buffer material bits & mask) / 255 into a D16 target (k * 257 exactly), and each light's
++    // fullscreen quad sits at z = (k / 255) * 2 - 1 and tests EQUAL. Wonder's EQUAL -> LEQUAL with a bias toward the
++    // camera lets a light through on every material at or behind its own. TOTK's lighting works this way too.
++    setenv("NX_EQUAL_EXACT", "1", 0);
 +}
 +void game::renderer_start() {}
 +void game::first_frame() {}
@@ -758,10 +763,10 @@ index 44601b3..0139745 100644
  NX_HLE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", OpenDefaultAudioOut);
  NX_HLE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", StartAudioOut);
 diff --git a/runtime/src/hle_fs.cpp b/runtime/src/hle_fs.cpp
-index 64b5beb..546ac0a 100644
+index 64b5beb..d23d3ea 100644
 --- a/runtime/src/hle_fs.cpp
 +++ b/runtime/src/hle_fs.cpp
-@@ -1,11 +1,19 @@
+@@ -1,11 +1,20 @@
  // nn::fs at the API level, on host files. The game imports these by name (main), so no fsp-srv IPC is involved:
 -//   rom:   -> private/extract/romfs (the RomFS with the update applied)
 +//   rom:   -> private/extract/romfs (the RomFS with the update applied), or the RomFS pack when there is no such folder:
@@ -771,6 +776,7 @@ index 64b5beb..546ac0a 100644
  //   save:  -> private/user/save/<mount>
  //   cache: -> private/user/cache<index>
 +#include <algorithm>
++#include <atomic>
  #include <cctype>
  #include <cstdio>
 +#include <cstdlib>
@@ -782,7 +788,7 @@ index 64b5beb..546ac0a 100644
  #include <memory>
  #include <mutex>
  #include <string>
-@@ -46,10 +54,30 @@ std::map<std::string, fs::path> g_mounts;
+@@ -46,10 +55,33 @@ std::map<std::string, fs::path> g_mounts;
  struct File {
      FILE* f;
      std::string path;
@@ -793,10 +799,15 @@ index 64b5beb..546ac0a 100644
 +    // (music, ambience, a cutscene's dialogue) and the world's data from all over romfs.pak at once, and on the PS4's
 +    // hard disk each small read waited ~90 ms (up to 155) for its seek, long enough for the audio engine to drop a
 +    // voice in the middle of a line. One read of kReadAhead serves the next ones from memory. Under ahead_lock.
++    // Only once the file is being streamed (a read starting where the last one ended), within a budget for all files
++    // (kReadAheadBudget), and given back at the stream's end or the file's close: v00.36 read ahead for every .bwav
++    // opened, and the loading screen froze (the game opens thousands of sound files while loading; the host heap has
++    // ~130 MB on the PS4).
 +    bool stream = false;
 +    std::mutex ahead_lock;
 +    std::vector<uint8_t> ahead;
 +    int64_t ahead_at = -1;  // the window's offset in the file
++    int64_t last_end = -1;  // where the last read ended (a read starting there: streaming)
      File(FILE* file, std::string p) : f(file), path(std::move(p)) {}
 +    File(FILE* file, std::string p, uint64_t b, int64_t n) : f(file), path(std::move(p)), base(b), size(n), owns(false) {
 +        static const bool on = [] {
@@ -808,13 +819,11 @@ index 64b5beb..546ac0a 100644
      File(const File&) = delete;  // owns the FILE: one instance only
      File& operator=(const File&) = delete;
 -    ~File() { std::fclose(f); }
-+    ~File() {
-+        if (owns) std::fclose(f);
-+    }
++    ~File();
  };
  std::map<uint64_t, std::shared_ptr<File>> g_files;
  
-@@ -73,8 +101,95 @@ const std::string* find_virtual(const fs::path& resolved) {
+@@ -73,8 +105,95 @@ const std::string* find_virtual(const fs::path& resolved) {
              return &data;
      return nullptr;
  }
@@ -911,7 +920,7 @@ index 64b5beb..546ac0a 100644
      size_t pos = 0;
  };
  std::map<uint64_t, Dir> g_dirs;
-@@ -101,7 +216,7 @@ fs::path resolve(const std::string& guest) {
+@@ -101,7 +220,7 @@ fs::path resolve(const std::string& guest) {
  }
  
  void mount(const std::string& name, const fs::path& p) {
@@ -920,7 +929,7 @@ index 64b5beb..546ac0a 100644
      g_mounts[name] = p;
      log("fs: mounted %s: -> %s", name.c_str(), p.string().c_str());
  }
-@@ -115,7 +230,7 @@ void QueryMountRomCacheSize(CPU& c) {
+@@ -115,7 +234,7 @@ void QueryMountRomCacheSize(CPU& c) {
  
  void MountRom(CPU& c) {
      std::lock_guard lk(g_fs);
@@ -929,7 +938,7 @@ index 64b5beb..546ac0a 100644
      c.x[0] = kOk;
  }
  
-@@ -193,6 +308,17 @@ void GetEntryType(CPU& c) {  // (DirectoryEntryType* out, path)
+@@ -193,6 +312,17 @@ void GetEntryType(CPU& c) {  // (DirectoryEntryType* out, path)
          c.x[0] = kOk;
          return;
      }
@@ -947,7 +956,7 @@ index 64b5beb..546ac0a 100644
      std::error_code ec;
      if (p.empty() || !fs::exists(p, ec)) {
          c.x[0] = kPathNotFound;
-@@ -222,6 +348,21 @@ void OpenFile(CPU& c) {  // (FileHandle* out, path, int mode: 1 read, 2 write, 4
+@@ -222,6 +352,21 @@ void OpenFile(CPU& c) {  // (FileHandle* out, path, int mode: 1 read, 2 write, 4
          c.x[0] = kOk;
          return;
      }
@@ -969,7 +978,7 @@ index 64b5beb..546ac0a 100644
      std::error_code ec;
      if (p.empty() || !fs::is_regular_file(p, ec)) {
          if (trace_fs()) log("fs: OpenFile(%s) not found", guest.c_str());
-@@ -257,6 +398,11 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
+@@ -257,6 +402,11 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
          c.x[0] = kTargetNotFound;
          return;
      }
@@ -981,28 +990,58 @@ index 64b5beb..546ac0a 100644
      std::lock_guard lk(g_fs);  // the FILE position is shared with writers
      FILE* f = file->f;
      int64_t cur = plat::ftell64(f);
-@@ -267,8 +413,39 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
+@@ -267,8 +417,69 @@ void GetFileSize(CPU& c) {  // (s64* out, FileHandle)
      c.x[0] = kOk;
  }
  
 -uint64_t read_at(const File& file, int64_t off, uint64_t buf, uint64_t size) {
-+constexpr uint64_t kReadAhead = 512 << 10;  // NX_STREAM_READ_AHEAD=0: off
++constexpr uint64_t kReadAhead = 512 << 10;        // NX_STREAM_READ_AHEAD=0: off
++constexpr uint64_t kReadAheadBudget = 16ull << 20;  // all files' windows together
++std::atomic<uint64_t> g_ahead_bytes{0};
++
++void drop_ahead(File& file) {  // under ahead_lock
++    g_ahead_bytes -= file.ahead.capacity();
++    std::vector<uint8_t>().swap(file.ahead);
++    file.ahead_at = -1;
++}
++
++File::~File() {
++    if (!ahead.empty() || ahead.capacity()) g_ahead_bytes -= ahead.capacity();
++    if (owns) std::fclose(f);
++}
 +
 +// `size` bytes at `off` (file-relative) of a streamed file through its read-ahead window. False: read directly.
 +bool read_ahead(File& file, int64_t off, uint64_t buf, uint64_t size, uint64_t& n) {
 +    if (!file.stream || size == 0 || size > kReadAhead / 2) return false;
 +    std::lock_guard lk(file.ahead_lock);
 +    const int64_t end = off + int64_t(size);
++    const bool sequential = file.last_end == off;
++    file.last_end = end;
 +    if (file.ahead_at < 0 || off < file.ahead_at || end > file.ahead_at + int64_t(file.ahead.size())) {
-+        uint64_t want = std::min<uint64_t>(kReadAhead, uint64_t(file.size - off));
++        if (!sequential) {  // not streaming (yet): read directly, and keep no window
++            if (file.ahead.capacity()) drop_ahead(file);
++            return false;
++        }
++        const uint64_t want = std::min<uint64_t>(kReadAhead, uint64_t(file.size - off));
++        if (want <= size) return false;  // nothing left to read ahead
++        if (want > file.ahead.capacity()) {
++            const uint64_t grow = want - file.ahead.capacity();
++            if (g_ahead_bytes.load() + grow > kReadAheadBudget) return false;  // over budget: read directly
++            g_ahead_bytes += grow;
++            file.ahead.reserve(want);
++        }
 +        file.ahead.resize(want);
 +        uint64_t got = plat::read_at(file.f, int64_t(file.base) + off, file.ahead.data(), want);
 +        file.ahead.resize(got);
 +        file.ahead_at = off;
-+        if (got < size) return false;
++        if (got < size) {
++            drop_ahead(file);
++            return false;
++        }
 +    }
 +    std::memcpy(reinterpret_cast<void*>(buf), file.ahead.data() + (off - file.ahead_at), size);
 +    n = size;
++    if (end >= file.size) drop_ahead(file);  // the stream's end: the window goes back to the budget
 +    return true;
 +}
 +
@@ -1022,7 +1061,7 @@ index 64b5beb..546ac0a 100644
      uint64_t n = plat::read_at(file.f, off, reinterpret_cast<void*>(buf), size);
      uint64_t ms = (plat::monotonic_ns() - t0) / 1'000'000;
      if (g_trace) log("fs: read %s at %lld size %llu -> %llu", file.path.c_str(), (long long)off, (unsigned long long)size,
-@@ -333,15 +510,31 @@ void OpenDirectory(CPU& c) {  // (DirectoryHandle* out, path, int mode: 1 dirs,
+@@ -333,15 +544,31 @@ void OpenDirectory(CPU& c) {  // (DirectoryHandle* out, path, int mode: 1 dirs,
      std::lock_guard lk(g_fs);
      fs::path p = resolve(cstr(c.x[1]));
      int mode = int(c.x[2]);
@@ -1062,7 +1101,7 @@ index 64b5beb..546ac0a 100644
      }
      uint64_t h = g_next++;
      g_dirs[h] = std::move(d);
-@@ -362,12 +555,9 @@ void ReadDirectory(CPU& c) {  // (s64* out_count, DirectoryEntry* entries, Direc
+@@ -362,12 +589,9 @@ void ReadDirectory(CPU& c) {  // (s64* out_count, DirectoryEntry* entries, Direc
          const auto& e = d.entries[d.pos];
          uint64_t out = c.x[1] + uint64_t(n) * 0x310;
          std::memset(reinterpret_cast<void*>(out), 0, 0x310);
@@ -1078,7 +1117,7 @@ index 64b5beb..546ac0a 100644
      }
      st<int64_t>(c.x[0], n);
      c.x[0] = kOk;
-@@ -459,6 +649,7 @@ NX_HLE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", FlushFile);
+@@ -459,6 +683,7 @@ NX_HLE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", FlushFile);
  NX_HLE("_ZN2nn2fs25EnableGlobalFileDataCacheEPvm", EnableGlobalFileDataCache);
  NX_HLE("_ZN2nn2fs26DisableGlobalFileDataCacheEv", DisableGlobalFileDataCache);
  NX_HLE("_ZN2nn2fs6CommitEPKc", Commit);
@@ -1086,7 +1125,7 @@ index 64b5beb..546ac0a 100644
  NX_HLE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", OpenDirectory);
  NX_HLE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl", ReadDirectory);
  NX_HLE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", CloseDirectory);
-@@ -481,7 +672,14 @@ void add_virtual_file(const std::string& path, std::string data) {
+@@ -481,7 +706,14 @@ void add_virtual_file(const std::string& path, std::string data) {
  }
  
  std::string read_game_file(const std::string& relative_to_romfs) {
@@ -1558,7 +1597,7 @@ index 89f75e4..f6899c1 100644
      // Arial Unicode (Office installs it) covers the most; else Arial, as on the Mac.
      candidates.push_back("C:/Windows/Fonts/arialuni.ttf");
 diff --git a/runtime/src/hle_vi.cpp b/runtime/src/hle_vi.cpp
-index 451f0dd..d6aa19a 100644
+index 451f0dd..248b2ac 100644
 --- a/runtime/src/hle_vi.cpp
 +++ b/runtime/src/hle_vi.cpp
 @@ -1,6 +1,8 @@
@@ -1570,7 +1609,7 @@ index 451f0dd..d6aa19a 100644
  #include <memory>
  #include <mutex>
  #include <thread>
-@@ -43,13 +45,32 @@ void nv_noop(CPU&) {}
+@@ -43,13 +45,34 @@ void nv_noop(CPU&) {}
  // SystemEvent (AttachSystemEvent with our read/write handles, auto clear: each wait consumes one vsync).
  std::shared_ptr<EventState> g_vsync = std::make_shared<EventState>();
  
@@ -1578,12 +1617,14 @@ index 451f0dd..d6aa19a 100644
 +// the game takes the first. At 30 fps the game waits for two vsyncs a frame, and a frame a little over 33 ms (the PS4
 +// outside the cave) found the first one latched and the second lost, then waited up to 16.7 ms for the next: frames
 +// snapped from 34 ms to 50 (20.0 fps where 29 was possible). The game times its frames itself (it picks its present
-+// interval from them), so a late frame is not made later. NX_VSYNC_CATCHUP=0: missed vsyncs are lost, as on the Switch.
++// interval from them), so a late frame is not made later. Off by default (NX_VSYNC_CATCHUP=1: on): v00.37 crashed in
++// the game's font engine (FSS_get_advance on a null state) during the opening's subtitles, likely a race the extra
++// vsyncs open between game threads that wait on the same event; missed vsyncs are lost, as on the Switch.
  void vsync_thread() {
      plat::set_thread_name("vsync");
 +    static const bool catchup = [] {
 +        const char* e = std::getenv("NX_VSYNC_CATCHUP");
-+        return !(e && e[0] == '0');
++        return e && e[0] == '1';
 +    }();
      uint64_t next = plat::monotonic_ns();
 +    int owed = 0;
@@ -1626,10 +1667,36 @@ index 0b4e6b6..531a9f0 100644
  }
  
 diff --git a/runtime/src/kernel_watch.cpp b/runtime/src/kernel_watch.cpp
-index e5d47f2..4098c7b 100644
+index e5d47f2..35b51a6 100644
 --- a/runtime/src/kernel_watch.cpp
 +++ b/runtime/src/kernel_watch.cpp
-@@ -111,6 +111,16 @@ static void watchdog(void*) {
+@@ -14,10 +14,25 @@
+ #include "kernel_state.h"
+ #include "platform.h"
+ 
++#if defined(__ORBIS__)
++extern "C" void ps4_dump_thread_stacks(const char* path, const char* reason);  // port/ps4_sampler.cpp
++#endif
++
+ namespace nx {
+ 
+ using namespace kstate;
+ 
++// The host side of a hang: every host thread's stack and the mutex it sleeps on (PS4: port/ps4_sampler.cpp), into
++// <data root>/hang.log. The guest report alone could not tell who held the lock everyone waited for (v00.38: writers
++// and readers of objects_lock and the allocator's lock all waiting, the holder unsampled).
++static void dump_host_threads(const char* reason) {
++#if defined(__ORBIS__)
++    ps4_dump_thread_stacks((plat::data_root() + "/hang.log").c_str(), reason);
++#else
++    (void)reason;
++#endif
++}
++
+ static uint32_t load32(uint64_t a) { return __atomic_load_n(reinterpret_cast<uint32_t*>(a), __ATOMIC_SEQ_CST); }
+ // Guest call stack from the AArch64 frame records (x29 -> [prev x29, lr]).
+ void backtrace(CPU& c) {
+@@ -111,6 +126,16 @@ static void watchdog(void*) {
              log("profile: %s", ok ? "written to profile.txt" : "not available on this platform");
          }
          uint64_t f = g_frame, now = plat::monotonic_ns();
@@ -1646,6 +1713,14 @@ index e5d47f2..4098c7b 100644
          if (f != last || plat::window_minimized()) {
              last = f;
              since = now;
+@@ -120,6 +145,7 @@ static void watchdog(void*) {
+         if (f && !reported && now - since > 5'000'000'000ull) {
+             reported = true;
+             log("hang: no frame for 5 s after frame %llu; threads (two samples, 1 s apart):", (unsigned long long)f);
++            dump_host_threads("hang: no frame for 5 s");
+             report_threads();
+             plat::sleep_ns(1'000'000'000);
+             log("hang: second sample");
 diff --git a/runtime/src/loader.cpp b/runtime/src/loader.cpp
 index be9efae..2b02048 100644
 --- a/runtime/src/loader.cpp
@@ -2502,7 +2577,7 @@ index ea6c20c..06b4cd7 100644
  
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_debug.cpp b/runtime/src/nvn/nvn_debug.cpp
-index 4f1910e..48f4135 100644
+index 4f1910e..b7dc51e 100644
 --- a/runtime/src/nvn/nvn_debug.cpp
 +++ b/runtime/src/nvn/nvn_debug.cpp
 @@ -6,7 +6,10 @@
@@ -2548,7 +2623,7 @@ index 4f1910e..48f4135 100644
  
  }  // namespace
  
-@@ -476,6 +484,194 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
+@@ -476,6 +484,206 @@ void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw) {
  
  bool debug_snapshots_pending() { return !g_snaps.empty(); }
  
@@ -2625,6 +2700,7 @@ index 4f1910e..48f4135 100644
 +int g_diag_seq = 0;
 +FILE* g_diag_index = nullptr;
 +constexpr int kDiagMax = 400;
++std::map<const GpuImage*, int> g_diag_pictures;  // pictures of each image in this storyboard
 +}  // namespace
 +
 +void diag_line(const std::string& line) {
@@ -2666,6 +2742,7 @@ index 4f1910e..48f4135 100644
 +        plat::make_dirs(dir);
 +        g_diag_index = plat::fopen_utf8(dir + "/passes.txt", "w");
 +        g_diag_seq = 0;
++        g_diag_pictures.clear();
 +        g_diag_on = true;
 +        log("diag: storyboard of the next frame (after present %llu)", (unsigned long long)presents);
 +    }
@@ -2673,6 +2750,16 @@ index 4f1910e..48f4135 100644
 +
 +void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws, const std::string& fs) {
 +    if (!g_diag_on || g_diag_seq >= kDiagMax || !img.image || !(img.aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return;
++    // A pass of one or two draws on an image pictured that many times already is left out: Breath of the Wild draws
++    // its decals one per 8-target pass (62 in the shrine), and the 400 pictures ran out before the lighting, after a
++    // 20 s capture. NX_DIAG_PER_IMAGE=<n> (default 4, 0: every pass).
++    static const int per_image = [] {
++        const char* e = std::getenv("NX_DIAG_PER_IMAGE");
++        return e ? std::atoi(e) : 4;
++    }();
++    int& pictured = g_diag_pictures[&img];
++    if (per_image > 0 && draws <= 2 && pictured >= per_image) return;
++    pictured++;
 +    Snap snap;
 +    snap.w = std::min(img.width, 480u);
 +    snap.h = std::max(1u, uint32_t(uint64_t(img.height) * snap.w / std::max(1u, img.width)));
@@ -2743,7 +2830,7 @@ index 4f1910e..48f4135 100644
  void debug_snapshots_write() {  // after the submit's fence
      for (Snap& snap : g_snaps) {
          void* p = nullptr;
-@@ -489,6 +685,103 @@ void debug_snapshots_write() {  // after the submit's fence
+@@ -489,6 +697,103 @@ void debug_snapshots_write() {  // after the submit's fence
                  std::fclose(f);
              }
              p_vkUnmapMemory(vk_device(), snap.s.buffer_memory);
@@ -4844,7 +4931,7 @@ index 9094920..619bb69 100644
  NX_HLE("nvnWindowGetNumActiveTextures", WindowGetNumActiveTextures);
  NX_HLE("nvnWindowSetNumActiveTextures", WindowSetNumActiveTextures);
 diff --git a/runtime/src/nvn/nvn_raster.cpp b/runtime/src/nvn/nvn_raster.cpp
-index 2404fc0..1baa3a7 100644
+index 2404fc0..4786440 100644
 --- a/runtime/src/nvn/nvn_raster.cpp
 +++ b/runtime/src/nvn/nvn_raster.cpp
 @@ -71,12 +71,20 @@ float equal_slack_units() {
@@ -4867,6 +4954,21 @@ index 2404fc0..1baa3a7 100644
 -    if (d.depth_write || equal_slack_units() == 0.0f) return false;
 +    if (d.depth_write || equal_slack_units() == 0.0f || equal_exact()) return false;
      return d.depth_func == 3 || (d.depth_func == 5 && greater);
+ }
+ 
+@@ -139,7 +147,13 @@ void raster_dynamic(VkCommandBuffer cb, bool slack) {
+     // A non-zero clamp needs the depthBiasClamp feature (MoltenVK has it: Metal's setDepthBias clamp).
+     float clamp = vk_features().depthBiasClamp ? s.bias_clamp : 0.0f;
+     float units = s.bias_units * units_scale, factor = s.bias_factor;
+-    if (slack) units -= equal_slack_units(), factor -= equal_slack_units() / 4.0f, clamp = 0.0f;
++    if (slack) {
++        // The slack turns the bias on for the whole pipeline: the game's own offset counts only where its polygon state
++        // enables one (Breath of the Wild's light quads got another pass's -86.8 units on top of the slack).
++        uint32_t offset_bit = s.polygon.mode <= 2 ? 1u << s.polygon.mode : 4u;
++        if (!(s.polygon.offset_enables & offset_bit)) units = factor = 0.0f;
++        units -= equal_slack_units(), factor -= equal_slack_units() / 4.0f, clamp = 0.0f;
++    }
+     p_vkCmdSetDepthBias(cb, units, clamp, factor);
  }
  
 diff --git a/runtime/src/nvn/nvn_replay.cpp b/runtime/src/nvn/nvn_replay.cpp
@@ -7938,7 +8040,7 @@ index fa4ac38..26a33d2 100644
  bool write_watch_add(uint64_t addr, uint64_t size);
 diff --git a/runtime/src/platform_ps4.cpp b/runtime/src/platform_ps4.cpp
 new file mode 100644
-index 0000000..db7ba22
+index 0000000..a615673
 --- /dev/null
 +++ b/runtime/src/platform_ps4.cpp
 @@ -0,0 +1,1110 @@
@@ -8415,10 +8517,10 @@ index 0000000..db7ba22
 +    t_stack_slot = s.slot;
 +    register_thread();
 +    if (profile_requested()) {  // guest threads sampled too, named by start order (port/ps4_sampler.cpp)
-+        // The first 40: the sampler has 48 slots, and the replay thread and the game's main thread register later
++        // The first 60: the sampler has 64 slots, and the replay thread and the game's main thread register later
 +        // (v00.30's 48 guests left them out).
 +        static std::atomic<int> started{0};
-+        if (int n = started++; n < 40) {
++        if (int n = started++; n < 60) {
 +            char* name = new char[16];
 +            std::snprintf(name, 16, "guest %d", n);
 +            ps4_sampler_register_thread(name);
