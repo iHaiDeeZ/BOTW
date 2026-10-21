@@ -319,17 +319,19 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
 // TextureInitialize writes the texture's description into the struct; adopt_texture makes a struct whose description
 // is not the one known at its address (a copy, or a struct a copy overwrote) that texture there.
 // NX_TEXTURE_STAMPS=0: neither (bisecting).
-constexpr uint64_t kStampMagic = 0x3130504D41545358ull;  // "XSTAMP01"
+constexpr uint64_t kStampMagic = 0x3230504D41545358ull;  // "XSTAMP02"
 struct TextureStamp {
     uint64_t magic, serial;
+    uint64_t home;  // the struct's address at its initialization: a copy elsewhere names another
     uint32_t target, format, flags, levels, samples, depth_stencil_mode;
     uint32_t width, height, depth, stride, block_height_gobs;
     uint8_t swizzle[4];
     uint64_t pool, offset, storage_size;
     uint64_t check;  // over everything before it: a struct that merely starts with the magic is not one
 };
-static_assert(sizeof(TextureStamp) == 96, "no padding (the check hashes the bytes), within NVNtexture's 128 or 192");
+static_assert(sizeof(TextureStamp) == 104, "no padding (the check hashes the bytes), within NVNtexture's 128 or 192");
 std::atomic<uint64_t> g_texture_serial{0};
+std::atomic<uint64_t> g_adoptions{0};  // copies adopted so far (adopt_texture): none, and a struct at home is no copy
 
 bool texture_stamps() {
     static const bool on = [] {
@@ -348,7 +350,7 @@ uint64_t stamp_check(const TextureStamp& s) {
 
 void write_stamp(uint64_t guest, const Texture& t) {
     TextureStamp s{};
-    s.magic = kStampMagic, s.serial = t.serial;
+    s.magic = kStampMagic, s.serial = t.serial, s.home = guest;
     s.target = t.target, s.format = t.format, s.flags = t.flags, s.levels = t.levels, s.samples = t.samples;
     s.depth_stencil_mode = t.depth_stencil_mode;
     s.width = t.width, s.height = t.height, s.depth = t.depth, s.stride = t.stride;
@@ -373,6 +375,7 @@ void TextureCompare(CPU& c) {
     bool same = read_stamp(c.x[0], a) && read_stamp(c.x[1], b);
     if (same) {
         a.serial = b.serial = 0;
+        a.home = b.home = 0;
         a.check = b.check = 0;
         same = std::memcmp(&a, &b, sizeof a) == 0;
     }
@@ -533,7 +536,7 @@ void TextureFinalize(CPU& c) {
     auto guard = reinit_guard();
     uint64_t guest = c.x[0];
     if (trace_textures()) log("nvn: texture %llx finalized", (unsigned long long)guest);
-    if (TextureStamp s; read_stamp(guest, s)) st<uint64_t>(guest, 0);  // no longer a texture (its copies still are)
+    if (texture_stamps() && ld<uint64_t>(guest) == kStampMagic) st<uint64_t>(guest, 0);  // its copies stay textures
     static const bool old = texture_race_old();
     {
         std::lock_guard lk(objects_lock());
@@ -836,6 +839,7 @@ constexpr size_t kAdoptedKeep = 8192;  // ~250 frames of BotW's ~32 adoptions pe
 uint64_t g_next_adopted = 0;
 std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> g_adopted_now;  // holder -> (serial, host key)
 std::deque<std::pair<uint64_t, uint64_t>> g_adopted_order;                   // (host key, holder), oldest first
+std::atomic<bool> g_any_adopted{false};  // a key was published: until then stable_texture_key takes no lock
 
 bool adopt_keys() {
     static const bool on = [] {
@@ -866,6 +870,7 @@ void publish_adopted_key(uint64_t guest, std::unique_ptr<Texture> copy) {
     uint64_t key = kAdoptedTexture | ++g_next_adopted;
     publish_locked(key, std::move(copy));
     g_adopted_now[guest] = {serial, key};
+    g_any_adopted.store(true, std::memory_order_release);
     g_adopted_order.push_back({key, guest});
     while (g_adopted_order.size() > kAdoptedKeep) {
         auto [old, holder] = g_adopted_order.front();
@@ -877,9 +882,11 @@ void publish_adopted_key(uint64_t guest, std::unique_ptr<Texture> copy) {
 
 }  // namespace
 
+// Called for every render target, clear and copy recorded. Tears of the Kingdom adopts nothing, so it costs only the
+// flag; else a shared lock (an exclusive one bumps the lock's generation, which empties every thread's get<> cache).
 uint64_t stable_texture_key(uint64_t guest) {
-    if (!guest || !adopt_keys()) return guest;
-    std::lock_guard lk(objects_lock());
+    if (!guest || !adopt_keys() || !g_any_adopted.load(std::memory_order_acquire)) return guest;
+    std::shared_lock lk(objects_lock());
     auto h = g_adopted_now.find(guest);
     if (h == g_adopted_now.end()) return guest;
     auto o = objects().find(guest);
@@ -890,17 +897,26 @@ uint64_t stable_texture_key(uint64_t guest) {
 // The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
 // key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
 void adopt_texture(CPU&, uint64_t guest) {
+    if (!guest || !texture_stamps()) return;
+    // Called by every pool registration (the game's busiest NVN calls), getter, target, clear and copy. Until the game
+    // copies a struct, one at its own address is the texture initialized there: no lookup. Tears of the Kingdom copies
+    // none, and a get<> per call (8 per-thread cache slots, thousands of textures a frame) was an objects_lock reader
+    // each on its game threads. Once a copy was adopted the struct must name the serial of the texture known at its
+    // address; the stamp's hash is checked only when it does not.
+    uint64_t head[3];
+    std::memcpy(head, reinterpret_cast<const void*>(guest), sizeof head);
+    if (head[0] != kStampMagic) return;
+    if (head[2] == guest && !g_adoptions.load(std::memory_order_acquire)) return;
+    if (Texture* t = get<Texture>(guest); t && t->serial == head[1]) return;
     TextureStamp s;
     if (!read_stamp(guest, s)) return;
-    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
+    uint64_t n = ++g_adoptions;
     auto guard = reinit_guard();
     auto fresh = std::make_unique<Texture>();
     Texture& t = *fresh;
     texture_from_stamp(t, s);
     std::unique_ptr<Texture> keyed;
     if (adopt_keys()) keyed = std::make_unique<Texture>(), texture_from_stamp(*keyed, s);
-    static std::atomic<uint64_t> adopted{0};
-    uint64_t n = ++adopted;
     if (n <= 10 || (n & (n - 1)) == 0 || trace_textures())
         log("nvn: texture %llx is a copy of initialization #%llu (%ux%u format %#x, memory %llx): adopted (%llu so far)",
             (unsigned long long)guest, (unsigned long long)s.serial, t.width, t.height, t.format,
