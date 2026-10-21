@@ -1681,10 +1681,85 @@ index 451f0dd..248b2ac 100644
          notify_all();
      }
 diff --git a/runtime/src/kernel.cpp b/runtime/src/kernel.cpp
-index 0b4e6b6..531a9f0 100644
+index 0b4e6b6..ec0b2fa 100644
 --- a/runtime/src/kernel.cpp
 +++ b/runtime/src/kernel.cpp
-@@ -365,6 +365,7 @@ static void thread_main(void* p) {
+@@ -112,14 +112,46 @@ NX_HLE("_ZN2nn2os13GetSystemTickEv", hle_get_system_tick);
+ 
+ // ---- waiting --------------------------------------------------------------------------------------------------
+ 
++using Clock = std::chrono::steady_clock;
++
++// One wait (with g_k held) on the thread's condition variable, until `until` (`forever`: no limit) but at most
++// NX_WAIT_SLICE_MS (default 25; 0: no limit), after which the caller checks again: a notify that never reaches the
++// host condition variable then costs a slice instead of the thread. Breath of the Wild (PS4, with the sampling
++// profiler's 1 kHz signals) froze with a message queue's owner asleep in svcWaitProcessWideKeyAtomic after a signal
++// had handed it the mutex and set its `wake`: on no wait list, never woken, and the game's sound thread waiting for
++// that mutex. `done` says whether what the thread waits for is there; a slice that ends with it there is logged.
++template <class Done>
++static void wait_slice(std::unique_lock<std::recursive_mutex>& lk, KThread* self, bool forever, Clock::time_point until,
++                       Done done) {
++    static const int64_t slice_ms = [] {
++        const char* e = std::getenv("NX_WAIT_SLICE_MS");
++        return e ? std::max<int64_t>(0, std::atoll(e)) : 25;
++    }();
++    const auto next = Clock::now() + std::chrono::milliseconds(slice_ms);
++    if (!slice_ms || (!forever && next >= until)) {
++        if (forever)
++            self->cv.wait(lk);
++        else
++            self->cv.wait_until(lk, until);
++        return;
++    }
++    if (self->cv.wait_until(lk, next) == std::cv_status::timeout && done()) {
++        static uint32_t late = 0;  // g_k held
++        if (++late <= 8 || !(late & (late - 1)))
++            log("kernel: thread %x found its wake-up only when a %lld ms wait slice ended (%u so far)", self->handle,
++                (long long)slice_ms, late);
++    }
++}
++
+ // Wait (with g_k held) until `self->wake` or timeout (ns, <0 = forever). Returns false on timeout.
+ static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int64_t timeout_ns) {
+-    if (timeout_ns < 0) {
+-        self->cv.wait(lk, [&] { return self->wake; });
+-        return true;
++    const bool forever = timeout_ns < 0;
++    const auto until = Clock::now() + std::chrono::nanoseconds(forever ? 0 : timeout_ns);
++    while (!self->wake) {
++        if (!forever && Clock::now() >= until) return false;
++        wait_slice(lk, self, forever, until, [&] { return self->wake; });
+     }
+-    auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
+-    return self->cv.wait_until(lk, until, [&] { return self->wake; });
++    return true;
+ }
+ 
+ // Wake a blocked thread (with g_k held).
+@@ -332,7 +364,7 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
+             if (objs[i]->signaled()) return i;
+         return -1;
+     };
+-    auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
++    auto until = Clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
+     KThread* self = t_self;
+     self->cancel = false;
+     g_sync_waiters.push_back(self);
+@@ -351,11 +383,8 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
+             self->cancel = false;
+             return 0xEC01;
+         }
+-        if (timeout == 0) return 0xEA01;
+-        if (timeout < 0)
+-            self->cv.wait(lk);
+-        else if (self->cv.wait_until(lk, until) == std::cv_status::timeout && ready() < 0)
+-            return 0xEA01;
++        if (timeout == 0 || (timeout > 0 && Clock::now() >= until)) return 0xEA01;
++        wait_slice(lk, self, timeout < 0, until, [&] { return ready() >= 0 || self->cancel; });
+     }
+ }
+ 
+@@ -365,6 +394,7 @@ static void thread_main(void* p) {
      KThread* t = static_cast<KThread*>(p);
      t_self = t;
      t->host_tid = plat::current_thread_id();
@@ -1692,7 +1767,7 @@ index 0b4e6b6..531a9f0 100644
      char name[16];
      std::snprintf(name, sizeof name, "g%llx", (unsigned long long)t->id);
      plat::set_thread_name(name);
-@@ -405,6 +406,7 @@ uint32_t create_main_thread(uint64_t stack_size) {
+@@ -405,6 +435,7 @@ uint32_t create_main_thread(uint64_t stack_size) {
      t->started = true;
      t_self = t.get();
      t->host_tid = plat::current_thread_id();
@@ -1936,10 +2011,18 @@ index 0000000..dc27ec9
 +
 +}  // namespace nx::plat
 diff --git a/runtime/src/nvn/nvn.h b/runtime/src/nvn/nvn.h
-index ee52901..8b68809 100644
+index ee52901..113f271 100644
 --- a/runtime/src/nvn/nvn.h
 +++ b/runtime/src/nvn/nvn.h
-@@ -102,7 +102,11 @@ T* get(uint64_t guest) {
+@@ -17,6 +17,7 @@
+ #include <shared_mutex>
+ #include <unordered_map>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include <nx/runtime.h>
+@@ -102,7 +103,11 @@ T* get(uint64_t guest) {
              uint64_t guest = 0, serial = 0;
              T* object = nullptr;
          };
@@ -1952,7 +2035,7 @@ index ee52901..8b68809 100644
          Slot& s = table[((guest >> 4) ^ (guest >> 14)) & 1023];
          if (s.serial == serial && s.guest == guest) return s.object;
          T* p;
-@@ -184,12 +188,16 @@ uint64_t gpu_alloc(uint64_t size);
+@@ -184,12 +189,16 @@ uint64_t gpu_alloc(uint64_t size);
  MemoryPool* pool_at_gpu(uint64_t gpu, uint64_t* offset);
  void pool_register(MemoryPool* pool);
  void pool_unregister(MemoryPool* pool);
@@ -1969,7 +2052,7 @@ index ee52901..8b68809 100644
      uint32_t target = 0, format = 0, flags = 0, levels = 0, samples = 0, depth_stencil_mode = 0;
      uint32_t width = 0, height = 0, depth = 0, stride = 0;
      uint64_t pool = 0, offset = 0, storage_size = 0;
-@@ -226,6 +234,14 @@ struct Texture : Object {
+@@ -226,6 +235,14 @@ struct Texture : Object {
      ~Texture();  // nvn_vk.cpp: the image is freed once the GPU is done with it
  };
  
@@ -1984,7 +2067,7 @@ index ee52901..8b68809 100644
  struct Window : Object {
      std::vector<uint64_t> textures;  // guest NVNtexture*
      int active = 0, next = 0, interval = 1;
-@@ -282,7 +298,8 @@ uint32_t format_aspect(uint32_t format);
+@@ -282,7 +299,8 @@ uint32_t format_aspect(uint32_t format);
  void set_astc_native(bool native);
  bool astc_native();
  bool is_astc(uint32_t format);
@@ -1994,7 +2077,7 @@ index ee52901..8b68809 100644
  // Bytes per texel of a Vulkan format as buffer-image copies count them (nvn_format.cpp); 0 for block-compressed and
  // combined depth/stencil formats, whose NVN size (format_block) is the host's. Differs from the NVN size where a
  // format is stored wider than the game's: 0x3f R11G11B10F is 4 bytes in NVN, RGBA16F (8) here.
-@@ -311,10 +328,12 @@ struct Cmd {
+@@ -311,10 +329,12 @@ struct Cmd {
          BindVertexAttribs, BindVertexStreams, BindBlendState, BindColorState, BindChannelMaskState,
          BindDepthStencilState, BindPolygonState, SetBlendColor, UpdateUniformBuffer, SetTexturePool, SetSamplerPool,
          DrawArrays, DrawElements, ReportCounter, SetRasterizerDiscard, SetRenderEnable, CopyTextureToTexture,
@@ -2007,7 +2090,40 @@ index ee52901..8b68809 100644
      } op;
      uint32_t n = 0, mask = 0;
      uint64_t a[9] = {};  // textures (render targets: colors then depth), handles, GPU addresses, sizes, ...
-@@ -367,6 +386,7 @@ struct PolygonInfo {
+@@ -323,9 +343,31 @@ struct Cmd {
+     uint32_t blob = 0;  // index into CmdList::blobs (decoded state, inline data)
+ };
+ 
++// A list's blobs in one buffer: one allocation per list, not one per blob. The game's threads record thousands of
++// blobs a frame, and every allocation took the host allocator's one lock, which the replay thread holds often too
++// (2-3% of Tears of the Kingdom's main and job threads waited on it on the PS4, v00.43). blobs[i] reads as before.
++struct BlobView {
++    const uint8_t* p;
++    size_t n;
++    const uint8_t* data() const { return p; }
++    size_t size() const { return n; }
++};
++struct Blobs {
++    std::vector<uint8_t> bytes;
++    std::vector<std::pair<uint32_t, uint32_t>> spans;  // offset in bytes, size
++    size_t size() const { return spans.size(); }
++    size_t byte_size() const { return bytes.size(); }
++    void reserve(size_t count, size_t total) { spans.reserve(count), bytes.reserve(total); }
++    void emplace_back(const uint8_t* from, const uint8_t* to) {
++        spans.push_back({uint32_t(bytes.size()), uint32_t(to - from)});
++        bytes.insert(bytes.end(), from, to);
++    }
++    BlobView operator[](size_t i) const { return {bytes.data() + spans[i].first, spans[i].second}; }
++};
++
+ struct CmdList {
+     std::vector<Cmd> cmds;
+-    std::vector<std::vector<uint8_t>> blobs;
++    Blobs blobs;
+     uint64_t handle = 0;     // its NVNcommandHandle
+     uint64_t epoch = 0;      // the texture epoch when its recording ended (nvn_incarnation.cpp): what its draws name
+     uint32_t skinned = 0;    // NX_TRACE_SKINLISTS: binds of skinned programs (a vertex input at location 6) in it
+@@ -367,6 +409,7 @@ struct PolygonInfo {
  // nvn_raster.cpp: an EQUAL colour pass after a depth pre-pass (tested, not written), drawn with a small depth bias
  // toward the camera (DEBUG.md #60). NX_EQUAL_SLACK=<units> (default 4, 0: off); the slope term is 1 per unit of it.
  bool equal_slack_pass(const DepthStencilInfo& d);
@@ -2016,10 +2132,10 @@ index ee52901..8b68809 100644
  struct TargetViews {  // SetRenderTargets' blob: level and layer per color target (0..7) and depth (8)
      uint8_t level[9] = {};
 diff --git a/runtime/src/nvn/nvn_astc.cpp b/runtime/src/nvn/nvn_astc.cpp
-index 33ccbe2..7913d09 100644
+index 33ccbe2..c329ef4 100644
 --- a/runtime/src/nvn/nvn_astc.cpp
 +++ b/runtime/src/nvn/nvn_astc.cpp
-@@ -7,11 +7,72 @@
+@@ -7,11 +7,73 @@
  #include <cstring>
  #include <thread>
  #include <vector>
@@ -2084,7 +2200,8 @@ index 33ccbe2..7913d09 100644
 +    pool.start.notify_all();
 +    job(0);
 +    std::unique_lock lk(pool.m);
-+    pool.done.wait(lk, [&] { return pool.pending == 0; });
++    while (!pool.done.wait_for(lk, std::chrono::milliseconds(25), [&] { return pool.pending == 0; })) {
++    }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
 +    return true;
 +}
 +#endif
@@ -2092,7 +2209,7 @@ index 33ccbe2..7913d09 100644
  struct Block {
      uint64_t w[2];
      // Bits [pos, pos + n), n <= 32, LSB first.
-@@ -421,6 +482,16 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
+@@ -421,6 +483,16 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
      // Big images over a few threads, by rows of blocks (each writes its own texel rows). The replay waits for them:
      // a 2048x2048 6x5 texture took ~40 ms on one core (DEBUG-2 #75).
      const uint64_t total = rows * bx;
@@ -2109,7 +2226,7 @@ index 33ccbe2..7913d09 100644
      unsigned n = total >= 8192 ? std::min(6u, std::max(1u, std::thread::hardware_concurrency() / 2)) : 1u;
      if (n <= 1) return decode_rows(0, rows);
      std::vector<std::thread> pool;
-@@ -432,6 +503,7 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
+@@ -432,6 +504,7 @@ uint64_t astc_decode_image(const uint8_t* blocks, uint32_t width, uint32_t heigh
      uint64_t sum = 0;
      for (uint64_t b : bad) sum += b;
      return sum;
@@ -2312,7 +2429,7 @@ index f7fb931..12afd04 100644
 +
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_cmd.cpp b/runtime/src/nvn/nvn_cmd.cpp
-index 52ef32d..863d533 100644
+index 52ef32d..b4aee9f 100644
 --- a/runtime/src/nvn/nvn_cmd.cpp
 +++ b/runtime/src/nvn/nvn_cmd.cpp
 @@ -14,6 +14,9 @@
@@ -2329,7 +2446,7 @@ index 52ef32d..863d533 100644
  struct CommandBuffer : Object {
      std::mutex lock;
      std::shared_ptr<CmdList> recording = std::make_shared<CmdList>();
-+    size_t last_cmds = 0, last_blobs = 0;  // the previous list's sizes: the next one is reserved that much up front
++    size_t last_cmds = 0, last_blobs = 0, last_blob_bytes = 0;  // the previous list's sizes: reserved up front
      // The memory the game hands over (AddCommandMemory / AddControlMemory) and what recording "uses" of it. Engines
      // look at the used amounts right after EndRecording (a list that used nothing is dropped, never submitted) and
      // at the free ones (to add memory in time), so usage grows with the commands recorded, survives EndRecording
@@ -2340,19 +2457,20 @@ index 52ef32d..863d533 100644
 +        // A command buffer records much the same each frame: one allocation instead of ~log2(n) regrowths of
 +        // ~128-byte commands.
 +        cb->recording->cmds.reserve(cb->last_cmds);
-+        cb->recording->blobs.reserve(cb->last_blobs);
++        cb->recording->blobs.reserve(cb->last_blobs, cb->last_blob_bytes);
      }
  }
  
-@@ -199,6 +207,7 @@ void CommandBufferEndRecording(CPU& c) {  // NVNcommandHandle
+@@ -199,6 +207,8 @@ void CommandBufferEndRecording(CPU& c) {  // NVNcommandHandle
      if (auto* cb = get<CommandBuffer>(c.x[0])) {
          std::lock_guard lk(cb->lock);
          size_t n = cb->recording->cmds.size() + 1;  // + the end of the list, so even an empty one used something
 +        cb->last_cmds = cb->recording->cmds.size(), cb->last_blobs = cb->recording->blobs.size();
++        cb->last_blob_bytes = cb->recording->blobs.byte_size();
          start = cb->command_memory + cb->command_base;
          pool = cb->command_pool;
          cb->command_base = used(cb->command_size, cb->command_base, n, kCommandBytes);
-@@ -307,6 +316,8 @@ void SetRenderTargets(CPU& c) {
+@@ -307,6 +317,8 @@ void SetRenderTargets(CPU& c) {
      cmd.n = n;
      for (uint32_t k = 0; k < n && c.x[2]; k++) cmd.a[k] = ld<uint64_t>(c.x[2] + 8 * k);
      cmd.a[8] = c.x[4];  // depth/stencil
@@ -2361,7 +2479,7 @@ index 52ef32d..863d533 100644
      // The views pick the level and layer rendered to (a bloom chain renders each mip of one texture in turn).
      TargetViews tv;
      for (uint32_t k = 0; k < n && c.x[3]; k++) {
-@@ -331,6 +342,15 @@ void ClearDepthStencil(CPU& c) {
+@@ -331,6 +343,15 @@ void ClearDepthStencil(CPU& c) {
      cmd.f[0] = c.v[0].f32[0];
      cmd.mask = (c.x[1] & 1) | ((uint32_t(c.x[3]) & 0xFF) << 8);  // depth mask, stencil mask
      cmd.i[0] = int32_t(c.x[2]);
@@ -4167,7 +4285,7 @@ index 03621bd..67e6f01 100644
      if (img.layout == to) return;
      VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
 diff --git a/runtime/src/nvn/nvn_janitor.cpp b/runtime/src/nvn/nvn_janitor.cpp
-index 45e9b2a..47b2530 100644
+index 45e9b2a..7a07fd6 100644
 --- a/runtime/src/nvn/nvn_janitor.cpp
 +++ b/runtime/src/nvn/nvn_janitor.cpp
 @@ -8,6 +8,7 @@
@@ -4178,7 +4296,7 @@ index 45e9b2a..47b2530 100644
  #include <thread>
  
  #include "nvn_vk.h"
-@@ -51,15 +52,24 @@ bool janitor_on() {
+@@ -51,22 +52,33 @@ bool janitor_on() {
  }
  
  void janitor_run(std::function<void()> job) {
@@ -4207,8 +4325,18 @@ index 45e9b2a..47b2530 100644
  }
  
  void janitor_wait(const std::atomic<bool>& done) {
+     for (int k = 0; k < 200 && !done.load(std::memory_order_acquire); k++) plat::yield();  // normally done already
+     if (done.load(std::memory_order_acquire)) return;
+     std::unique_lock lk(g_lock);
+-    g_done_cv.wait(lk, [&] { return done.load(std::memory_order_acquire); });
++    while (!g_done_cv.wait_for(lk, std::chrono::milliseconds(25),
++                               [&] { return done.load(std::memory_order_acquire); })) {
++    }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
+ }
+ 
+ }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_objects.cpp b/runtime/src/nvn/nvn_objects.cpp
-index a2a7dd0..1e8d801 100644
+index a2a7dd0..53d211d 100644
 --- a/runtime/src/nvn/nvn_objects.cpp
 +++ b/runtime/src/nvn/nvn_objects.cpp
 @@ -83,12 +83,13 @@ ViewInfo read_view(CPU& c, uint64_t view) {
@@ -4313,29 +4441,33 @@ index a2a7dd0..1e8d801 100644
  void BufferInvalidateMappedRange(CPU&) {}
  
  // ---- textures ---------------------------------------------------------------------------------------------------
-@@ -268,6 +309,74 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
+@@ -268,6 +309,79 @@ std::unique_lock<std::recursive_mutex> reinit_guard() {
      return wait ? std::unique_lock<std::recursive_mutex>(gpu_lock()) : std::unique_lock<std::recursive_mutex>();
  }
  
 +// The description an NVNtexture struct carries. The SDK driver keeps all of a texture's state in its NVNtexture (192
-+// bytes the game allocates), so a copy of the struct is the same texture, and games copy them: Breath of the Wild's
++// bytes the game allocates in NVN 53, 128 in Tears of the Kingdom's driver: its nvnTextureInitialize clears 0x80 bytes,
++// and the game's texture objects are 0x88 apart; the stamp must stay within the smallest), so a copy of the struct is
++// the same texture, and games copy them: Breath of the Wild's
 +// agl initializes each texture in a stack temporary, registers it in the texture pool, then memcpys the struct into its
 +// own object (main+1289ad0) and renders, clears and copies through that copy. Ours are host objects keyed by the
 +// struct's address, so every copy was unknown: no render target or clear reached the GPU and the screen stayed black.
 +// TextureInitialize writes the texture's description into the struct; adopt_texture makes a struct whose description
 +// is not the one known at its address (a copy, or a struct a copy overwrote) that texture there.
 +// NX_TEXTURE_STAMPS=0: neither (bisecting).
-+constexpr uint64_t kStampMagic = 0x3130504D41545358ull;  // "XSTAMP01"
++constexpr uint64_t kStampMagic = 0x3230504D41545358ull;  // "XSTAMP02"
 +struct TextureStamp {
 +    uint64_t magic, serial;
++    uint64_t home;  // the struct's address at its initialization: a copy elsewhere names another
 +    uint32_t target, format, flags, levels, samples, depth_stencil_mode;
 +    uint32_t width, height, depth, stride, block_height_gobs;
 +    uint8_t swizzle[4];
 +    uint64_t pool, offset, storage_size;
 +    uint64_t check;  // over everything before it: a struct that merely starts with the magic is not one
 +};
-+static_assert(sizeof(TextureStamp) == 96, "no padding (the check hashes the bytes), within NVNtexture's 192");
++static_assert(sizeof(TextureStamp) == 104, "no padding (the check hashes the bytes), within NVNtexture's 128 or 192");
 +std::atomic<uint64_t> g_texture_serial{0};
++std::atomic<uint64_t> g_adoptions{0};  // copies adopted so far (adopt_texture): none, and a struct at home is no copy
 +
 +bool texture_stamps() {
 +    static const bool on = [] {
@@ -4354,7 +4486,7 @@ index a2a7dd0..1e8d801 100644
 +
 +void write_stamp(uint64_t guest, const Texture& t) {
 +    TextureStamp s{};
-+    s.magic = kStampMagic, s.serial = t.serial;
++    s.magic = kStampMagic, s.serial = t.serial, s.home = guest;
 +    s.target = t.target, s.format = t.format, s.flags = t.flags, s.levels = t.levels, s.samples = t.samples;
 +    s.depth_stencil_mode = t.depth_stencil_mode;
 +    s.width = t.width, s.height = t.height, s.depth = t.depth, s.stride = t.stride;
@@ -4379,6 +4511,7 @@ index a2a7dd0..1e8d801 100644
 +    bool same = read_stamp(c.x[0], a) && read_stamp(c.x[1], b);
 +    if (same) {
 +        a.serial = b.serial = 0;
++        a.home = b.home = 0;
 +        a.check = b.check = 0;
 +        same = std::memcmp(&a, &b, sizeof a) == 0;
 +    }
@@ -4388,7 +4521,7 @@ index a2a7dd0..1e8d801 100644
  void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBuilder*)
      auto guard = reinit_guard();
      uint64_t guest = c.x[0], builder = c.x[1];
-@@ -301,7 +410,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
+@@ -301,7 +415,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
      t.storage_size = texture_storage_size(c, builder);
      if (old) {
          std::lock_guard lk(objects_lock());
@@ -4397,7 +4530,7 @@ index a2a7dd0..1e8d801 100644
      }
      // Packaged (BNTX) textures were tiled offline with a block height often one step below the default
      // (docs/nvn/TILING.md). The layout the builder returns does not carry it (it reads 1 for every texture in
-@@ -329,6 +438,8 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
+@@ -329,6 +443,8 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
          t.memory = pool_host(*p, t.offset);
          t.gpu = p->gpu + t.offset;
      }
@@ -4406,7 +4539,7 @@ index a2a7dd0..1e8d801 100644
      if (g_trace || trace_textures())
          log("nvn: texture %llx: memory %llx target %u format %#x %ux%ux%u levels %u samples %u flags %x size %llx block height %u "
              "swizzle %u%u%u%u", (unsigned long long)guest, (unsigned long long)t.memory, t.target, t.format, t.width, t.height, t.depth, t.levels,
-@@ -339,7 +450,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
+@@ -339,7 +455,7 @@ void TextureInitialize(CPU& c) {  // NVNboolean (NVNtexture*, const NVNtextureBu
          note_replaced(guest);
          keep_for_slots(guest);
          hand_image_to_snapshots(guest);
@@ -4415,7 +4548,7 @@ index a2a7dd0..1e8d801 100644
          publish_locked(guest, std::move(fresh));
      }
      c.x[0] = 1;
-@@ -357,11 +468,15 @@ constexpr uint64_t kKeptTexture = 0xF000000000000000ull;  // host keys of finali
+@@ -357,11 +473,15 @@ constexpr uint64_t kKeptTexture = 0xF000000000000000ull;  // host keys of finali
  // pointed at, and is destroyed once no slot names it.
  // Moves the texture at `guest` to a host key when a pool slot still names it, and points those slots there (under
  // objects_lock). Returns the key, or 0 when no slot names it.
@@ -4435,7 +4568,7 @@ index a2a7dd0..1e8d801 100644
      auto reg = g_registered.find(guest);
      uint64_t kept = 0;
      if (reg == g_registered.end()) return 0;
-@@ -387,8 +502,7 @@ uint64_t keep_for_slots(uint64_t guest) {
+@@ -387,8 +507,7 @@ uint64_t keep_for_slots(uint64_t guest) {
          if (g_registered[kept].size() == 1) g_kept_order.push_back({kept, plat::monotonic_ns()});
      }
      g_registered.erase(guest);
@@ -4445,7 +4578,7 @@ index a2a7dd0..1e8d801 100644
      return kept;
  }
  
-@@ -406,7 +520,7 @@ void expire_kept() {
+@@ -406,7 +525,7 @@ void expire_kept() {
          g_kept_order.pop_front();
          if (!t) continue;
          g_registered.erase(key);
@@ -4454,11 +4587,11 @@ index a2a7dd0..1e8d801 100644
          defer_object(std::move(o->second));
          objects().erase(o);
          g_released_kept++;
-@@ -417,13 +531,14 @@ void TextureFinalize(CPU& c) {
+@@ -417,13 +536,14 @@ void TextureFinalize(CPU& c) {
      auto guard = reinit_guard();
      uint64_t guest = c.x[0];
      if (trace_textures()) log("nvn: texture %llx finalized", (unsigned long long)guest);
-+    if (TextureStamp s; read_stamp(guest, s)) st<uint64_t>(guest, 0);  // no longer a texture (its copies still are)
++    if (texture_stamps() && ld<uint64_t>(guest) == kStampMagic) st<uint64_t>(guest, 0);  // its copies stay textures
      static const bool old = texture_race_old();
      {
          std::lock_guard lk(objects_lock());
@@ -4470,7 +4603,7 @@ index a2a7dd0..1e8d801 100644
          expire_kept();
          if (kept) return;
          if (!old) {  // in the same section (#55)
-@@ -512,7 +627,7 @@ void release_kept(uint64_t key) {
+@@ -512,7 +632,7 @@ void release_kept(uint64_t key) {
              if (d && d->textures.count(id) && d->textures[id] == key) return;  // still named
          }
      g_registered.erase(key);
@@ -4479,7 +4612,7 @@ index a2a7dd0..1e8d801 100644
      if (auto o = objects().find(key); o != objects().end()) defer_object(std::move(o->second)), objects().erase(o);
      g_released_kept++;
  }
-@@ -521,6 +636,7 @@ void release_kept(uint64_t key) {
+@@ -521,6 +641,7 @@ void release_kept(uint64_t key) {
  // Strided form (+ ptrdiff_t rowStride, ptrdiff_t imageStride). NVNcopyRegion: {int x, y, z, width, height, depth}.
  // The driver would swizzle the texels into the texture's memory; we keep them for the GPU image instead.
  void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
@@ -4487,7 +4620,7 @@ index a2a7dd0..1e8d801 100644
      auto* t = get<Texture>(c.x[0]);
      uint64_t region = c.x[2], data = c.x[3];
      if (!t || !region || !data) return;
-@@ -543,9 +659,18 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
+@@ -543,9 +664,18 @@ void write_texels(CPU& c, uint64_t row_stride, uint64_t image_stride) {
      static std::map<uint64_t, uint64_t> counts;
      std::lock_guard lk(objects_lock());
      uint64_t n = ++counts[c.x[0]];
@@ -4509,7 +4642,7 @@ index a2a7dd0..1e8d801 100644
      t->writes.push_back(std::move(w));
      t->has_writes.store(true, std::memory_order_release);
  }
-@@ -556,6 +681,7 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
+@@ -556,6 +686,7 @@ void TextureFlushTexels(CPU&) {}  // coherent: the writes above are what matters
  
  #define NX_TEXTURE_GETTER(fn, field)          \
      void fn(CPU& c) {                         \
@@ -4517,7 +4650,7 @@ index a2a7dd0..1e8d801 100644
          auto* t = get<Texture>(c.x[0]);       \
          c.x[0] = t ? uint64_t(t->field) : 0;  \
      }
-@@ -574,6 +700,15 @@ NX_TEXTURE_GETTER(TextureGetStorageSize, storage_size)
+@@ -574,6 +705,15 @@ NX_TEXTURE_GETTER(TextureGetStorageSize, storage_size)
  NX_TEXTURE_GETTER(TextureGetDepthStencilMode, depth_stencil_mode)
  #undef NX_TEXTURE_GETTER
  
@@ -4533,7 +4666,7 @@ index a2a7dd0..1e8d801 100644
  // ---- samplers and descriptor pools ----------------------------------------------------------------------------
  
  // NVNboolean nvn{Texture,Sampler}PoolInitialize(pool, const NVNmemoryPool*, ptrdiff_t offset, int numDescriptors)
-@@ -587,10 +722,42 @@ void DescriptorPoolInitialize(CPU& c) {
+@@ -587,10 +727,42 @@ void DescriptorPoolInitialize(CPU& c) {
  
  void DescriptorPoolFinalize(CPU& c) { destroy(c.x[0]); }
  
@@ -4576,7 +4709,7 @@ index a2a7dd0..1e8d801 100644
      ViewInfo v = read_view(c, c.x[3]);
      if (trace_textures()) {
          auto* tt = get<Texture>(c.x[2]);
-@@ -602,8 +769,12 @@ void TexturePoolRegister(CPU& c) {
+@@ -602,8 +774,12 @@ void TexturePoolRegister(CPU& c) {
      if (v.swizzle)
          if (auto* t = get<Texture>(c.x[2])) t->pool_swizzle = v.swizzle;
      if (auto* d = get<DescriptorPool>(c.x[0])) {
@@ -4590,7 +4723,7 @@ index a2a7dd0..1e8d801 100644
          PoolEntry before;  // what a replay in flight still has to see in this slot (nvn_incarnation.cpp)
          if (auto it = d->textures.find(id); it != d->textures.end()) before.has = true, before.texture = it->second;
          if (auto it = d->snapshots.find(id); it != d->snapshots.end()) before.snapshot = it->second;
-@@ -613,9 +784,13 @@ void TexturePoolRegister(CPU& c) {
+@@ -613,9 +789,13 @@ void TexturePoolRegister(CPU& c) {
          d->textures[id] = c.x[2];
          if (auto s = d->snapshots.find(uint32_t(c.x[1])); s != d->snapshots.end()) drop_snapshot(s->second);
          if (uint64_t snap = make_snapshot(c.x[2])) d->snapshots[uint32_t(c.x[1])] = snap;
@@ -4607,7 +4740,7 @@ index a2a7dd0..1e8d801 100644
          if (old && old != c.x[2]) release_kept(old);
          // A view setting only a base level, first layer or format counts too (it was dropped: level 0 sampled).
          if (v.base_level || v.levels || v.min_layer || v.layers || v.swizzle || v.format)
-@@ -646,8 +821,97 @@ void DeviceGetTextureHandle(CPU& c) { c.x[0] = (c.x[1] & 0xFFFFF) | ((c.x[2] & 0
+@@ -646,8 +826,110 @@ void DeviceGetTextureHandle(CPU& c) { c.x[0] = (c.x[1] & 0xFFFFF) | ((c.x[2] & 0
  void DeviceGetTexelFetchHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
  void DeviceGetImageHandle(CPU& c) { c.x[0] = c.x[1] & 0xFFFFF; }
  
@@ -4624,6 +4757,7 @@ index a2a7dd0..1e8d801 100644
 +uint64_t g_next_adopted = 0;
 +std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> g_adopted_now;  // holder -> (serial, host key)
 +std::deque<std::pair<uint64_t, uint64_t>> g_adopted_order;                   // (host key, holder), oldest first
++std::atomic<bool> g_any_adopted{false};  // a key was published: until then stable_texture_key takes no lock
 +
 +bool adopt_keys() {
 +    static const bool on = [] {
@@ -4654,6 +4788,7 @@ index a2a7dd0..1e8d801 100644
 +    uint64_t key = kAdoptedTexture | ++g_next_adopted;
 +    publish_locked(key, std::move(copy));
 +    g_adopted_now[guest] = {serial, key};
++    g_any_adopted.store(true, std::memory_order_release);
 +    g_adopted_order.push_back({key, guest});
 +    while (g_adopted_order.size() > kAdoptedKeep) {
 +        auto [old, holder] = g_adopted_order.front();
@@ -4665,9 +4800,11 @@ index a2a7dd0..1e8d801 100644
 +
  }  // namespace
  
++// Called for every render target, clear and copy recorded. Tears of the Kingdom adopts nothing, so it costs only the
++// flag; else a shared lock (an exclusive one bumps the lock's generation, which empties every thread's get<> cache).
 +uint64_t stable_texture_key(uint64_t guest) {
-+    if (!guest || !adopt_keys()) return guest;
-+    std::lock_guard lk(objects_lock());
++    if (!guest || !adopt_keys() || !g_any_adopted.load(std::memory_order_acquire)) return guest;
++    std::shared_lock lk(objects_lock());
 +    auto h = g_adopted_now.find(guest);
 +    if (h == g_adopted_now.end()) return guest;
 +    auto o = objects().find(guest);
@@ -4678,17 +4815,26 @@ index a2a7dd0..1e8d801 100644
 +// The texture a copied struct describes, made at the copy's address as TextureInitialize would (the same storage
 +// key, so it shares the original's image: what is rendered through the copy is sampled through the pool slot).
 +void adopt_texture(CPU&, uint64_t guest) {
++    if (!guest || !texture_stamps()) return;
++    // Called by every pool registration (the game's busiest NVN calls), getter, target, clear and copy. Until the game
++    // copies a struct, one at its own address is the texture initialized there: no lookup. Tears of the Kingdom copies
++    // none, and a get<> per call (8 per-thread cache slots, thousands of textures a frame) was an objects_lock reader
++    // each on its game threads. Once a copy was adopted the struct must name the serial of the texture known at its
++    // address; the stamp's hash is checked only when it does not.
++    uint64_t head[3];
++    std::memcpy(head, reinterpret_cast<const void*>(guest), sizeof head);
++    if (head[0] != kStampMagic) return;
++    if (head[2] == guest && !g_adoptions.load(std::memory_order_acquire)) return;
++    if (Texture* t = get<Texture>(guest); t && t->serial == head[1]) return;
 +    TextureStamp s;
 +    if (!read_stamp(guest, s)) return;
-+    if (Texture* t = get<Texture>(guest); t && t->serial == s.serial) return;  // the one initialized (or adopted) here
++    uint64_t n = ++g_adoptions;
 +    auto guard = reinit_guard();
 +    auto fresh = std::make_unique<Texture>();
 +    Texture& t = *fresh;
 +    texture_from_stamp(t, s);
 +    std::unique_ptr<Texture> keyed;
 +    if (adopt_keys()) keyed = std::make_unique<Texture>(), texture_from_stamp(*keyed, s);
-+    static std::atomic<uint64_t> adopted{0};
-+    uint64_t n = ++adopted;
 +    if (n <= 10 || (n & (n - 1)) == 0 || trace_textures())
 +        log("nvn: texture %llx is a copy of initialization #%llu (%ux%u format %#x, memory %llx): adopted (%llu so far)",
 +            (unsigned long long)guest, (unsigned long long)s.serial, t.width, t.height, t.format,
@@ -4705,7 +4851,7 @@ index a2a7dd0..1e8d801 100644
  NX_HLE("nvnMemoryPoolInitialize", MemoryPoolInitialize);
  NX_HLE("nvnMemoryPoolFinalize", MemoryPoolFinalize);
  NX_HLE("nvnMemoryPoolMap", MemoryPoolMap);
-@@ -671,6 +935,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
+@@ -671,6 +953,7 @@ NX_HLE("nvnBufferFlushMappedRange", BufferFlushMappedRange);
  NX_HLE("nvnBufferInvalidateMappedRange", BufferInvalidateMappedRange);
  NX_HLE("nvnTextureInitialize", TextureInitialize);
  NX_HLE("nvnTextureFinalize", TextureFinalize);
@@ -4713,7 +4859,7 @@ index a2a7dd0..1e8d801 100644
  NX_HLE("nvnTextureGetWidth", TextureGetWidth);
  NX_HLE("nvnTextureGetHeight", TextureGetHeight);
  NX_HLE("nvnTextureGetDepth", TextureGetDepth);
-@@ -684,6 +949,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
+@@ -684,6 +967,7 @@ NX_HLE("nvnTextureGetMemoryPool", TextureGetMemoryPool);
  NX_HLE("nvnTextureGetMemoryOffset", TextureGetMemoryOffset);
  NX_HLE("nvnTextureGetStorageSize", TextureGetStorageSize);
  NX_HLE("nvnTextureGetDepthStencilMode", TextureGetDepthStencilMode);
@@ -4722,7 +4868,7 @@ index a2a7dd0..1e8d801 100644
  NX_HLE("nvnTexturePoolInitialize", DescriptorPoolInitialize);
  NX_HLE("nvnSamplerPoolFinalize", DescriptorPoolFinalize);
 diff --git a/runtime/src/nvn/nvn_pipeline.cpp b/runtime/src/nvn/nvn_pipeline.cpp
-index e29b321..6a1545d 100644
+index e29b321..b6cc5b8 100644
 --- a/runtime/src/nvn/nvn_pipeline.cpp
 +++ b/runtime/src/nvn/nvn_pipeline.cpp
 @@ -1,6 +1,10 @@
@@ -4844,7 +4990,7 @@ index e29b321..6a1545d 100644
      }
      VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
      cb.attachmentCount = key.color_count;
-@@ -438,7 +478,104 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
+@@ -438,7 +478,106 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
      if (made != VK_SUCCESS)
          log("nvn/vk: pipeline for %s + %s failed", key.vs ? key.vs->hash.c_str() : "-", key.fs ? key.fs->hash.c_str() : "-");
      else if (g_trace)
@@ -4940,7 +5086,9 @@ index e29b321..6a1545d 100644
 +            return VK_NULL_HANDLE;
 +        }
 +        if (pending) {  // a draw that cannot wait, for a pipeline being made: wait for that one
-+            g_async_done.wait(lk, [&] { return g_finished.count(k) != 0; });
++            while (!g_async_done.wait_for(lk, std::chrono::milliseconds(25),
++                                          [&] { return g_finished.count(k) != 0; })) {
++            }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
 +            VkPipeline p = g_finished[k];
 +            g_finished.erase(k);
 +            return (last = &*cache.emplace(k, p).first)->second;
@@ -4950,7 +5098,7 @@ index e29b321..6a1545d 100644
      return (last = &*cache.emplace(k, p).first)->second;
  }
  
-@@ -489,6 +626,7 @@ bool sampled_ready(uint64_t texture) {
+@@ -489,6 +628,7 @@ bool sampled_ready(uint64_t texture) {
      if (t->dirty && !t->image->rendered) return g_not_ready[1]++, false;
      if (t->has_writes.load(std::memory_order_acquire)) return g_not_ready[2]++, false;  // no lock (nvn.h)
      const GpuImage& img = *t->image;
@@ -4958,7 +5106,7 @@ index e29b321..6a1545d 100644
      bool ok = img.rendered ? img.layout == VK_IMAGE_LAYOUT_GENERAL
                             : img.uploaded && img.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
      if (!ok) g_not_ready[img.rendered ? 3 : !img.uploaded ? 4 : 5]++;
-@@ -527,6 +665,7 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
+@@ -527,6 +667,7 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
      Texture* t = get<Texture>(texture);
      GpuImage* img = t ? image_of(texture) : nullptr;
      if (!img) return nullptr;
@@ -4966,7 +5114,7 @@ index e29b321..6a1545d 100644
      bool dirty = t->dirty.exchange(false);
      uint64_t dirty_lo = t->dirty_lo.exchange(UINT64_MAX), dirty_hi = t->dirty_hi.exchange(0);
      if (dirty_hi <= dirty_lo) dirty_lo = 0, dirty_hi = UINT64_MAX;  // marked without a range: all of it
-@@ -545,7 +684,10 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
+@@ -545,7 +686,10 @@ GpuImage* ensure_contents(VkCommandBuffer cb, uint64_t texture) {
          }
      }
      // A texture already on the GPU that the CPU wrote part of: only those bytes go again (the glyph cache).
@@ -4978,7 +5126,7 @@ index e29b321..6a1545d 100644
      apply_texel_writes(cb, *t, *img);
      if (img->layout == VK_IMAGE_LAYOUT_UNDEFINED) {  // never written: black, not garbage
          transition(cb, *img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-@@ -625,6 +767,7 @@ VkImageView storage_view(VkCommandBuffer cb, uint64_t texture, const ImageShape&
+@@ -625,6 +769,7 @@ VkImageView storage_view(VkCommandBuffer cb, uint64_t texture, const ImageShape&
      if (img && img->storage) {
          transition(cb, *img, VK_IMAGE_LAYOUT_GENERAL);
          img->rendered = true;  // the shader may write it
@@ -5266,23 +5414,52 @@ index 4a3f02e..50697b5 100644
                  draw_command(cb, c, list, st);
                  // NX_PIPELINED: after the submit's last dispatch the rest goes into a second command buffer.
 diff --git a/runtime/src/nvn/nvn_sampler_objects.cpp b/runtime/src/nvn/nvn_sampler_objects.cpp
-index b0748f7..bc9d1b6 100644
+index b0748f7..817cef5 100644
 --- a/runtime/src/nvn/nvn_sampler_objects.cpp
 +++ b/runtime/src/nvn/nvn_sampler_objects.cpp
-@@ -46,15 +46,72 @@ void log_sampler(const SamplerInfo& s) {
+@@ -6,8 +6,13 @@
+ //   GetMinMagFilter(s, &min, &mag)   GetWrapMode(s, &s, &t, &r)   GetLodClamp(s, &min, &max)   GetLodBias(s) -> float
+ //   GetCompare(s, &mode, &func)      GetBorderColor(s, float[4])  GetMaxAnisotropy(s) -> float
+ //   GetReductionFilter(s) -> enum
++#include <atomic>
+ #include <cstdlib>
+ #include <cstring>
++#include <map>
++#include <mutex>
++#include <string>
++#include <vector>
+ 
+ #include "nvn.h"
+ 
+@@ -46,15 +51,96 @@ void log_sampler(const SamplerInfo& s) {
              double(s.lod_bias), s.compare_mode, s.compare_func, double(s.max_anisotropy), s.reduction);
  }
  
-+// The sampler's state in its NVNsampler struct (96 bytes the game allocates), as the SDK driver keeps it: a copy of
-+// the struct is the same sampler, and agl copies them as it copies textures (nvn_objects.cpp, TextureStamp). A
-+// pointer with no object of ours answers from the struct. NX_TEXTURE_STAMPS=0: off.
-+constexpr uint64_t kSamplerMagic = 0x3130504D41545353ull;  // "SSTAMP01"
++// The sampler's state through its NVNsampler struct, as the SDK driver keeps it there: a copy of the struct is the same
++// sampler, and agl copies them as it copies textures (nvn_objects.cpp, TextureStamp). A pointer with no object of ours
++// answers from the struct. The struct holds only an index into the table of distinct states (a few hundred): NVNsampler
++// is 96 bytes in Breath of the Wild's NVN 53 but 64 in Tears of the Kingdom's driver (its nvnSamplerInitialize clears
++// 0x40 bytes), and a stamp carrying the whole state (80 bytes) overwrote the 16 bytes after it in the game's own sampler
++// object: Tears of the Kingdom stayed on white frames from boot. NX_TEXTURE_STAMPS=0: off.
++constexpr uint64_t kSamplerMagic = 0x3230504D41545353ull;  // "SSTAMP02"
 +struct SamplerStamp {
 +    uint64_t magic;
-+    SamplerInfo info;
++    uint32_t index, zero;  // index into g_states
 +    uint64_t check;
 +};
-+static_assert(sizeof(SamplerStamp) == 80, "no padding (the check hashes the bytes), within NVNsampler's 96");
++static_assert(sizeof(SamplerStamp) == 24, "no padding (the check hashes the bytes), within NVNsampler's 64 or 96");
++
++std::mutex g_states_lock;
++std::vector<SamplerInfo> g_states;              // every distinct state stamped, by index
++std::map<std::string, uint32_t> g_state_index;  // a state's bytes -> its index
++
++uint32_t state_index(const SamplerInfo& info) {
++    std::string key(reinterpret_cast<const char*>(&info), sizeof info);
++    std::lock_guard lk(g_states_lock);
++    auto [it, fresh] = g_state_index.try_emplace(std::move(key), uint32_t(g_states.size()));
++    if (fresh) g_states.push_back(info);
++    return it->second;
++}
 +
 +bool sampler_stamps() {
 +    static const bool on = [] {
@@ -5302,15 +5479,24 @@ index b0748f7..bc9d1b6 100644
 +bool read_sampler_stamp(uint64_t guest, SamplerStamp& s) {
 +    if (!guest || !sampler_stamps()) return false;
 +    std::memcpy(&s, reinterpret_cast<const void*>(guest), sizeof s);
-+    return s.magic == kSamplerMagic && s.check == sampler_check(s);
++    return s.magic == kSamplerMagic && !s.zero && s.check == sampler_check(s);
 +}
 +
-+// The sampler at `guest`: our object, else the state its struct carries (a copy). False: neither.
++// The sampler at `guest`: our object, else the state its struct names (a copy). False: neither.
 +bool sampler_info(uint64_t guest, SamplerInfo& out) {
 +    if (auto* s = get<Sampler>(guest)) return out = s->info, true;
 +    SamplerStamp st;
 +    if (!read_sampler_stamp(guest, st)) return false;
-+    out = st.info;
++    {
++        std::lock_guard lk(g_states_lock);
++        if (st.index >= g_states.size()) return false;
++        out = g_states[st.index];
++    }
++    static std::atomic<uint64_t> copies{0};
++    uint64_t n = ++copies;
++    if (n <= 10 || (n & (n - 1)) == 0)
++        log("nvn: sampler %llx is a copy (state #%u): answered from its struct (%llu so far)", (unsigned long long)guest,
++            st.index, (unsigned long long)n);
 +    return true;
 +}
 +
@@ -5320,7 +5506,7 @@ index b0748f7..bc9d1b6 100644
      make<Sampler>(guest).info = info;
 +    if (sampler_stamps()) {
 +        SamplerStamp s{};
-+        s.magic = kSamplerMagic, s.info = info;
++        s.magic = kSamplerMagic, s.index = state_index(info);
 +        s.check = sampler_check(s);
 +        std::memcpy(reinterpret_cast<void*>(guest), &s, sizeof s);
 +    }
@@ -5343,7 +5529,7 @@ index b0748f7..bc9d1b6 100644
  
  void register_info(uint64_t pool, uint32_t id, const SamplerInfo& info) {
      if (auto* d = get<DescriptorPool>(pool)) {
-@@ -69,7 +126,7 @@ void register_info(uint64_t pool, uint32_t id, const SamplerInfo& info) {
+@@ -69,7 +155,7 @@ void register_info(uint64_t pool, uint32_t id, const SamplerInfo& info) {
  }
  
  void RegisterSampler(CPU& c) {  // (NVNsamplerPool*, int id, const NVNsampler*)
@@ -5352,7 +5538,7 @@ index b0748f7..bc9d1b6 100644
  }
  
  void RegisterSamplerBuilder(CPU& c) {  // (NVNsamplerPool*, int id, const NVNsamplerBuilder*)
-@@ -77,26 +134,26 @@ void RegisterSamplerBuilder(CPU& c) {  // (NVNsamplerPool*, int id, const NVNsam
+@@ -77,26 +163,26 @@ void RegisterSamplerBuilder(CPU& c) {  // (NVNsamplerPool*, int id, const NVNsam
      register_info(c.x[0], uint32_t(c.x[1]), info);
  }
  
@@ -5386,7 +5572,7 @@ index b0748f7..bc9d1b6 100644
      if (c.x[1]) st<float>(c.x[1], s.lod_min);
      if (c.x[2]) st<float>(c.x[2], s.lod_max);
  }
-@@ -106,7 +163,7 @@ void GetMaxAnisotropy(CPU& c) { c.v[0].f32[0] = info_of(c.x[0]).max_anisotropy;
+@@ -106,7 +192,7 @@ void GetMaxAnisotropy(CPU& c) { c.v[0].f32[0] = info_of(c.x[0]).max_anisotropy;
  void GetReductionFilter(CPU& c) { c.x[0] = info_of(c.x[0]).reduction; }
  
  void GetCompare(CPU& c) {
@@ -5395,7 +5581,7 @@ index b0748f7..bc9d1b6 100644
      if (c.x[1]) st<uint32_t>(c.x[1], s.compare_mode);
      if (c.x[2]) st<uint32_t>(c.x[2], s.compare_func);
  }
-@@ -119,6 +176,7 @@ void GetBorderColor(CPU& c) {
+@@ -119,6 +205,7 @@ void GetBorderColor(CPU& c) {
  
  NX_HLE("nvnSamplerInitialize", SamplerInitialize);
  NX_HLE("nvnSamplerFinalize", SamplerFinalize);
@@ -6544,7 +6730,7 @@ index bed8ce6..4fdcf92 100644
      {
          std::lock_guard lk(g_lock);
 diff --git a/runtime/src/nvn/nvn_upload.cpp b/runtime/src/nvn/nvn_upload.cpp
-index c221804..ca6fbb5 100644
+index c221804..30ccf5f 100644
 --- a/runtime/src/nvn/nvn_upload.cpp
 +++ b/runtime/src/nvn/nvn_upload.cpp
 @@ -1,12 +1,22 @@
@@ -6677,7 +6863,7 @@ index c221804..ca6fbb5 100644
  }  // namespace
  
  // NX_1D_IMAGES=1: NVN 1D textures as Vulkan 1D images again (they are 2D of height 1: Ryujinx samples 1D as 2D, G8).
-@@ -129,12 +195,135 @@ void clear_image(VkCommandBuffer cb, GpuImage& img, bool magenta) {
+@@ -129,12 +195,136 @@ void clear_image(VkCommandBuffer cb, GpuImage& img, bool magenta) {
      }
  }
  
@@ -6742,7 +6928,8 @@ index c221804..ca6fbb5 100644
 +    std::shared_ptr<AstcJob> j = it->second;
 +    if (!j->done.load(std::memory_order_acquire)) {  // asked for now: wait for it
 +        std::unique_lock lk(g_astc_lock);
-+        g_astc_done.wait(lk, [&] { return j->done.load(); });
++        while (!g_astc_done.wait_for(lk, std::chrono::milliseconds(25), [&] { return j->done.load(); })) {
++        }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
 +    }
 +    g_astc_jobs.erase(it);
 +    if (j->levels.empty()) return false;
@@ -6814,7 +7001,7 @@ index c221804..ca6fbb5 100644
          const uint8_t* m = reinterpret_cast<const uint8_t*>(t.memory);
          size_t nz = 0;
          for (uint64_t k = 0; k < t.storage_size; k += 64) nz += m[k] != 0;
-@@ -161,7 +350,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
+@@ -161,7 +351,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
          if (was_uploaded && layers == 1 && !full_upload() && hi != UINT64_MAX)
              y0 = std::min(rows, lo / t.stride), y1 = std::min(rows, (hi + t.stride - 1) / t.stride);
          if (y1 <= y0) return;
@@ -6823,7 +7010,7 @@ index c221804..ca6fbb5 100644
          for (uint64_t y = y0; y < y1; y++) {
              const uint8_t* s = src + y * t.stride;
              uint32_t* d = reinterpret_cast<uint32_t*>(u.ptr + (y - y0) * img.width * 4);
-@@ -198,7 +387,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
+@@ -198,7 +388,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
              uint64_t n = rows * layers, have = std::min<uint64_t>(n, t.storage_size / t.stride);
              uint64_t texels = std::min<uint64_t>(img.width, t.stride / 4);
              staged = n * img.width * 8;
@@ -6832,7 +7019,7 @@ index c221804..ca6fbb5 100644
              std::memset(u.ptr, 0, staged);
              for (uint64_t y = 0; y < have; y++) widen_r11g11b10(src + y * t.stride, u.ptr + y * img.width * 8, texels);
          } else {
-@@ -210,7 +399,8 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
+@@ -210,7 +400,8 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
                  r.imageExtent = {img.width, uint32_t(y1 - y0), 1};
              }
              staged = uint64_t(t.stride) * (y1 - y0) * layers;
@@ -6842,7 +7029,7 @@ index c221804..ca6fbb5 100644
              r.bufferRowLength = t.stride / bytes * bw;
          }
          r.bufferOffset = u.offset;
-@@ -219,8 +409,24 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
+@@ -219,8 +410,24 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
          p_vkCmdCopyBufferToImage(cb, u.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
          return;
      }
@@ -6869,7 +7056,7 @@ index c221804..ca6fbb5 100644
      if (levels.empty()) {
          log("nvn/vk: texture %ux%u format %#x: could not untile (%llu bytes)", img.width, img.height, t.format,
              (unsigned long long)t.storage_size);
-@@ -230,7 +436,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
+@@ -230,7 +437,7 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
          uint32_t tb = bc_decoded_bytes(t.format), slices = img.view_type == VK_IMAGE_VIEW_TYPE_3D ? layers : img.layers;
          uint64_t total = 0;
          for (const auto& l : levels) total += uint64_t(l.width) * l.height * slices * tb;
@@ -6878,7 +7065,7 @@ index c221804..ca6fbb5 100644
          uint64_t at = 0;
          for (uint32_t k = 0; k < levels.size(); k++) {
              bc_decode(t.format, linear.data() + levels[k].offset, levels[k].width, levels[k].height, slices, u.ptr + at);
-@@ -246,17 +452,31 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
+@@ -246,17 +453,31 @@ void upload_texture(VkCommandBuffer cb, const Texture& t, GpuImage& img, uint64_
                                   copies.data());
          return;
      }
@@ -7253,7 +7440,7 @@ index b899dbd..e87cbf6 100644
  // nvn_debug.cpp: GPU time per render pass (NX_GPU_PROFILE=1).
  bool gpu_profile_on();  // NX_GPU_PROFILE=1: per-pass labels, every submit waited for (nvn_debug.cpp)
 diff --git a/runtime/src/nvn/nvn_worker.cpp b/runtime/src/nvn/nvn_worker.cpp
-index c932bc8..c75fc03 100644
+index c932bc8..69dae15 100644
 --- a/runtime/src/nvn/nvn_worker.cpp
 +++ b/runtime/src/nvn/nvn_worker.cpp
 @@ -4,11 +4,13 @@
@@ -7308,7 +7495,7 @@ index c932bc8..c75fc03 100644
          {
              std::lock_guard lk(g_lock);
              g_done = job.first;
-@@ -60,24 +77,38 @@ uint64_t worker_run(std::function<void()> job) {
+@@ -60,24 +77,39 @@ uint64_t worker_run(std::function<void()> job) {
          job();
          return 0;
      }
@@ -7350,7 +7537,8 @@ index c932bc8..c75fc03 100644
 +    const uint64_t t0 = plat::monotonic_ns();
 +    {
 +        std::unique_lock lk(g_lock);
-+        g_done_cv.wait(lk, [&] { return g_done >= serial; });
++        while (!g_done_cv.wait_for(lk, std::chrono::milliseconds(25), [&] { return g_done >= serial; })) {
++        }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
 +    }
 +    g_waited_ns += plat::monotonic_ns() - t0;
  }

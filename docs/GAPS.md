@@ -99,6 +99,20 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
   CPU only 59% of the time (~62 blocking waits a frame; `NX_PS4_CORES=spread` also puts game threads on its core).
   v00.13 runs with `/data/BOTW/profile.txt` (samples.log, `port/ps4_sampler.cpp`) to find what it computes and
   what it waits on before cutting it.
+- **v00.13 froze (the profiling run, after frame 1999).** The game's sound thread (0x61, `TrySendMessageQueue`)
+  waited for a message queue's mutex owned by thread 0x62. 0x62 was on no wait list: a signal had handed it the
+  mutex and set its `wake`. Its host thread still slept in the condition variable (`_umtx_op` CV wait in
+  `hang.log`), so the notify was lost on the host. The sampler sends SIGPROF to every guest thread 1,000 times a
+  second, and TOTK v00.51 froze the same way. v00.14 (recomp `0a851ec`): kernel waits look at their condition every
+  25 ms (`NX_WAIT_SLICE_MS`, 0 = off) and log "found its wake-up only when a ... wait slice ended". The replay
+  thread's five indefinite waits re-check too.
+- **v00.13's profile has no replay thread.** BotW's copy of the sampler had 48 slots, all taken by guest threads
+  (TOTK's has 64). v00.15 takes TOTK's sampler: 64 slots, and the stack-scan fix from TOTK v00.42. It also takes
+  three TOTK replay commits:
+  - one allocation per command list for its blobs (`c7e9143`);
+  - sampler stamps as an index (`a371aee`);
+  - texture stamp checks without lookups or exclusive locks (`f1f7c0d`; BotW copies textures from boot, so it
+    compares serials).
 - **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
   each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
   gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,

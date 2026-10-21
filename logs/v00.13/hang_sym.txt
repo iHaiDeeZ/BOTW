@@ -1,0 +1,662 @@
+-- (unnamed): signal failed (thread gone?)
+-- (unnamed) (thread id 143104): rip (system/JIT) 0x8000032ac
+     0x1a0438  main_0207A7E8(nx::CPU&)
+     0x11f78a  (anonymous namespace)::samplerThread(void*)
+     0xd40b0e0  (anonymous namespace)::g_watched
+     0xa5f6aa5  snprintf
+     0x118172  (anonymous namespace)::checkHeap(char const*, void const*)
+     0x11d5e3  ps4_install_signal_stack
+     0x0  __text_start
+     0x0  __text_start
+     0x5b5e100  main_016BFD50(nx::CPU&)
+     0x11f630  (anonymous namespace)::samplerThread(void*)
+-- (unnamed) (thread id 143204): rip (system/JIT) 0x8000032ac
+     0xa6463fb  std::__1::this_thread::sleep_for(std::__1::chrono::duration<long long, std::__1::ratio<1l, 1000000000l>> const&)
+     0x10ae26  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+-- guest 0 (thread id 143206): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88001f2c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000000 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa64576b  std::__1::condition_variable::__do_timed_wait(std::__1::unique_lock<std::__1::mutex>&, std::__1::chrono::time_point<std::__1::chrono::system_clock, st
+     0x9ea4  std::__1::cv_status std::__1::condition_variable::wait_until[abi:ne210106]<std::__1::chrono::steady_clock, std::__1::chrono::duration<long long, std::
+     0x9b9f  std::__1::cv_status std::__1::condition_variable_any::wait_until[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>, std::__1::chrono::ste
+     0x83d3  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x106a86  nx::plat::monotonic_ns()
+     0xccd7e08  nx::kstate::g_k
+     0x98f60fe  sdk_00324E30(nx::CPU&)
+     0x218e45d  main_013A03D0(nx::CPU&)
+     0x42f7440  main_018521E0(nx::CPU&)
+     0x42e9bf3  main_0184ED50(nx::CPU&)
+     0x4a5d23  main_0126E3B0(nx::CPU&)
+     0x27af862  main_015D1A30(nx::CPU&)
+-- guest 1 (thread id 143633): rip (system/JIT) 0x800001c2c
+     0xd40b0e0  (anonymous namespace)::g_watched
+     0x11e5a4  ps4_dump_thread_stacks
+     0x118172  (anonymous namespace)::checkHeap(char const*, void const*)
+     0xa6a1c29  operator new(unsigned long)
+     0x0  __text_start
+     0xc8c4000  _sceLibcParam
+     0xba01  nx::watchdog(void*)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0xa5f6aa5  snprintf
+     0x11913a  ps4_heap_private_arena
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x11e49e  ps4_watch_thread
+-- guest 2 (thread id 143634): rip (system/JIT) 0x8000032ac
+     0x1069cb  nx::plat::sleep_ns(long)
+     0xbeca  nx::stall_sampler(void*)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x11e49e  ps4_watch_thread
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0xbd90  nx::stall_sampler(void*)
+     0x106826  nx::plat::thread_entry(void*)
+     0xbd90  nx::stall_sampler(void*)
+-- vsync (thread id 143646): rip (system/JIT) 0x8000032ac
+     0x1069cb  nx::plat::sleep_ns(long)
+     0x2e980c  main_01D7AEA0(nx::CPU&)
+     0x3378c  nx::(anonymous namespace)::vsync_thread()
+     0x33a6b  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+-- replay (thread id 143653): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x8800196e4, op 8, val 0x6, obj2 0x515ca11); obj: 00000000 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xccef850  nx::nvn::(anonymous namespace)::g_swapchain
+     0xccee4b0  nx::nvn::objects_lock()::m
+     0xcceeab0  nx::nvn::(anonymous namespace)::QueuePresentTexture(nx::CPU&)::queued
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xccee4b0  nx::nvn::objects_lock()::m
+     0xccee4b0  nx::nvn::objects_lock()::m
+     0xccee4b0  nx::nvn::objects_lock()::m
+     0xa645899  std::__1::mutex::unlock()
+     0x62fd7  nx::nvn::(anonymous namespace)::Sync* nx::nvn::get<nx::nvn::(anonymous namespace)::Sync>(unsigned long)
+-- g52 (thread id 143654): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88001d244, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x7107c00  main_009F6F60(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xe4fc3c  main_01F4971C(nx::CPU&)
+     0x106a86  nx::plat::monotonic_ns()
+     0x868d  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x9cbd3be  sdk_0049E830(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+-- g53 (thread id 143657): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88001d2e4, op 8, val 0x6, obj2 0x515ca11); obj: 00000000 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x712c160  main_003937D0(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x8cf0  nx::thread_main(void*)
+     0xccd7e08  nx::kstate::g_k
+     0x8c00  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+     0x4a4aeb  main_0126DB10(nx::CPU&)
+-- g54: signal failed (thread gone?)
+-- g56 (thread id 143073): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x8800210c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x71642d0  main_00388CA0(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x694b5b  main_01376A10(nx::CPU&)
+     0x693b30  main_01376A10(nx::CPU&)
+     0x106a86  nx::plat::monotonic_ns()
+     0x62a5  nx::hle_get_system_tick(nx::CPU&)
+     0xfa0860  main_0202BE08(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+-- g57 (thread id 144131): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880022ec4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x3310a98  main_01A81B80(nx::CPU&)
+     0x4053e66  main_01A611F0(nx::CPU&)
+     0x7174840  main_011E7860(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x35b628a  main_01B28AB0(nx::CPU&)
+     0x42f81f0  main_01852850(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+-- g58 (thread id 144132): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880024cc4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x71849a0  main_011EC060(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0xccd7e08  nx::kstate::g_k
+     0x8c00  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+-- g59 (thread id 144133): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880026ac4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x8885  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xccd7e08  nx::kstate::g_k
+     0x8c00  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+     0x4a4aeb  main_0126DB10(nx::CPU&)
+-- g5a (thread id 144134): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x8800288c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x21483d0  main_01C4C930(nx::CPU&)
+     0x20fd207  main_01C89450(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ec00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+-- g5b (thread id 144135): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88002a6c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x71b59e0  main_011FA2A0(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x98f973f  sdk_00325E80(nx::CPU&)
+     0x1655810  main_01238200(nx::CPU&)
+     0x23a4627  main_01C7DC10(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+-- g5c (thread id 144136): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88002c4c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000000 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2121b63  main_01A55720(nx::CPU&)
+     0x165577c  main_01238200(nx::CPU&)
+     0x98f510c  sdk_00324AD0(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ec00  main_01A54A90(nx::CPU&)
+-- g5d (thread id 144137): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88002e2c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x729165  main_012817F0(nx::CPU&)
+     0x157592a  main_0191BB90(nx::CPU&)
+     0x184abac  main_01CA3F60(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+-- g5e (thread id 144138): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x8800300c4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0xccd7e08  nx::kstate::g_k
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+-- g5f (thread id 144139): rip (system/JIT) 0x8000032ac
+     0x1069cb  nx::plat::sleep_ns(long)
+     0x384e0  nx::(anonymous namespace)::audio_render_thread(nx::CPU&)
+     0xd40da28  (anonymous namespace)::g_watched
+     0xa5fc603  vsnprintf
+     0xd40da2b  (anonymous namespace)::g_watched
+     0xa5fc619  sn_write
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0x8cf0  nx::thread_main(void*)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x2050  nx::call(nx::CPU&, unsigned long)
+-- g60 (thread id 144140): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880039c84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x745c3a0  main_003BDC40(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa5fc619  sn_write
+     0xccd7e08  nx::kstate::g_k
+     0xce06b00  nx::plat::(anonymous namespace)::lazy::g_free
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+     0x3e61a0b  main_01CF6BD0(nx::CPU&)
+     0x3e6182c  main_01CF65D0(nx::CPU&)
+-- g61 (thread id 144141): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88003cb04, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x7868820  main_00AF1E00(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x806b  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x118172  (anonymous namespace)::checkHeap(char const*, void const*)
+     0x865a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x106a86  nx::plat::monotonic_ns()
+     0xccd7e08  nx::kstate::g_k
+     0x29d8a00  main_01D48210(nx::CPU&)
+     0x9918b3d  sdk_0032F780(nx::CPU&)
+-- BOTW AudioOut (thread id 144142): rip (system/JIT) 0x80000224a
+     0xce09fc0  nx::plat::audio_thread(void*)::grains
+     0x107af1  nx::plat::audio_thread(void*)
+     0x11e478  ps4_watch_thread
+     0x107810  nx::plat::audio_thread(void*)
+     0x11d609  ps4_install_signal_stack
+     0xce09fc0  nx::plat::audio_thread(void*)::grains
+-- g62 (thread id 144143): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880040724, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x106a86  nx::plat::monotonic_ns()
+     0x2546b04  main_016893B0(nx::CPU&)
+     0x62a5  nx::hle_get_system_tick(nx::CPU&)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x16f2d28  main_019B83C0(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+-- g63 (thread id 144144): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880042524, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x748f0f0  main_003CBC00(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x106a86  nx::plat::monotonic_ns()
+     0x23c97b3  main_019307E0(nx::CPU&)
+     0x748f120  main_003CBC00(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x23c8410  main_01930140(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+-- g64 (thread id 144145): rip (system/JIT) 0x8000032ac
+     0x1069cb  nx::plat::sleep_ns(long)
+     0x4d46dcd  main_010A1510(nx::CPU&)
+     0xccd7bf0  nx::g_trace
+     0x7193  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x9cbd3be  sdk_0049E830(nx::CPU&)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x98fc050  sdk_00326AA0(nx::CPU&)
+     0x24409e7  main_01869C60(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x243c6ce  main_01867320(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x4a4bce  main_0126DB10(nx::CPU&)
+-- g65 (thread id 144146): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880046084, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x95033f  main_01ED53F8(nx::CPU&)
+     0x94f005  main_01ED4A9C(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fea44  sdk_00327660(nx::CPU&)
+     0x98d60a  main_01EE4DDC(nx::CPU&)
+-- g66 (thread id 144147): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880047e84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x95033f  main_01ED53F8(nx::CPU&)
+     0x94f005  main_01ED4A9C(nx::CPU&)
+     0x1ad4b2c  main_01E80700(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+-- g67 (thread id 144148): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880049c84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xccd7e08  nx::kstate::g_k
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x9918dca  sdk_0032F870(nx::CPU&)
+     0x95033f  main_01ED53F8(nx::CPU&)
+     0x94f005  main_01ED4A9C(nx::CPU&)
+     0x1ad4b2c  main_01E80700(nx::CPU&)
+-- g68 (thread id 144149): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88004ba84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x95033f  main_01ED53F8(nx::CPU&)
+     0x94f005  main_01ED4A9C(nx::CPU&)
+     0x1ad4b2c  main_01E80700(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fea44  sdk_00327660(nx::CPU&)
+-- g69 (thread id 144150): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88004d884, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x8669  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x95033f  main_01ED53F8(nx::CPU&)
+     0x94f005  main_01ED4A9C(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+-- g6a (thread id 144151): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88004f684, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x95033f  main_01ED53F8(nx::CPU&)
+     0x94f005  main_01ED4A9C(nx::CPU&)
+     0x1ad4b2c  main_01E80700(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fea44  sdk_00327660(nx::CPU&)
+-- g6b (thread id 144152): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880051484, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x1079cc8  main_01F6FF20(nx::CPU&)
+     0x8bfeb6  main_018AE0A0(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+     0x4a4aeb  main_0126DB10(nx::CPU&)
+     0x4a23c0  main_0126CEC0(nx::CPU&)
+-- g6c (thread id 144153): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880053284, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0xccd7e08  nx::kstate::g_k
+     0x8c00  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+-- g6d (thread id 144154): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880055084, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x98fc136  sdk_00326AA0(nx::CPU&)
+     0x98fc050  sdk_00326AA0(nx::CPU&)
+     0x4cf7df8  main_01CCE250(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ec00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+-- g6e (thread id 144155): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880056e84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xafbd620  relocs
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x20fdfe7  main_01C87250(nx::CPU&)
+     0x16c0340  main_01C6C8A0(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+-- g6f (thread id 144156): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880058c84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xd588c00  (anonymous namespace)::s_isNet
+     0x118172  (anonymous namespace)::checkHeap(char const*, void const*)
+     0xa5f50ec  fclose
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x44cd15b  main_0165DE30(nx::CPU&)
+     0x9a52493  sdk_0039E760(nx::CPU&)
+     0x9a523b0  sdk_0039E760(nx::CPU&)
+     0x2050  nx::call(nx::CPU&, unsigned long)
+     0x3eea0d  main_01249430(nx::CPU&)
+-- g70 (thread id 144157): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88005aa84, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0xccd7e08  nx::kstate::g_k
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6c7a  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x2121b63  main_01A55720(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+-- g71 (thread id 144158): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x88005c8e4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xb041660  relocs
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x6dfa  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x671d468  main_003D79F0(nx::CPU&)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x3e25b1d  main_01C59F30(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+-- g72 (thread id 144159): rip (system/JIT) 0x8000032ac
+     0x1069cb  nx::plat::sleep_ns(long)
+     0xccd7bf0  nx::g_trace
+     0x7193  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x4a4bce  main_0126DB10(nx::CPU&)
+     0x4a23c0  main_0126CEC0(nx::CPU&)
+     0x99057a4  sdk_00329E20(nx::CPU&)
+-- g73: signal failed (thread gone?)
+-- g74 (thread id 144161): rip (system/JIT) 0x8000035ec
+     0x4d5ca11  main_010A78F0(nx::CPU&)
+     0x11f2c0  (anonymous namespace)::profHandler(int, __siginfo*, void*)
+     0x4d5ca11  main_010A78F0(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x184abac  main_01CA3F60(nx::CPU&)
+     0xccd7e08  nx::kstate::g_k
+     0xccd7e08  nx::kstate::g_k
+-- g75 (thread id 144162): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880063fe4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x78ca  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0x184abac  main_01CA3F60(nx::CPU&)
+     0xb0427a0  relocs
+     0xccd7e08  nx::kstate::g_k
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+-- g76 (thread id 143656): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x8800603e4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)
+     0x4a4aeb  main_0126DB10(nx::CPU&)
+     0x4a23c0  main_0126CEC0(nx::CPU&)
+-- g77 (thread id 144163): rip (system/JIT) 0x8000035ec
+     0x4d5ca11  main_010A78F0(nx::CPU&)
+     0x11f2c0  (anonymous namespace)::profHandler(int, __siginfo*, void*)
+     0x4d5ca11  main_010A78F0(nx::CPU&)
+     0xb044270  relocs
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0xccd7e08  nx::kstate::g_k
+     0x8c00  nx::svc(nx::CPU&, unsigned int, unsigned long)
+-- g78: signal failed (thread gone?)
+-- (unnamed) (thread id 144165): rip (system/JIT) 0x80000186c
+     0xa0bb2ca  ps4_gpu_exception_thread
+     0x11913a  ps4_heap_private_arena
+     0x11e478  ps4_watch_thread
+     0xa0bb270  ps4_gpu_exception_thread
+     0x11d609  ps4_install_signal_stack
+     0xa0bb270  ps4_gpu_exception_thread
+-- (unnamed) (thread id 144166): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880035884, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xcd31090  nx::nvn::(anonymous namespace)::g_astc_lock
+     0xcd31090  nx::nvn::(anonymous namespace)::g_astc_lock
+     0xcd31090  nx::nvn::(anonymous namespace)::g_astc_lock
+     0xcd310b8  nx::nvn::(anonymous namespace)::g_astc_cv
+     0xcd31090  nx::nvn::(anonymous namespace)::g_astc_lock
+     0xcd310b8  nx::nvn::(anonymous namespace)::g_astc_cv
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0xb74eb  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+     0xcd31090  nx::nvn::(anonymous namespace)::g_astc_lock
+     0xb7480  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+-- (unnamed) (thread id 144167): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880035b04, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x118051  __wrap_malloc
+     0x118172  (anonymous namespace)::checkHeap(char const*, void const*)
+     0xcd2e458  nx::nvn::(anonymous namespace)::g_async_lock
+     0xae27b  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+     0xcd2e458  nx::nvn::(anonymous namespace)::g_async_lock
+     0xcd2e480  nx::nvn::(anonymous namespace)::g_async_cv
+     0xcd2e480  nx::nvn::(anonymous namespace)::g_async_cv
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0xae327  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+     0xcd2e458  nx::nvn::(anonymous namespace)::g_async_lock
+     0x11d601  ps4_install_signal_stack
+     0xae210  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+-- (unnamed) (thread id 144168): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880035b04, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x118080  __wrap_malloc
+     0x118172  (anonymous namespace)::checkHeap(char const*, void const*)
+     0xae27b  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+     0xcd2e458  nx::nvn::(anonymous namespace)::g_async_lock
+     0xcd2e480  nx::nvn::(anonymous namespace)::g_async_cv
+     0xcd2e480  nx::nvn::(anonymous namespace)::g_async_cv
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0xae327  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+     0xcd2e458  nx::nvn::(anonymous namespace)::g_async_lock
+     0x11d601  ps4_install_signal_stack
+     0xae210  void* std::__1::__thread_proxy[abi:ne210106]<std::__1::tuple<std::__1::unique_ptr<std::__1::__thread_struct, std::__1::default_delete<std::__1::__thre
+-- (unnamed) (thread id 144169): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880035ca4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xd5d35f0  ps4_jobs
+     0xd5e1ec0  ps4_job_lock
+     0xd5e1ec0  ps4_job_lock
+     0xd5e1ec0  ps4_job_lock
+     0xd5e1f20  ps4_job_ready
+     0xd5e1ec0  ps4_job_lock
+     0xd5e1f20  ps4_job_ready
+     0xa0bd0ab  ps4_submit_thread
+-- nvn janitor (thread id 144170): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x880035fa4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0x9f6a381  radv_reset_cmd_buffer
+     0x9e2fb72  vk_object_base_finish
+     0xcce8318  nx::nvn::(anonymous namespace)::g_lock
+     0xcce8340  nx::nvn::(anonymous namespace)::g_cv
+     0xcce8318  nx::nvn::(anonymous namespace)::g_lock
+     0xcce8340  nx::nvn::(anonymous namespace)::g_cv
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x41b6b  nx::nvn::(anonymous namespace)::run()
+     0xc8c92e8  vtable for std::__1::__function::__func<nx::nvn::(anonymous namespace)::retire_oldest()::$_0, void ()>
+     0xcc7b7a0  nx::nvn::(anonymous namespace)::g_slots
+     0xd5fb8b0  std::__1::__thread_local_data()::__b
+     0xcce8318  nx::nvn::(anonymous namespace)::g_lock
+-- g79 (thread id 140967): rip (system/JIT) 0x8000035ec
+     0x4d5ca11  main_010A78F0(nx::CPU&)
+     0x11f2c0  (anonymous namespace)::profHandler(int, __siginfo*, void*)
+     0x4d5ca11  main_010A78F0(nx::CPU&)
+     0xa6459a9  std::__1::recursive_mutex::unlock()
+     0x808b  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xccd7e08  nx::kstate::g_k
+     0x211ea00  main_01A54A90(nx::CPU&)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+-- g7a (thread id 144171): rip (system/JIT) 0x80000371c
+   blocked in _umtx_op(obj 0x8800799a4, op 8, val 0x6, obj2 0x515ca11); obj: 00000001 00000000 00000000 ff010200; obj2: 2a554ae8 8b8b48fb 00000098 893c418b
+     0xa6456e2  std::__1::condition_variable::wait(std::__1::unique_lock<std::__1::mutex>&)
+     0x9a33  void std::__1::condition_variable_any::wait[abi:ne210106]<std::__1::unique_lock<std::__1::recursive_mutex>>(std::__1::unique_lock<std::__1::recursive_
+     0x7d05  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x8cf0  nx::thread_main(void*)
+     0xa5f6aa5  snprintf
+     0xccd7e08  nx::kstate::g_k
+     0x8c00  nx::svc(nx::CPU&, unsigned int, unsigned long)
+     0xce06ba0  nx::plat::(anonymous namespace)::g_known
+     0x9917665  sdk_0032F1A0(nx::CPU&)
+     0x98fa984  sdk_00326340(nx::CPU&)
+     0x98fa890  sdk_00326340(nx::CPU&)

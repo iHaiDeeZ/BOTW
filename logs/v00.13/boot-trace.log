@@ -1,0 +1,24 @@
+static init (text at 0x400000)
+[   0.000] [botw] heap: flexible memory available 230 MiB (0x0)
+[   0.005] [botw] heap: kernel pthread objects live around 0x8800007e0
+[   0.080] [botw] heap: dlmalloc on 256 MiB of system flexible memory at 0x1000004000
+[   0.140] BOTW 00.13 starting (The Legend of Zelda: Breath of the Wild)
+[   0.140] config: NX_RENDER_RES=1476x830
+[   0.140] config: NX_HANDHELD=0
+[   0.140] config: NX_FSR=1
+[   0.140] config: NX_FSR_SHARP=0.0
+[   0.140] config: NX_PS4_CORES=spread
+[   0.140] config: NX_PS4_FPS=1
+[   0.140] config: NX_PS4_MAP=A:Circle,B:Cross,X:Triangle,Y:Square,L:L1,R:R1,ZL:L2,ZR:R2,PLUS:Options,MINUS:Touchpad,LS:L3,RS:R3
+[   0.140] config: 7 settings from /data/BOTW/config.txt
+[   0.284] threads: first creator's cores 0x7f, new threads get 0x3f; stack 2048 KiB by default, at least 4096 KiB
+[   0.285] boot screen: drawing
+[   0.286] sampler: started, writing /data/BOTW/samples.log every 10 s
+[   0.287] cores: 7, the 7th granted (main thread had 0x7f), spread: guest threads on 0x7f (pinned: guest cores 0/1/2 on 0/2/3), replay+present on 1, the rest on 0x7f
+[   0.288] pad: player 1 is user 15d45a57 (handle 61539584)
+[   0.288] pad: player 2 is user 15d45a55 (handle 61605121)
+[   0.288] memory: direct memory 4608 MiB (4592 MiB free), flexible 220 MiB free
+[   0.290] game thread
+[   0.290] pad: player 1 connected
+[  49.695] boot screen: first game frame after 49.5 s, 254 MB read
+[  66.982] [botw] heap: main heap full: overflow heap of 512 MiB of direct memory at 0x1800000000

@@ -54,7 +54,7 @@ uintptr_t g_text_end = 0;
 constexpr uint64_t kHelperTag = 1ULL << 59;
 uintptr_t g_helpers_lo = 0, g_helpers_hi = 0;
 constexpr uintptr_t kTextWindow = 0x40000000;
-constexpr int kMaxThreads = 48;  // the replay thread and every guest thread when profiling (platform_ps4.cpp)
+constexpr int kMaxThreads = 64;  // the replay thread and every guest thread when profiling (platform_ps4.cpp)
 constexpr int kMaxSamples = 16384;  // per thread and window (10 s at 1 kHz fits)
 
 struct ThreadSamples {
@@ -78,6 +78,8 @@ bool after_call(const uint8_t* ret) {
     return false;
 }
 
+uintptr_t watched_stack_limit(pthread_t thread);  // below: the highest address a scan of its stack may read
+
 void profHandler(int, siginfo_t*, void* context) {
     const pthread_t self = pthread_self();
     for (int i = 0; i < g_thread_count.load(std::memory_order_acquire); i++) {
@@ -89,10 +91,15 @@ void profHandler(int, siginfo_t*, void* context) {
         const int n = t.count.load(std::memory_order_relaxed);
         if (n < kMaxSamples) {
             uint64_t sample = regs[kRipIndex];
+            // How far above rsp the scans below may read: the thread's stack top (a thread sampled right after it
+            // started has little stack above rsp; reading 768 bytes ran off it and crashed v00.42).
+            const uintptr_t rsp = regs[kRspIndex];
+            const uintptr_t top = watched_stack_limit(self);
+            const int words = top > rsp ? int(std::min<uintptr_t>((top - rsp) / 8, uintptr_t(kCallerScan))) : 0;
             if (sample >= g_helpers_lo && sample < g_helpers_hi && g_text_end) {
                 const uintptr_t text = reinterpret_cast<uintptr_t>(__text_start);
-                const auto* sp = reinterpret_cast<const uint64_t*>(regs[kRspIndex]);
-                for (int k = 0; k < 16; k++) {  // a leaf: its return address is at or near rsp
+                const auto* sp = reinterpret_cast<const uint64_t*>(rsp);
+                for (int k = 0; k < std::min(words, 16); k++) {  // a leaf: its return address is at or near rsp
                     const uint64_t v = sp[k];
                     if (v >= text + 16 && v < g_text_end && (v < g_helpers_lo || v >= g_helpers_hi) &&
                         after_call(reinterpret_cast<const uint8_t*>(v))) {
@@ -111,9 +118,9 @@ void profHandler(int, siginfo_t*, void* context) {
                 static const uint8_t kUmtxStub[12] = {0x48, 0xc7, 0xc0, 0xc6, 0x01, 0x00,
                                                       0x00, 0x49, 0x89, 0xca, 0x0f, 0x05};
                 const bool umtx = memcmp(reinterpret_cast<const uint8_t*>(sample - 12), kUmtxStub, 12) == 0;
-                const auto* sp = reinterpret_cast<const uint64_t*>(regs[kRspIndex]);
+                const auto* sp = reinterpret_cast<const uint64_t*>(rsp);
                 uint64_t from = 0, from2 = 0;
-                for (int k = 0; k < kCallerScan && !from2 && g_text_end; k++) {
+                for (int k = 0; k < words && !from2 && g_text_end; k++) {
                     const uint64_t v = sp[k];
                     if (v >= text + 16 && v < g_text_end && after_call(reinterpret_cast<const uint8_t*>(v)))
                         (from ? from2 : from) = (v - text) & ~0xFULL;
@@ -429,6 +436,14 @@ struct WatchedThread {
 };
 WatchedThread g_watched[kMaxWatched];
 std::atomic<int> g_watched_count{0};
+
+// For the sampler's caller scans (profHandler); 0 when the thread is not watched (no scan then). Signal safe.
+uintptr_t watched_stack_limit(pthread_t thread) {
+    const int count = std::min(g_watched_count.load(std::memory_order_acquire), kMaxWatched);
+    for (int i = 0; i < count; i++)
+        if (g_watched[i].thread.load(std::memory_order_relaxed) == thread) return g_watched[i].stack_limit;
+    return 0;
+}
 
 void dumpHandler(int, siginfo_t*, void* context) {
     const pthread_t self = pthread_self();
