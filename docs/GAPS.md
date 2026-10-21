@@ -47,6 +47,25 @@ expected or inferred, **not yet checked on a dump**. Check each item at the firs
   section). It is probably a debug font.
 - **Eboot.** 220 MB.
 
+## Checked on the console (2026-10-21)
+
+Each item was one package version. Logs are in `logs/vXX.YY`.
+
+- **NVN API.** nnMain checks for API 53.311 and skips its graphics setup otherwise (v00.03: `NX_NVN_API`).
+- **Old SDK names.** Seven-six-axis sensor and other hid calls (v00.04), the SDK 7 audio device calls (v00.05),
+  and `nn::oe` launch parameter and notification messages (v00.06).
+- **Jump tables** whose anchor is the table's own base register (v00.07: `analysis.py`).
+- **Black screen (v00.07).** The game ran (first frame at 40 s, the Great Plateau drawn at 12 fps with ~2,400
+  draws per frame), but every presented frame was black. agl builds each texture in a stack temporary, registers
+  it, then `memcpy`s the 192-byte `NVNtexture` into its own object (main+1289ad0) and renders through the copy.
+  The runtime knew textures only by the address they were initialized at, so no render target, clear or copy
+  reached the GPU (storyboard: every target `0x0 vk0`). agl also clears with `nvnCommandBufferClearTexture`,
+  which was a stub.
+
+  v00.08: textures and samplers write their description into their struct, and a copy becomes the same texture
+  (`adopt_texture`, `NX_TEXTURE_STAMPS=0` turns it off). Also new: `ClearTexture`, `nvnTextureCompare` /
+  `nvnSamplerCompare`, and `nvnQueueAcquireTexture`.
+
 ## To check at the first import
 
 - **Which update.** The decomp targets 1.5.0, but most dumps carry 1.6.0. A 1.6.0 main is recompiled without

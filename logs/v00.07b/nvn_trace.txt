@@ -1,0 +1,664 @@
+# nvnBootstrapLoader(nvnDeviceInitialize)
+# nvnBootstrapLoader(nvnDeviceGetProcAddress)
+# real nvnDeviceBuilderSetDefaults = sdk+40b840 (NvWsiSetCallbacks+e0f0)
+# real nvnDeviceBuilderSetFlags = sdk+40b850 (NvWsiSetCallbacks+e100)
+# real nvnDeviceBuilderGetFlags = sdk+40b830 (NvWsiSetCallbacks+e0e0)
+# real nvnQueueBuilderSetDevice = sdk+412c80
+# real nvnQueueBuilderSetDefaults = sdk+412c90
+# real nvnQueueBuilderSetFlags = sdk+412cb0
+# real nvnQueueBuilderSetCommandMemorySize = sdk+412cc0
+# real nvnQueueBuilderSetComputeMemorySize = sdk+412cd0
+# real nvnQueueBuilderSetControlMemorySize = sdk+412ce0
+# real nvnQueueBuilderGetQueueMemorySize = sdk+412f60
+# real nvnQueueBuilderSetQueueMemory = sdk+412d00
+# real nvnQueueBuilderSetCommandFlushThreshold = sdk+412cf0
+# real nvnQueueBuilderSetQueuePriority = sdk+4130e0
+# real nvnQueueBuilderGetQueuePriority = sdk+413110
+# real nvnQueueBuilderGetDevice = sdk+413060
+# real nvnQueueBuilderGetFlags = sdk+413070
+# real nvnQueueBuilderGetCommandMemorySize = sdk+413080
+# real nvnQueueBuilderGetComputeMemorySize = sdk+413090
+# real nvnQueueBuilderGetControlMemorySize = sdk+4130a0
+# real nvnQueueBuilderGetCommandFlushThreshold = sdk+4130b0
+# real nvnQueueBuilderGetMemorySize = sdk+4130c0
+# real nvnQueueBuilderGetMemory = sdk+4130d0
+# real nvnWindowBuilderSetDevice = sdk+419080
+# real nvnWindowBuilderSetDefaults = sdk+419090
+# real nvnWindowBuilderSetNativeWindow = sdk+4190a0
+# real nvnWindowBuilderSetTextures = sdk+4190b0
+# real nvnWindowBuilderSetPresentInterval = sdk+4190c0
+# real nvnWindowBuilderSetNumActiveTextures = sdk+4190d0
+# real nvnWindowBuilderGetDevice = sdk+4190e0
+# real nvnWindowBuilderGetNumTextures = sdk+4190f0
+# real nvnWindowBuilderGetTexture = sdk+419100
+# real nvnWindowBuilderGetNativeWindow = sdk+419140
+# real nvnWindowBuilderGetPresentInterval = sdk+419120
+# real nvnWindowBuilderGetNumActiveTextures = sdk+419130
+# real nvnMemoryPoolBuilderSetDevice = sdk+40e5f0
+# real nvnMemoryPoolBuilderSetDefaults = sdk+40e600
+# real nvnMemoryPoolBuilderSetStorage = sdk+40e620
+# real nvnMemoryPoolBuilderSetFlags = sdk+40e6d0
+# real nvnMemoryPoolBuilderGetDevice = sdk+40e6e0
+# real nvnMemoryPoolBuilderGetMemory = sdk+40e6f0
+# real nvnMemoryPoolBuilderGetSize = sdk+40e700
+# real nvnMemoryPoolBuilderGetFlags = sdk+40e710
+# real nvnBufferBuilderSetDevice = sdk+402500 (NvWsiSetCallbacks+4db0)
+# real nvnBufferBuilderSetDefaults = sdk+402510 (NvWsiSetCallbacks+4dc0)
+# real nvnBufferBuilderSetStorage = sdk+402520 (NvWsiSetCallbacks+4dd0)
+# real nvnBufferBuilderGetDevice = sdk+402530 (NvWsiSetCallbacks+4de0)
+# real nvnBufferBuilderGetMemoryPool = sdk+402540 (NvWsiSetCallbacks+4df0)
+# real nvnBufferBuilderGetMemoryOffset = sdk+402550 (NvWsiSetCallbacks+4e00)
+# real nvnBufferBuilderGetSize = sdk+402560 (NvWsiSetCallbacks+4e10)
+# real nvnTextureBuilderSetDevice = sdk+416dd0
+# real nvnTextureBuilderSetDefaults = sdk+416de0
+# real nvnTextureBuilderSetFlags = sdk+416e20
+# real nvnTextureBuilderSetTarget = sdk+416e30
+# real nvnTextureBuilderSetWidth = sdk+416e40
+# real nvnTextureBuilderSetHeight = sdk+416e50
+# real nvnTextureBuilderSetDepth = sdk+416e60
+# real nvnTextureBuilderSetSize1D = sdk+416e70
+# real nvnTextureBuilderSetSize2D = sdk+416e80
+# real nvnTextureBuilderSetSize3D = sdk+416e90
+# real nvnTextureBuilderSetLevels = sdk+416ea0
+# real nvnTextureBuilderSetFormat = sdk+416eb0
+# real nvnTextureBuilderSetSamples = sdk+416ec0
+# real nvnTextureBuilderSetSwizzle = sdk+416ed0
+# real nvnTextureBuilderSetDepthStencilMode = sdk+416ee0
+# real nvnTextureBuilderSetStorage = sdk+416ef0
+# real nvnTextureBuilderSetPackagedTextureData = sdk+4172e0
+# real nvnTextureBuilderSetPackagedTextureLayout = sdk+417350
+# real nvnTextureBuilderSetStride = sdk+416f10
+# real nvnTextureBuilderSetGLTextureName = sdk+416f00
+# real nvnTextureBuilderGetDevice = sdk+416f20
+# real nvnTextureBuilderGetFlags = sdk+416f30
+# real nvnTextureBuilderGetTarget = sdk+416f40
+# real nvnTextureBuilderGetWidth = sdk+416f50
+# real nvnTextureBuilderGetHeight = sdk+416f60
+# real nvnTextureBuilderGetDepth = sdk+416f70
+# real nvnTextureBuilderGetLevels = sdk+416f80
+# real nvnTextureBuilderGetFormat = sdk+416f90
+# real nvnTextureBuilderGetSamples = sdk+416fa0
+# real nvnTextureBuilderGetSwizzle = sdk+416fb0
+# real nvnTextureBuilderGetDepthStencilMode = sdk+416fe0
+# real nvnTextureBuilderGetPackagedTextureData = sdk+416ff0
+# real nvnTextureBuilderGetPackagedTextureLayout = sdk+417000
+# real nvnTextureBuilderGetStride = sdk+417050
+# real nvnTextureBuilderGetSparseTileLayout = sdk+418860
+# real nvnTextureBuilderGetGLTextureName = sdk+4172d0
+# real nvnTextureBuilderGetZCullStorageSize = sdk+418310
+# real nvnTextureBuilderGetMemoryPool = sdk+417060
+# real nvnTextureBuilderGetMemoryOffset = sdk+417070
+# real nvnTextureViewSetDefaults = sdk+4173b0
+# real nvnTextureViewSetLevels = sdk+4173c0
+# real nvnTextureViewSetLayers = sdk+4173e0
+# real nvnTextureViewSetFormat = sdk+417400
+# real nvnTextureViewSetSwizzle = sdk+417420
+# real nvnTextureViewSetDepthStencilMode = sdk+417440
+# real nvnTextureViewSetTarget = sdk+417530
+# real nvnTextureViewGetLevels = sdk+417460
+# real nvnTextureViewGetLayers = sdk+417480
+# real nvnTextureViewGetFormat = sdk+4174a0
+# real nvnTextureViewGetSwizzle = sdk+4174c0
+# real nvnTextureViewGetDepthStencilMode = sdk+4174f0
+# real nvnTextureViewGetTarget = sdk+417510
+# real nvnTextureViewCompare = sdk+417550
+# real nvnSamplerBuilderSetDevice = sdk+414e50
+# real nvnSamplerBuilderSetDefaults = sdk+414e60
+# real nvnSamplerBuilderSetMinMagFilter = sdk+414ea0
+# real nvnSamplerBuilderSetWrapMode = sdk+414eb0
+# real nvnSamplerBuilderSetLodClamp = sdk+414ec0
+# real nvnSamplerBuilderSetLodBias = sdk+414ed0
+# real nvnSamplerBuilderSetCompare = sdk+414ee0
+# real nvnSamplerBuilderSetBorderColor = sdk+414ef0
+# real nvnSamplerBuilderSetBorderColori = sdk+414f20
+# real nvnSamplerBuilderSetBorderColorui = sdk+414f50
+# real nvnSamplerBuilderSetMaxAnisotropy = sdk+414f80
+# real nvnSamplerBuilderSetReductionFilter = sdk+414f90
+# real nvnSamplerBuilderSetLodSnap = sdk+414fa0
+# real nvnSamplerBuilderGetDevice = sdk+414fb0
+# real nvnSamplerBuilderGetMinMagFilter = sdk+414fc0
+# real nvnSamplerBuilderGetWrapMode = sdk+414fe0
+# real nvnSamplerBuilderGetLodClamp = sdk+415000
+# real nvnSamplerBuilderGetLodBias = sdk+415020
+# real nvnSamplerBuilderGetCompare = sdk+415030
+# real nvnSamplerBuilderGetBorderColor = sdk+415050
+# real nvnSamplerBuilderGetBorderColori = sdk+415080
+# real nvnSamplerBuilderGetBorderColorui = sdk+4150b0
+# real nvnSamplerBuilderGetMaxAnisotropy = sdk+4150e0
+# real nvnSamplerBuilderGetReductionFilter = sdk+4150f0
+# real nvnSamplerBuilderGetLodSnap = sdk+415100
+# real nvnBlendStateSetDefaults = sdk+4157b0
+# real nvnBlendStateSetBlendTarget = sdk+4157d0
+# real nvnBlendStateSetBlendFunc = sdk+4157f0
+# real nvnBlendStateSetBlendEquation = sdk+415830
+# real nvnBlendStateSetAdvancedMode = sdk+415860
+# real nvnBlendStateSetAdvancedOverlap = sdk+415880
+# real nvnBlendStateSetAdvancedPremultipliedSrc = sdk+4158a0
+# real nvnBlendStateSetAdvancedNormalizedDst = sdk+4158c0
+# real nvnBlendStateGetBlendTarget = sdk+4158e0
+# real nvnBlendStateGetBlendFunc = sdk+4158f0
+# real nvnBlendStateGetBlendEquation = sdk+415930
+# real nvnBlendStateGetAdvancedMode = sdk+415950
+# real nvnBlendStateGetAdvancedOverlap = sdk+415960
+# real nvnBlendStateGetAdvancedPremultipliedSrc = sdk+415970
+# real nvnBlendStateGetAdvancedNormalizedDst = sdk+415980
+# real nvnColorStateSetDefaults = sdk+415a30
+# real nvnColorStateSetBlendEnable = sdk+415a40
+# real nvnColorStateSetLogicOp = sdk+415a80
+# real nvnColorStateSetAlphaTest = sdk+415aa0
+# real nvnColorStateGetBlendEnable = sdk+415ac0
+# real nvnColorStateGetLogicOp = sdk+415ad0
+# real nvnColorStateGetAlphaTest = sdk+415ae0
+# real nvnChannelMaskStateSetDefaults = sdk+415990
+# real nvnChannelMaskStateSetChannelMask = sdk+4159a0
+# real nvnChannelMaskStateGetChannelMask = sdk+4159f0
+# real nvnMultisampleStateSetDefaults = sdk+415e70
+# real nvnMultisampleStateSetMultisampleEnable = sdk+415e90
+# real nvnMultisampleStateSetSamples = sdk+415ef0
+# real nvnMultisampleStateSetAlphaToCoverageEnable = sdk+415eb0
+# real nvnMultisampleStateSetAlphaToCoverageDither = sdk+415ed0
+# real nvnMultisampleStateGetMultisampleEnable = sdk+415f10
+# real nvnMultisampleStateGetSamples = sdk+415f20
+# real nvnMultisampleStateGetAlphaToCoverageEnable = sdk+415f30
+# real nvnMultisampleStateGetAlphaToCoverageDither = sdk+415f40
+# real nvnMultisampleStateSetRasterSamples = sdk+415f50
+# real nvnMultisampleStateGetRasterSamples = sdk+415f70
+# real nvnMultisampleStateSetCoverageModulationMode = sdk+415f80
+# real nvnMultisampleStateGetCoverageModulationMode = sdk+415fa0
+# real nvnMultisampleStateSetCoverageToColorEnable = sdk+415fb0
+# real nvnMultisampleStateGetCoverageToColorEnable = sdk+415fd0
+# real nvnMultisampleStateSetCoverageToColorOutput = sdk+415fe0
+# real nvnMultisampleStateGetCoverageToColorOutput = sdk+416000
+# real nvnMultisampleStateSetSampleLocationsEnable = sdk+416010
+# real nvnMultisampleStateGetSampleLocationsEnable = sdk+416030
+# real nvnMultisampleStateGetSampleLocationsGrid = sdk+416040
+# real nvnMultisampleStateSetSampleLocationsGridEnable = sdk+4160b0
+# real nvnMultisampleStateGetSampleLocationsGridEnable = sdk+4160d0
+# real nvnMultisampleStateSetSampleLocations = sdk+4160e0
+# real nvnPolygonStateSetDefaults = sdk+415da0
+# real nvnPolygonStateSetCullFace = sdk+415db0
+# real nvnPolygonStateSetFrontFace = sdk+415dd0
+# real nvnPolygonStateSetPolygonMode = sdk+415df0
+# real nvnPolygonStateSetPolygonOffsetEnables = sdk+415e10
+# real nvnPolygonStateGetCullFace = sdk+415e30
+# real nvnPolygonStateGetFrontFace = sdk+415e40
+# real nvnPolygonStateGetPolygonMode = sdk+415e50
+# real nvnPolygonStateGetPolygonOffsetEnables = sdk+415e60
+# real nvnDepthStencilStateSetDefaults = sdk+415bc0
+# real nvnDepthStencilStateSetDepthTestEnable = sdk+415be0
+# real nvnDepthStencilStateSetDepthWriteEnable = sdk+415c00
+# real nvnDepthStencilStateSetDepthFunc = sdk+415c20
+# real nvnDepthStencilStateSetStencilTestEnable = sdk+415c40
+# real nvnDepthStencilStateSetStencilFunc = sdk+415c60
+# real nvnDepthStencilStateSetStencilOp = sdk+415ca0
+# real nvnDepthStencilStateGetDepthTestEnable = sdk+415cf0
+# real nvnDepthStencilStateGetDepthWriteEnable = sdk+415d00
+# real nvnDepthStencilStateGetDepthFunc = sdk+415d10
+# real nvnDepthStencilStateGetStencilTestEnable = sdk+415d20
+# real nvnDepthStencilStateGetStencilFunc = sdk+415d30
+# real nvnDepthStencilStateGetStencilOp = sdk+415d50
+# real nvnVertexAttribStateSetDefaults = sdk+415af0
+# real nvnVertexAttribStateSetFormat = sdk+415b00
+# real nvnVertexAttribStateSetStreamIndex = sdk+415b20
+# real nvnVertexAttribStateGetFormat = sdk+415b40
+# real nvnVertexAttribStateGetStreamIndex = sdk+415b60
+# real nvnVertexStreamStateSetDefaults = sdk+415b70
+# real nvnVertexStreamStateSetStride = sdk+415b80
+# real nvnVertexStreamStateSetDivisor = sdk+415b90
+# real nvnVertexStreamStateGetStride = sdk+415ba0
+# real nvnVertexStreamStateGetDivisor = sdk+415bb0
+# real nvnEventBuilderSetDefaults = sdk+40d720 (NvWsiSetCallbacks+ffd0)
+# real nvnEventBuilderSetStorage = sdk+40d730 (NvWsiSetCallbacks+ffe0)
+# real nvnEventBuilderGetStorage = sdk+40d740 (NvWsiSetCallbacks+fff0)
+       0 nvnDeviceInitialize(5003003020, 6a00fffdd8, 8, 0, 3000000, 1) lr main+e552c0 (nnMain+1bb0)
+       1 nvnDeviceSetWindowOriginMode(5003003020, 1, 0, 0, 3000000, 1) lr main+e55510 (nnMain+1e00)
+       2 nvnQueueAcquireTexture(5003236020, 50043191e0, 5003238060, 812c, 3000000, 1) lr main+1259770
+       3 nvnCommandBufferSetMemoryCallback(50043193e0, 400124f470, 8, 812c, 3000000, 1) lr main+e559d4 (nnMain+22c4)
+       4 nvnCommandBufferSetMemoryCallbackData(50043193e0, 50043193e0, 8, 812c, 3000000, 1) lr main+e559e8 (nnMain+22d8)
+       5 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, beb9bc10, 1) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+       6 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+       7 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+       8 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+       9 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      10 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      11 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      12 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      13 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 2c, fffffffe) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      14 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      15 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      16 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      17 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      18 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      19 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      20 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      21 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      22 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      23 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      24 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      25 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      26 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      27 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      28 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      29 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      30 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      31 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      32 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      33 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      34 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      35 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      36 nvnCommandBufferSetShaderScratchMemory(50043193e0, 500444b040, 0, 1000000, 0, 20b) lr main+124ec40 (_ZdaPvRKSt9nothrow_t+9240)
+      37 nvnDeviceRegisterFastClearColor(5003003020, 40026de1b0, 29, 100000, 400000, 1) lr main+151b548
+      38 nvnTextureCompare(6a00ff4350, 6a00ff4548, 0, 4, 5, 1) lr main+1289bb4
+      39 nvnTextureCompare(6a00ff4350, 6a00ff4548, 200, 4, 5, 8) lr main+1289bb4
+      40 nvnSamplerCompare(508b940088, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      41 nvnTextureCompare(6a00ff4350, 6a00ff4548, 400, 4, 5, 8) lr main+1289bb4
+      42 nvnSamplerCompare(508b940088, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      43 nvnSamplerCompare(508b9400f0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      44 nvnTextureCompare(6a00ff4350, 6a00ff4548, 600, 4, 5, 8) lr main+1289bb4
+      45 nvnSamplerCompare(508b9400f0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      46 nvnSamplerCompare(508b940158, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      47 nvnTextureCompare(6a00ff4350, 6a00ff4548, 800, 4, 5, 8) lr main+1289bb4
+      48 nvnSamplerCompare(508b9400f0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      49 nvnSamplerCompare(508b940158, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      50 nvnSamplerCompare(508b9401c0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      51 nvnTextureCompare(6a00ff4350, 6a00ff4548, a00, 4, 5, 8) lr main+1289bb4
+      52 nvnSamplerCompare(508b940158, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      53 nvnSamplerCompare(508b9401c0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      54 nvnSamplerCompare(508b940228, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      55 nvnTextureCompare(6a00ff4350, 6a00ff4548, 1600, 4, 5, 8) lr main+1289bb4
+      56 nvnSamplerCompare(508b940158, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      57 nvnSamplerCompare(508b9401c0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      58 nvnSamplerCompare(508b940228, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      59 nvnSamplerCompare(508b940290, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      60 nvnTextureCompare(6a00ff4350, 6a00ff4548, 2200, 4, 5, 8) lr main+1289bb4
+      61 nvnSamplerCompare(508b9401c0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      62 nvnSamplerCompare(508b940228, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      63 nvnSamplerCompare(508b940290, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      64 nvnSamplerCompare(508b9402f8, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      65 nvnTextureCompare(6a00ff4350, 6a00ff4548, 2400, 4, 5, 8) lr main+1289bb4
+      66 nvnSamplerCompare(508b9401c0, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      67 nvnSamplerCompare(508b940228, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      68 nvnSamplerCompare(508b940290, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      69 nvnSamplerCompare(508b9402f8, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      70 nvnSamplerCompare(508b940360, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      71 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3000, 4, 5, 8) lr main+1289bb4
+      72 nvnSamplerCompare(508b940228, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      73 nvnSamplerCompare(508b940290, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      74 nvnSamplerCompare(508b9402f8, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      75 nvnSamplerCompare(508b940360, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      76 nvnSamplerCompare(508b9403c8, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      77 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3200, 4, 5, 8) lr main+1289bb4
+      78 nvnSamplerCompare(508b940228, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      79 nvnSamplerCompare(508b940290, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      80 nvnSamplerCompare(508b9402f8, 6a00ff43f0, 1, 7, 5, 8) lr main+12814b0
+      81 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3400, 4, 5, 8) lr main+1289bb4
+      82 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3600, 4, 5, 8) lr main+1289bb4
+      83 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3800, 4, 5, 8) lr main+1289bb4
+      84 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3a00, 4, 5, 8) lr main+1289bb4
+      85 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3c00, 4, 5, 8) lr main+1289bb4
+      86 nvnTextureCompare(6a00ff4350, 6a00ff4548, 3e00, 4, 5, 8) lr main+1289bb4
+      87 nvnTextureCompare(6a00ff4350, 6a00ff4548, 0, 4, 5, 1) lr main+1289bb4
+      88 nvnTextureCompare(6a00ff4350, 6a00ff4548, 200, 4, 5, 8) lr main+1289bb4
+      89 nvnTextureCompare(6a00ff4350, 6a00ff4548, 400, 4, 5, 8) lr main+1289bb4
+      90 nvnTextureCompare(6a00ff4350, 6a00ff4548, 600, 4, 5, 8) lr main+1289bb4
+      91 nvnTextureCompare(6a00ff4350, 6a00ff4548, 800, 0, 1, 8) lr main+1289bb4
+      92 nvnTextureCompare(6a00ff4350, 6a00ff4548, a00, 0, 1, 8) lr main+1289bb4
+      93 nvnTextureCompare(6a00ff4350, 6a00ff4548, c00, 0, 1, 8) lr main+1289bb4
+      94 nvnTextureCompare(6a00ff4350, 6a00ff4548, e00, 0, 1, 8) lr main+1289bb4
+      95 nvnTextureCompare(6a00ff4350, 6a00ff4548, 1000, 4, 5, 8) lr main+1289bb4
+      96 nvnTextureCompare(6a00ff4c30, 6a00ff4e70, 0, 4, 5, 1) lr main+1289bb4
+      97 nvnMemoryPoolSetDebugLabel(503db68010, 400269d3b4, 6f00000b50, 401040e620, 74698, 1) lr main+1d2801c
+      98 nvnSamplerSetDebugLabel(503db14398, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+      99 nvnSamplerSetDebugLabel(503db17bb8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     100 nvnSamplerSetDebugLabel(503db1b508, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     101 nvnSamplerSetDebugLabel(503db1d260, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     102 nvnSamplerSetDebugLabel(503db1d2d8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     103 nvnSamplerSetDebugLabel(503db1f070, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     104 nvnSamplerSetDebugLabel(503db1f0e8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     105 nvnSamplerSetDebugLabel(503db20e80, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     106 nvnSamplerSetDebugLabel(503db20ef8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     107 nvnSamplerSetDebugLabel(503db22c68, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     108 nvnSamplerSetDebugLabel(503db249d8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     109 nvnSamplerSetDebugLabel(503db24a50, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     110 nvnSamplerSetDebugLabel(503db267e8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     111 nvnSamplerSetDebugLabel(503db26860, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     112 nvnSamplerSetDebugLabel(503db285f8, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     113 nvnSamplerSetDebugLabel(503db28670, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     114 nvnSamplerSetDebugLabel(503db2a408, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     115 nvnSamplerSetDebugLabel(503db2a480, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     116 nvnSamplerSetDebugLabel(503db2c1f0, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     117 nvnSamplerSetDebugLabel(503db2df20, 400269d3b4, 6f00000fe0, 7, 74698, 1) lr main+1d2a7b8
+     118 nvnBufferSetDebugLabel(503db09790, 4002632508, 6f00000cf0, 6, 0, 6) lr main+1d2b824
+     119 nvnBufferSetDebugLabel(503db09880, 4002632508, 6f00000cf0, 6, 8, 6) lr main+1d2b824
+     120 nvnBufferSetDebugLabel(503db09970, 4002632508, 6f00000cf0, 6, 10, 6) lr main+1d2b824
+     121 nvnBufferSetDebugLabel(503db09a60, 4002632508, 6f00000cf0, 6, 18, 6) lr main+1d2b824
+     122 nvnBufferSetDebugLabel(503db09b50, 4002632508, 6f00000cf0, 6, 20, 6) lr main+1d2b824
+     123 nvnBufferSetDebugLabel(503db09c40, 4002632508, 6f00000cf0, 6, 28, 6) lr main+1d2b824
+     124 nvnBufferSetDebugLabel(503db09d30, 4002632508, 6f00000cf0, 6, 30, 6) lr main+1d2b824
+     125 nvnBufferSetDebugLabel(503db09e20, 4002632508, 6f00000cf0, 6, 38, 6) lr main+1d2b824
+     126 nvnBufferSetDebugLabel(503db09f10, 4002632508, 6f00000cf0, 6, 40, 6) lr main+1d2b824
+     127 nvnBufferSetDebugLabel(503db0a000, 4002632508, 6f00000cf0, 6, 48, 6) lr main+1d2b824
+     128 nvnBufferSetDebugLabel(503db0a0f0, 4002632508, 6f00000cf0, 6, 50, 6) lr main+1d2b824
+     129 nvnBufferSetDebugLabel(503db0a1e0, 4002632508, 6f00000cf0, 6, 58, 6) lr main+1d2b824
+     130 nvnBufferSetDebugLabel(503db0a2d0, 4002632508, 6f00000cf0, 6, 60, 6) lr main+1d2b824
+     131 nvnBufferSetDebugLabel(503db0a3c0, 4002632508, 6f00000cf0, 6, 68, 6) lr main+1d2b824
+     132 nvnBufferSetDebugLabel(503db0a4b0, 4002632508, 6f00000cf0, 6, 70, 6) lr main+1d2b824
+     133 nvnBufferSetDebugLabel(503db0a5a0, 4002632508, 6f00000cf0, 6, 78, 6) lr main+1d2b824
+     134 nvnBufferSetDebugLabel(503db0a690, 4002632508, 6f00000cf0, 6, 80, 6) lr main+1d2b824
+     135 nvnBufferSetDebugLabel(503db0a780, 4002632508, 6f00000cf0, 6, 88, 6) lr main+1d2b824
+     136 nvnBufferSetDebugLabel(503db0a870, 4002632508, 6f00000cf0, 6, 90, 6) lr main+1d2b824
+     137 nvnBufferSetDebugLabel(503db0a960, 4002632508, 6f00000cf0, 6, 98, 6) lr main+1d2b824
+     138 nvnBufferSetDebugLabel(503db0aa50, 4002632508, 6f00000cf0, 6, a0, 6) lr main+1d2b824
+     139 nvnBufferSetDebugLabel(503db0aae8, 4002653314, 6f00000cf0, 24, 158, 24) lr main+1d2b594
+     140 nvnBufferSetDebugLabel(503db0abd0, 4002653314, 6f00000cf0, 24, 180, 24) lr main+1d2b594
+     141 nvnBufferSetDebugLabel(503db0acb8, 4002653314, 6f00000cf0, 24, 1a8, 24) lr main+1d2b594
+     142 nvnBufferSetDebugLabel(503db0ada0, 4002653314, 6f00000cf0, 18, 1d0, 18) lr main+1d2b594
+     143 nvnBufferSetDebugLabel(503db0ade8, 4002653314, 6f00000cf0, c, 1e8, c) lr main+1d2b594
+     144 nvnBufferSetDebugLabel(503db0aef8, 4002653314, 6f00000cf0, 24, 1f8, 24) lr main+1d2b594
+     145 nvnBufferSetDebugLabel(503db0afe0, 4002653314, 6f00000cf0, 24, 220, 24) lr main+1d2b594
+     146 nvnBufferSetDebugLabel(503db0b0c8, 4002653314, 6f00000cf0, 24, 248, 24) lr main+1d2b594
+     147 nvnBufferSetDebugLabel(503db0b1b0, 4002653314, 6f00000cf0, 24, 270, 24) lr main+1d2b594
+     148 nvnBufferSetDebugLabel(503db0b298, 4002653314, 6f00000cf0, 24, 298, 24) lr main+1d2b594
+     149 nvnBufferSetDebugLabel(503db0b380, 4002653314, 6f00000cf0, 18, 2c0, 18) lr main+1d2b594
+     150 nvnSamplerSetDebugLabel(503db35520, 400269d3b4, 6f00000fe0, 7, 2d8, c) lr main+1d2a7b8
+     151 nvnSamplerSetDebugLabel(503db37248, 400269d3b4, 6f00000fe0, 7, 2d8, c) lr main+1d2a7b8
+     152 nvnSamplerSetDebugLabel(503db38f70, 400269d3b4, 6f00000fe0, 7, 2d8, c) lr main+1d2a7b8
+     153 nvnSamplerSetDebugLabel(503db3ac98, 400269d3b4, 6f00000fe0, 7, 2d8, c) lr main+1d2a7b8
+     154 nvnSamplerSetDebugLabel(503db3c9c0, 400269d3b4, 6f00000fe0, 7, 2d8, c) lr main+1d2a7b8
+     155 nvnSamplerSetDebugLabel(503db40380, 400269d3b4, 6f00000fe0, 7, 4e0, c) lr main+1d2a7b8
+     156 nvnSamplerSetDebugLabel(503db420a8, 400269d3b4, 6f00000fe0, 7, 4e0, c) lr main+1d2a7b8
+     157 nvnSamplerSetDebugLabel(503db43dd0, 400269d3b4, 6f00000fe0, 7, 4e0, c) lr main+1d2a7b8
+     158 nvnSamplerSetDebugLabel(503db47b20, 400269d3b4, 6f00000fe0, 7, 6e8, c) lr main+1d2a7b8
+     159 nvnSamplerSetDebugLabel(503db49848, 400269d3b4, 6f00000fe0, 7, 6e8, c) lr main+1d2a7b8
+     160 nvnSamplerSetDebugLabel(503db4b570, 400269d3b4, 6f00000fe0, 7, 6e8, c) lr main+1d2a7b8
+     161 nvnSamplerSetDebugLabel(503db4d298, 400269d3b4, 6f00000fe0, 7, 6e8, c) lr main+1d2a7b8
+     162 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3328, 509adef138) lr main+13adac8
+     163 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3328, 509adef138) lr main+13adadc
+     164 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     165 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     166 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf31a8, 509adef138) lr main+13adac8
+     167 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf31a8, 509adef138) lr main+13adadc
+     168 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     169 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     170 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3028, 509adef138) lr main+13adac8
+     171 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3028, 509adef138) lr main+13adadc
+     172 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     173 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     174 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf30e8, 509adef138) lr main+13adac8
+     175 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf30e8, 509adef138) lr main+13adadc
+     176 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     177 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     178 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf2f68, 509adef138) lr main+13adac8
+     179 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf2f68, 509adef138) lr main+13adadc
+     180 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     181 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     182 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3268, 509adef138) lr main+13adac8
+     183 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3268, 509adef138) lr main+13adadc
+     184 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     185 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     186 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3568, 509adef138) lr main+13adac8
+     187 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3568, 509adef138) lr main+13adadc
+     188 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3598, 509adef138) lr main+13adac8
+     189 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3598, 509adef138) lr main+13adadc
+     190 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf35c8, 509adef138) lr main+13adac8
+     191 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf35c8, 509adef138) lr main+13adadc
+     192 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     193 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     194 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf34a8, 509adef138) lr main+13adac8
+     195 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf34a8, 509adef138) lr main+13adadc
+     196 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf34d8, 509adef138) lr main+13adac8
+     197 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf34d8, 509adef138) lr main+13adadc
+     198 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3508, 509adef138) lr main+13adac8
+     199 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3508, 509adef138) lr main+13adadc
+     200 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     201 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     202 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf33e8, 509adef138) lr main+13adac8
+     203 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf33e8, 509adef138) lr main+13adadc
+     204 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3418, 509adef138) lr main+13adac8
+     205 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3418, 509adef138) lr main+13adadc
+     206 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf3448, 509adef138) lr main+13adac8
+     207 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf3448, 509adef138) lr main+13adadc
+     208 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     209 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     210 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf4768, 509adef138) lr main+13adac8
+     211 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf4768, 509adef138) lr main+13adadc
+     212 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 102, 509adef138) lr main+13ae88c
+     213 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 102, 509adef138) lr main+13ae8a0
+     214 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf45e8, 509adef138) lr main+13adac8
+     215 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf45e8, 509adef138) lr main+13adadc
+     216 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 100, 509adef138) lr main+13ae88c
+     217 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 100, 509adef138) lr main+13ae8a0
+     218 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf46a8, 509adef138) lr main+13adac8
+     219 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf46a8, 509adef138) lr main+13adadc
+     220 nvnCommandBufferSetMemoryCallback(6a00ff1ba0, 4001282db0, 8, 4001d3a730, 102, 509adef138) lr main+13ae88c
+     221 nvnCommandBufferSetMemoryCallbackData(6a00ff1ba0, 6a00ff1c48, 8, 4001d3a730, 102, 509adef138) lr main+13ae8a0
+     222 nvnCommandBufferSetMemoryCallback(6a00ff1b50, 4001282db0, 280, 509adef138, 509adf4828, 509adef138) lr main+13adac8
+     223 nvnCommandBufferSetMemoryCallbackData(6a00ff1b50, 6a00ff1c28, 280, 509adef138, 509adf4828, 509adef138) lr main+13adadc
+     224 nvnTextureCompare(6a00fef810, 509b793a58, 1000, 4, 5, 1) lr main+1289bb4
+     225 nvnTextureCompare(6a00fef810, 509b793d10, 1800, 4, 5, 1) lr main+1289bb4
+     226 nvnTextureCompare(6a00fef670, 509b7937a0, 0, 0, 1, 1) lr main+1289bb4
+     227 nvnTextureCompare(6a00fef4b0, 509b79b380, 0, 4, 1, 1) lr main+1289bb4
+     228 nvnTextureCompare(6a00fef4b0, 509b79bdb0, c00, 4, 1, 1) lr main+1289bb4
+     229 nvnMemoryPoolSetDebugLabel(5026026010, 400269d3b4, 6f00000b50, 401040e620, 133a0, 1) lr main+1d2801c
+     230 nvnMemoryPoolSetDebugLabel(503edb8010, 400269d3b4, 6f00000b50, 401040e620, ffffffff, 503ed45038) lr main+1d2801c
+     231 nvnCommandBufferClearTexture(6a00fff420, 509589f450, 0, 6a00ffec00, 4002cbfc68, f) lr main+1283a4c
+     232 nvnMemoryPoolSetDebugLabel(5042567010, 400269d3b4, 6f00000b50, 401040e620, 488b0, 1) lr main+1d2801c
+     233 nvnMemoryPoolSetDebugLabel(5042648010, 400269d3b4, 6f00000b50, 401040e620, 362f8, 1) lr main+1d2801c
+     234 nvnMemoryPoolSetDebugLabel(50428db010, 400269d3b4, 6f00000b50, 401040e620, 41be0, 1) lr main+1d2801c
+     235 nvnMemoryPoolSetDebugLabel(5026db4010, 400269d3b4, 6f00000b50, 401040e620, 14ce8, 1) lr main+1d2801c
+     236 nvnMemoryPoolSetDebugLabel(5026ddd010, 400269d3b4, 6f00000b50, 401040e620, ff28, 1) lr main+1d2801c
+     237 nvnMemoryPoolSetDebugLabel(5026dfc010, 400269d3b4, 6f00000b50, 401040e620, fcb0, 1) lr main+1d2801c
+     238 nvnMemoryPoolSetDebugLabel(5026e32010, 400269d3b4, 6f00000b50, 401040e620, 10a50, 1) lr main+1d2801c
+     239 nvnMemoryPoolSetDebugLabel(5026e65010, 400269d3b4, 6f00000b50, 401040e620, fcc8, 1) lr main+1d2801c
+     240 nvnMemoryPoolSetDebugLabel(5026ea2010, 400269d3b4, 6f00000b50, 401040e620, 157b8, 1) lr main+1d2801c
+     241 nvnMemoryPoolSetDebugLabel(5026efa010, 400269d3b4, 6f00000b50, 401040e620, fc08, 1) lr main+1d2801c
+     242 nvnMemoryPoolSetDebugLabel(5026f2e010, 400269d3b4, 6f00000b50, 401040e620, 14f18, 1) lr main+1d2801c
+     243 nvnMemoryPoolSetDebugLabel(5026f71010, 400269d3b4, 6f00000b50, 401040e620, 152a8, 1) lr main+1d2801c
+     244 nvnMemoryPoolSetDebugLabel(5026fb0010, 400269d3b4, 6f00000b50, 401040e620, fa88, 1) lr main+1d2801c
+     245 nvnMemoryPoolSetDebugLabel(5026fd0010, 400269d3b4, 6f00000b50, 401040e620, fde0, 1) lr main+1d2801c
+     246 nvnMemoryPoolSetDebugLabel(5026ff8010, 400269d3b4, 6f00000b50, 401040e620, 15288, 1) lr main+1d2801c
+     247 nvnMemoryPoolSetDebugLabel(5027050010, 400269d3b4, 6f00000b50, 401040e620, ff88, 1) lr main+1d2801c
+     248 nvnMemoryPoolSetDebugLabel(5027081010, 400269d3b4, 6f00000b50, 401040e620, 15ad8, 1) lr main+1d2801c
+     249 nvnMemoryPoolSetDebugLabel(50270ca010, 400269d3b4, 6f00000b50, 401040e620, 14f38, 1) lr main+1d2801c
+     250 nvnMemoryPoolSetDebugLabel(50270f2010, 400269d3b4, 6f00000b50, 401040e620, 15360, 1) lr main+1d2801c
+     251 nvnMemoryPoolSetDebugLabel(502711a010, 400269d3b4, 6f00000b50, 401040e620, 10988, 1) lr main+1d2801c
+     252 nvnMemoryPoolSetDebugLabel(5027161010, 400269d3b4, 6f00000b50, 401040e620, 14d10, 1) lr main+1d2801c
+     253 nvnMemoryPoolSetDebugLabel(50271a1010, 400269d3b4, 6f00000b50, 401040e620, 14d58, 1) lr main+1d2801c
+     254 nvnMemoryPoolSetDebugLabel(5044a8f010, 400269d3b4, 6f00000b50, 401040e620, 3ad18, 1) lr main+1d2801c
+     255 nvnMemoryPoolSetDebugLabel(5027222010, 400269d3b4, 6f00000b50, 401040e620, 158a0, 1) lr main+1d2801c
+     256 nvnMemoryPoolSetDebugLabel(5027258010, 400269d3b4, 6f00000b50, 401040e620, 152f0, 1) lr main+1d2801c
+     257 nvnMemoryPoolSetDebugLabel(5027288010, 400269d3b4, 6f00000b50, 401040e620, fe08, 1) lr main+1d2801c
+     258 nvnMemoryPoolSetDebugLabel(5044b5d010, 400269d3b4, 6f00000b50, 401040e620, 347b0, 1) lr main+1d2801c
+     259 nvnMemoryPoolSetDebugLabel(5044c12010, 400269d3b4, 6f00000b50, 401040e620, 1e188, 1) lr main+1d2801c
+     260 nvnMemoryPoolSetDebugLabel(504244e010, 400269d3b4, 6f00000b50, 401040e620, 7d0f8, 1) lr main+1d2801c
+     261 nvnTextureGetZCullStorageSize(509bf84ba0, 36, 6822794bd0, 3, 110d212f8, 6822794908) lr main+17e9c08
+     262 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 0, 509bbddaf8) lr main+145235c
+     263 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 1, 509bbddaf8) lr main+145235c
+     264 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 2, 509bbddaf8) lr main+145235c
+     265 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 3, 509bbddaf8) lr main+145235c
+     266 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 4, 509bbddaf8) lr main+145235c
+     267 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 5, 509bbddaf8) lr main+145235c
+     268 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     269 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     270 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     271 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     272 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     273 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     274 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 0, 509bbddaf8) lr main+145235c
+     275 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 1, 509bbddaf8) lr main+145235c
+     276 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 2, 509bbddaf8) lr main+145235c
+     277 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 3, 509bbddaf8) lr main+145235c
+     278 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 4, 509bbddaf8) lr main+145235c
+     279 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 5, 509bbddaf8) lr main+145235c
+     280 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     281 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     282 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     283 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     284 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     285 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     286 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 0, 509bbddaf8) lr main+145235c
+     287 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     288 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     289 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 1, 509bbddaf8) lr main+145235c
+     290 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     291 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     292 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 2, 509bbddaf8) lr main+145235c
+     293 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     294 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     295 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 3, 509bbddaf8) lr main+145235c
+     296 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     297 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     298 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 4, 509bbddaf8) lr main+145235c
+     299 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     300 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     301 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 5, 509bbddaf8) lr main+145235c
+     302 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     303 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     304 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     305 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     306 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     307 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     308 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     309 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     310 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 0, 509bbddaf8) lr main+145235c
+     311 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     312 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     313 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 1, 509bbddaf8) lr main+145235c
+     314 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     315 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     316 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 2, 509bbddaf8) lr main+145235c
+     317 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     318 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     319 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 3, 509bbddaf8) lr main+145235c
+     320 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     321 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     322 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 4, 509bbddaf8) lr main+145235c
+     323 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     324 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     325 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 5, 509bbddaf8) lr main+145235c
+     326 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     327 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     328 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     329 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     330 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     331 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     332 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     333 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     334 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 0, 509bbddaf8) lr main+145235c
+     335 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     336 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     337 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 1, 509bbddaf8) lr main+145235c
+     338 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     339 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     340 nvnTextureGetZCullStorageSize(509bbdde68, 36, 68a35f1f0c, 0, 2, 509bbddaf8) lr main+145235c
+     341 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     342 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     343 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 3, 509bbddaf8) lr main+145235c
+     344 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     345 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     346 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 4, 509bbddaf8) lr main+145235c
+     347 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     348 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     349 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 5, 509bbddaf8) lr main+145235c
+     350 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     351 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     352 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     353 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     354 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     355 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     356 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     357 nvnCommandBufferClearTexture(68a35f2ca0, 509bbde5c0, 0, 68a35f1480, 4002cbfc68, f) lr main+1283a4c
+     358 nvnTextureGetZCullStorageSize(509bbdde68, 36, 6822794f0c, 0, 0, 509bbddaf8) lr main+145235c
+     359 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     360 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     361 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     362 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     363 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     364 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     365 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     366 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     367 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     368 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     369 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     370 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     371 nvnCommandBufferClearTexture(6822795ca0, 509bbde5c0, 0, 6822794480, 4002cbfc68, f) lr main+1283a4c
+     372 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     373 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     374 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     375 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     376 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     377 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     378 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     379 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     380 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     381 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     382 nvnCommandBufferSetLineWidth(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     383 nvnCommandBufferSetPointSize(68a35f2ca0, 68a35f1d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     384 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     385 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     386 nvnCommandBufferSetLineWidth(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f84
+     387 nvnCommandBufferSetPointSize(6822795ca0, 6822794d80, 400181e590, 40017edbf0, 6f00001470, 0) lr main+13c3f98
+     388 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 1, 1, 0) lr main+1b2dec4
+     389 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     390 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 1, 1, 0) lr main+1ab231c
+     391 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 1, ffffffff, 11a0, 11a0) lr main+1b2dec4
+     392 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc
+     393 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, ffffffff, 11a0, 11a0) lr main+1ab231c
+     394 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, e, ffffffff, 11a0, 11a0) lr main+1b2e0e0
+     395 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     396 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 142181e00, 60, 60) lr main+1ab25e4
+     397 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 9, ffffffff, 11a0, 11a0) lr main+1b2e0e0
+     398 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     399 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, ffffffff, 11a0, 11a0) lr main+1ab25e4
+     400 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 280, 168, 509b8fe568) lr main+14884a4
+     401 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 280, 168, 509b8fe568) lr main+14884bc
+     402 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 1, 1, 1, 1) lr main+1488728
+     403 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 1, 1, 0) lr main+1b2dec4
+     404 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     405 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 1, 1, 0) lr main+1ab231c
+     406 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 1, ffffffff, 11a0, 11a0) lr main+1b2dec4
+     407 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc
+     408 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, ffffffff, 11a0, 11a0) lr main+1ab231c
+     409 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, e, ffffffff, 11a0, 11a0) lr main+1b2e0e0
+     410 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     411 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 142181f00, 60, 60) lr main+1ab25e4
+     412 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 9, ffffffff, 11a0, 11a0) lr main+1b2e0e0
+     413 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     414 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, ffffffff, 11a0, 11a0) lr main+1ab25e4
+     415 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 280, 168, 509b8fe568) lr main+14884a4
+     416 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 280, 168, 509b8fe568) lr main+14884bc
+     417 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 1, 1, 1, 1) lr main+1488728
+     418 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 1, 1, 0) lr main+1b2dec4
+     419 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     420 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 1, 1, 0) lr main+1ab231c
+     421 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 1, ffffffff, 11a0, 11a0) lr main+1b2dec4
+     422 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc
+     423 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, ffffffff, 11a0, 11a0) lr main+1ab231c
+     424 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, e, ffffffff, 11a0, 11a0) lr main+1b2e0e0
+     425 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     426 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 142181e00, 60, 60) lr main+1ab25e4
+     427 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 9, ffffffff, 11a0, 11a0) lr main+1b2e0e0
+     428 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     429 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, ffffffff, 11a0, 11a0) lr main+1ab25e4
+     430 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 280, 168, 509b8fe568) lr main+14884a4
+     431 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 280, 168, 509b8fe568) lr main+14884bc
+     432 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 1, 1, 1, 1) lr main+1488728
+     433 nvnCommandBufferSetTiledCacheAction(6822795ca0, 1, 0, 1, 1, 0) lr main+1b2dec4
+     434 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     435 nvnCommandBufferSetTiledCacheAction(6822795ca0, 2, 6f00001520, 1, 1, 0) lr main+1ab231c
+     436 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc
+     437 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     438 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     439 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 280, 168, 509b8fe568) lr main+14884bc
+     440 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     441 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc
+     442 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     443 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     444 nvnCommandBufferSetTiledCacheTileSize(6822795ca0, 40, 40, 280, 168, 509b8fe568) lr main+14884bc
+     445 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     446 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc
+     447 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     448 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2e0f8
+     449 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, 280, 168, 509b8fe568) lr main+14884bc
+     450 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, 1, 1, 0) lr main+1b2dedc
+     451 nvnCommandBufferSetTiledCacheTileSize(68a35f2ca0, 40, 40, ffffffff, 11a0, 11a0) lr main+1b2dedc

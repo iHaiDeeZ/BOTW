@@ -9,3 +9,6 @@ build/
 *.nsp
 *.keys
 private/
+# frame dumps and storyboard pictures from the console (tens of MB per run)
+logs/**/*.ppm
+logs/**/*.pgm
