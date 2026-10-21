@@ -256,7 +256,8 @@ bool take_astc(const GpuImage* img, std::vector<uint8_t>& linear, std::vector<Li
     std::shared_ptr<AstcJob> j = it->second;
     if (!j->done.load(std::memory_order_acquire)) {  // asked for now: wait for it
         std::unique_lock lk(g_astc_lock);
-        g_astc_done.wait(lk, [&] { return j->done.load(); });
+        while (!g_astc_done.wait_for(lk, std::chrono::milliseconds(25), [&] { return j->done.load(); })) {
+        }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
     }
     g_astc_jobs.erase(it);
     if (j->levels.empty()) return false;

@@ -569,7 +569,9 @@ VkPipeline graphics_pipeline(const PipelineKey& key, const ProgramLayout& layout
             return VK_NULL_HANDLE;
         }
         if (pending) {  // a draw that cannot wait, for a pipeline being made: wait for that one
-            g_async_done.wait(lk, [&] { return g_finished.count(k) != 0; });
+            while (!g_async_done.wait_for(lk, std::chrono::milliseconds(25),
+                                          [&] { return g_finished.count(k) != 0; })) {
+            }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
             VkPipeline p = g_finished[k];
             g_finished.erase(k);
             return (last = &*cache.emplace(k, p).first)->second;

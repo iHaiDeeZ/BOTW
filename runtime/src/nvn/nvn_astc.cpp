@@ -68,7 +68,8 @@ bool astc_pool_run(const std::function<void(unsigned)>& job) {
     pool.start.notify_all();
     job(0);
     std::unique_lock lk(pool.m);
-    pool.done.wait(lk, [&] { return pool.pending == 0; });
+    while (!pool.done.wait_for(lk, std::chrono::milliseconds(25), [&] { return pool.pending == 0; })) {
+    }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
     return true;
 }
 #endif

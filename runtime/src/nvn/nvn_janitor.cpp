@@ -76,7 +76,9 @@ void janitor_wait(const std::atomic<bool>& done) {
     for (int k = 0; k < 200 && !done.load(std::memory_order_acquire); k++) plat::yield();  // normally done already
     if (done.load(std::memory_order_acquire)) return;
     std::unique_lock lk(g_lock);
-    g_done_cv.wait(lk, [&] { return done.load(std::memory_order_acquire); });
+    while (!g_done_cv.wait_for(lk, std::chrono::milliseconds(25),
+                               [&] { return done.load(std::memory_order_acquire); })) {
+    }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
 }
 
 }  // namespace nx::nvn

@@ -106,7 +106,8 @@ void worker_wait(uint64_t serial) {
     const uint64_t t0 = plat::monotonic_ns();
     {
         std::unique_lock lk(g_lock);
-        g_done_cv.wait(lk, [&] { return g_done >= serial; });
+        while (!g_done_cv.wait_for(lk, std::chrono::milliseconds(25), [&] { return g_done >= serial; })) {
+        }  // re-checked every 25 ms: a lost notify (kernel.cpp wait_slice)
     }
     g_waited_ns += plat::monotonic_ns() - t0;
 }

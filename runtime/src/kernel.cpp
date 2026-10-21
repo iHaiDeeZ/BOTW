@@ -112,14 +112,46 @@ NX_HLE("_ZN2nn2os13GetSystemTickEv", hle_get_system_tick);
 
 // ---- waiting --------------------------------------------------------------------------------------------------
 
+using Clock = std::chrono::steady_clock;
+
+// One wait (with g_k held) on the thread's condition variable, until `until` (`forever`: no limit) but at most
+// NX_WAIT_SLICE_MS (default 25; 0: no limit), after which the caller checks again: a notify that never reaches the
+// host condition variable then costs a slice instead of the thread. Breath of the Wild (PS4, with the sampling
+// profiler's 1 kHz signals) froze with a message queue's owner asleep in svcWaitProcessWideKeyAtomic after a signal
+// had handed it the mutex and set its `wake`: on no wait list, never woken, and the game's sound thread waiting for
+// that mutex. `done` says whether what the thread waits for is there; a slice that ends with it there is logged.
+template <class Done>
+static void wait_slice(std::unique_lock<std::recursive_mutex>& lk, KThread* self, bool forever, Clock::time_point until,
+                       Done done) {
+    static const int64_t slice_ms = [] {
+        const char* e = std::getenv("NX_WAIT_SLICE_MS");
+        return e ? std::max<int64_t>(0, std::atoll(e)) : 25;
+    }();
+    const auto next = Clock::now() + std::chrono::milliseconds(slice_ms);
+    if (!slice_ms || (!forever && next >= until)) {
+        if (forever)
+            self->cv.wait(lk);
+        else
+            self->cv.wait_until(lk, until);
+        return;
+    }
+    if (self->cv.wait_until(lk, next) == std::cv_status::timeout && done()) {
+        static uint32_t late = 0;  // g_k held
+        if (++late <= 8 || !(late & (late - 1)))
+            log("kernel: thread %x found its wake-up only when a %lld ms wait slice ended (%u so far)", self->handle,
+                (long long)slice_ms, late);
+    }
+}
+
 // Wait (with g_k held) until `self->wake` or timeout (ns, <0 = forever). Returns false on timeout.
 static bool block(std::unique_lock<std::recursive_mutex>& lk, KThread* self, int64_t timeout_ns) {
-    if (timeout_ns < 0) {
-        self->cv.wait(lk, [&] { return self->wake; });
-        return true;
+    const bool forever = timeout_ns < 0;
+    const auto until = Clock::now() + std::chrono::nanoseconds(forever ? 0 : timeout_ns);
+    while (!self->wake) {
+        if (!forever && Clock::now() >= until) return false;
+        wait_slice(lk, self, forever, until, [&] { return self->wake; });
     }
-    auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
-    return self->cv.wait_until(lk, until, [&] { return self->wake; });
+    return true;
 }
 
 // Wake a blocked thread (with g_k held).
@@ -332,7 +364,7 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
             if (objs[i]->signaled()) return i;
         return -1;
     };
-    auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
+    auto until = Clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
     KThread* self = t_self;
     self->cancel = false;
     g_sync_waiters.push_back(self);
@@ -351,11 +383,8 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
             self->cancel = false;
             return 0xEC01;
         }
-        if (timeout == 0) return 0xEA01;
-        if (timeout < 0)
-            self->cv.wait(lk);
-        else if (self->cv.wait_until(lk, until) == std::cv_status::timeout && ready() < 0)
-            return 0xEA01;
+        if (timeout == 0 || (timeout > 0 && Clock::now() >= until)) return 0xEA01;
+        wait_slice(lk, self, timeout < 0, until, [&] { return ready() >= 0 || self->cancel; });
     }
 }
 
