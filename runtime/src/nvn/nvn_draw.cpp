@@ -315,11 +315,20 @@ void phase_log(uint64_t frames) {
 bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
     PhaseClock clock;
     g_stats.total++;
-    if (g_state.rasterizer_discard || !g_state.render_enable) return false;  // nothing reaches the targets
+    // The storyboard lists the draws that never reach the GPU too, with why (Breath of the Wild's missing menu text:
+    // drawn and invisible, or never drawn).
+    auto skipped = [&](const char* why, const ShaderInfo* v, const ShaderInfo* f) {
+        if (diag_active())
+            diag_line(std::string("  skipped draw (") + why + ") vs " + (v ? v->hash : std::string("-")) + " fs " +
+                      (f ? f->hash : std::string("-")));
+        return false;
+    };
+    if (g_state.rasterizer_discard || !g_state.render_enable)  // nothing reaches the targets
+        return skipped(g_state.rasterizer_discard ? "rasterizer discard" : "rendering disabled", nullptr, nullptr);
     const auto* shaders = program_shaders(g_state.program);
     if (!shaders || shaders->empty()) {
         g_stats.no_program++;
-        return false;
+        return skipped("no program", nullptr, nullptr);
     }
     const ShaderInfo* vs = nullptr;
     const ShaderInfo* fs = nullptr;
@@ -329,7 +338,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
     if (!vs) {
         g_stats.no_vertex++;
-        return false;
+        return skipped("no vertex shader", nullptr, fs);
     }
     std::vector<const ShaderInfo*> swapped;  // NX_SWAP_FS / NX_SKIP_FS (nvn_draw_trace.cpp)
     if (!debug_shader_overrides(shaders, fs, swapped)) return false;
@@ -366,7 +375,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     clock.mark(kPhTextures);
     if (gathered & kTexturesPending) {
         g_stats.no_pipeline++;
-        return false;
+        return skipped("textures pending", vs, fs);
     }
     // A pass that neither tests nor writes depth but keeps its depth image bound while sampling that same image (the
     // world map's depth-to-colour linearization, fs 0aa56d1b): on Metal the image is then attached and read in one
@@ -407,7 +416,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     DrawInputs in;
     if (!draw_inputs_shared(cb, vs, indexed, c, in)) {
         g_stats.no_indices++;
-        return false;
+        return skipped("no vertex or index data", vs, fs);
     }
     check_vertex_ranges(vs, fs, indexed, c, in);  // NX_CHECK_VERTS (nvn_written.cpp)
     clock.mark(kPhInputs);
@@ -450,7 +459,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     clock.mark(kPhPipeline);
     if (!pipeline) {
         g_stats.no_pipeline++;
-        return false;
+        return skipped("no pipeline", vs, fs);
     }
 
     if (g_bound.cb != cb || draw_slow(kSlowState)) g_bound = Bound{}, g_bound.cb = cb;

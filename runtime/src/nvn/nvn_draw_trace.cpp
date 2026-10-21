@@ -384,6 +384,27 @@ void trace_draw(const Targets& t, uint32_t mode, bool indexed, const Cmd& c, con
             std::snprintf(b, sizeof b, " bias %g %g %g", double(g_state.bias_factor), double(g_state.bias_units),
                           double(g_state.bias_clamp));
             line += b;
+            // What can leave a UI draw invisible: where it lands (viewport origin, scissor), how it blends into
+            // target 0, logic op, alpha test, and its size (Breath of the Wild's menu text on the PS4).
+            std::snprintf(b, sizeof b, " at %d,%d", g_state.viewport[0], g_state.viewport[1]);
+            line += b;
+            if (g_state.has_scissor) {
+                std::snprintf(b, sizeof b, " sc %d,%d %dx%d", g_state.scissor[0], g_state.scissor[1], g_state.scissor[2],
+                              g_state.scissor[3]);
+                line += b;
+            }
+            if (g_state.color.blend_enable[0]) {
+                const BlendTarget& bt = g_state.blend[0];
+                std::snprintf(b, sizeof b, " blend %u:%u/%u a %u:%u/%u", bt.eq_rgb, bt.src_rgb, bt.dst_rgb, bt.eq_a,
+                              bt.src_a, bt.dst_a);
+                line += b;
+            }
+            if (g_state.color.logic_op || g_state.color.alpha_test) {
+                std::snprintf(b, sizeof b, " logic %u alpha test %u", g_state.color.logic_op, g_state.color.alpha_test);
+                line += b;
+            }
+            std::snprintf(b, sizeof b, " n %u x%u%s", count, instances, indexed ? " indexed" : "");
+            line += b;
         }
         diag_line(line);
     }

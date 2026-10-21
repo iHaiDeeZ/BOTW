@@ -404,6 +404,7 @@ struct Snap {
 };
 std::vector<Snap> g_snaps;
 std::set<uint64_t> g_diag_wanted;  // textures the storyboard frame sampled: pictured at the next frame's first pass end
+std::string g_diag_tex_prefix;     // the folder under diag/ of the storyboard those textures belong to ("" or "<frame>/")
 bool g_diag_textures_due = false;
 
 }  // namespace
@@ -493,7 +494,7 @@ void diag_texture_level(VkCommandBuffer cb, GpuImage& img, uint64_t texture, uin
     char name[160];
     std::snprintf(name, sizeof name, "tex_%llx_%ux%u_f%d_l%u_L%u%s", (unsigned long long)texture, img.width, img.height,
                   int(img.format), level, img.layers, img.rendered ? "_rt" : "");
-    snap.name = name;
+    snap.name = g_diag_tex_prefix + name;
     VkImageLayout back = img.layout;
     if (depth) {
         snap.depth_bytes = img.format == VK_FORMAT_D16_UNORM || img.format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
@@ -558,6 +559,15 @@ int g_diag_seq = 0;
 FILE* g_diag_index = nullptr;
 constexpr int kDiagMax = 400;
 std::map<const GpuImage*, int> g_diag_pictures;  // pictures of each image in this storyboard
+// NX_DIAG_KEEP=1: each storyboard in a folder of its own, diag/<frame>/, instead of replacing the last one: with
+// NX_DIAG_EVERY one run keeps the title menu, a loading screen and gameplay (Breath of the Wild's menu text, missing
+// on the PS4 only, was never on screen when L3 + R3 was pressed). Its sampled textures (~110 MB a storyboard) only
+// with NX_DIAG_TEXTURES=1. g_diag_prefix: "<frame>/" or "" (the picture names' folder under diag/).
+std::string g_diag_prefix;
+bool diag_keep() {
+    static const bool on = std::getenv("NX_DIAG_KEEP") != nullptr;
+    return on;
+}
 }  // namespace
 
 void diag_line(const std::string& line) {
@@ -565,7 +575,8 @@ void diag_line(const std::string& line) {
 }
 
 void diag_want_texture(uint64_t texture) {
-    if (g_diag_on && texture && g_diag_wanted.size() < 300) g_diag_wanted.insert(texture);
+    static const bool textures = !diag_keep() || std::getenv("NX_DIAG_TEXTURES") != nullptr;
+    if (textures && g_diag_on && texture && g_diag_wanted.size() < 300) g_diag_wanted.insert(texture);
 }
 
 void diag_request() { g_diag_armed = true; }
@@ -575,9 +586,10 @@ void diag_frame_boundary(uint64_t presents) {
     if (g_diag_on) {
         g_diag_on = false;
         g_diag_textures_due = !g_diag_wanted.empty();
+        g_diag_tex_prefix = g_diag_prefix;
         if (g_diag_index) std::fclose(g_diag_index), g_diag_index = nullptr;
-        log("diag: storyboard of frame %llu: %d pictures in %s/diag", (unsigned long long)presents, g_diag_seq,
-            plat::data_root().c_str());
+        log("diag: storyboard of frame %llu: %d pictures in %s/diag/%s", (unsigned long long)presents, g_diag_seq,
+            plat::data_root().c_str(), g_diag_prefix.c_str());
     }
     // NX_DIAG_EVERY=<presents>: a storyboard every that many presents (each replaces the last), for a scene that is
     // hard to reach with the menu open (Tears of the Kingdom's black world).
@@ -596,6 +608,11 @@ void diag_frame_boundary(uint64_t presents) {
     }
     if (g_diag_armed.exchange(false)) {
         std::string dir = plat::data_root() + "/diag";
+        g_diag_prefix.clear();
+        if (diag_keep()) {
+            dir += "/" + std::to_string(presents + 1);
+            g_diag_prefix = std::to_string(presents + 1) + "/";
+        }
         plat::make_dirs(dir);
         g_diag_index = plat::fopen_utf8(dir + "/passes.txt", "w");
         g_diag_seq = 0;
@@ -633,7 +650,7 @@ void diag_pass(VkCommandBuffer cb, GpuImage& img, uint32_t slot, uint32_t draws,
     char name[160];
     std::snprintf(name, sizeof name, "%03d_c%u%s_%ux%u_f%d_d%u_%s", g_diag_seq, slot, sub, img.width, img.height,
                   int(img.format), draws, fs.empty() ? "-" : fs.c_str());
-    snap.name = name;
+    snap.name = g_diag_prefix + name;
     if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
     g_diag_seq++;
     // NX_DIAG_FLOAT=1: float targets read back as stored, whole level 0, and logged per channel (min, max, mean, share
@@ -691,7 +708,7 @@ void diag_pass_depth(VkCommandBuffer cb, GpuImage& img, uint64_t texture, uint32
     if (g_diag_index) std::fprintf(g_diag_index, "%s\n", name);
     size_t before = g_snaps.size();
     diag_texture_level(cb, img, texture, 0);
-    if (g_snaps.size() > before) g_snaps.back().name = name;
+    if (g_snaps.size() > before) g_snaps.back().name = g_diag_prefix + name;
 }
 
 void debug_snapshots_write() {  // after the submit's fence
