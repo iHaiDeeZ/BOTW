@@ -188,10 +188,23 @@ uint32_t take_phys() {
     return uint32_t(at / kChunk);
 }
 
+// Zeroes direct memory chunk `phys` before it shows at a guest address: mapped where the kernel likes, cleared there,
+// unmapped. Cleared in place, after mapping, the chunk was already every thread's while the memset ran, and a write
+// another thread made there meanwhile was lost: random guest corruption (found in SSBU v00.16; TOTK 640b099 took the
+// same fix). False when it could not be mapped (the caller clears in place, as before).
+bool zero_phys(uint32_t phys) {
+    void* at = nullptr;
+    if (ps4_map_direct(&at, kChunk, kProtCpuRw, 0, off_t(phys) * off_t(kChunk), kChunk) != 0 || !at) return false;
+    std::memset(at, 0, kChunk);  // direct memory comes with whatever was there before
+    ps4_munmap(at, kChunk);
+    return true;
+}
+
 // Maps the chunk at `addr` (committed, unmapped) with zeroes. With g_lock held. False: out of direct memory.
 bool map_chunk(Slice* s, uint64_t index, uint64_t addr) {
     uint32_t phys = take_phys();
     if (phys == kNoPhys) return false;
+    const bool zeroed = zero_phys(phys);
     ps4_munmap(reinterpret_cast<void*>(addr), kChunk);  // our reservation there: mapping over it fails
     void* at = reinterpret_cast<void*>(addr);
     int32_t r = ps4_map_direct(&at, kChunk, kProtCpuRw, kMapFixed, off_t(phys) * off_t(kChunk), kChunk);
@@ -201,7 +214,7 @@ bool map_chunk(Slice* s, uint64_t index, uint64_t addr) {
         if (g_free_count < kMaxFree) g_free[g_free_count++] = phys;
         return false;
     }
-    std::memset(at, 0, kChunk);  // direct memory comes with whatever was there before
+    if (!zeroed) std::memset(at, 0, kChunk);  // no window to clear it in (no log: this runs in the fault handler)
     s->phys[index] = phys;
     s->state[index].store(kMapped, std::memory_order_release);
     g_mapped += kChunk;

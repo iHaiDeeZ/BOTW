@@ -366,7 +366,11 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
     };
     auto until = Clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
     KThread* self = t_self;
-    self->cancel = false;
+    // A CancelSynchronization that came before this wait is kept: as on Horizon, the wait ends with ResultCancelled at
+    // once (after signaled objects and a zero timeout). nn::os's MultiWait depends on it: SignalEvent marks the event
+    // and cancels the waiting thread's WaitSynchronizationN, and a cancel that lands between the waiter's look at its
+    // events and this call must still wake it. Cleared here, those wake-ups were lost for good (TOTK's movie decoder
+    // thread slept in WaitAny with its events signaled; TOTK e3f5d35).
     g_sync_waiters.push_back(self);
     struct Leave {
         KThread* t;
@@ -379,11 +383,12 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
             objs[i]->consume();
             return 0;
         }
+        if (timeout == 0) return 0xEA01;
         if (self->cancel) {
             self->cancel = false;
             return 0xEC01;
         }
-        if (timeout == 0 || (timeout > 0 && Clock::now() >= until)) return 0xEA01;
+        if (timeout > 0 && Clock::now() >= until) return 0xEA01;
         wait_slice(lk, self, timeout < 0, until, [&] { return ready() >= 0 || self->cancel; });
     }
 }
