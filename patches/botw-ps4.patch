@@ -1716,7 +1716,7 @@ index efe3c11..bac56da 100644
  }
  
 diff --git a/runtime/src/kernel.cpp b/runtime/src/kernel.cpp
-index 0b4e6b6..ec0b2fa 100644
+index 0b4e6b6..47456cd 100644
 --- a/runtime/src/kernel.cpp
 +++ b/runtime/src/kernel.cpp
 @@ -112,14 +112,46 @@ NX_HLE("_ZN2nn2os13GetSystemTickEv", hle_get_system_tick);
@@ -1771,16 +1771,28 @@ index 0b4e6b6..ec0b2fa 100644
  }
  
  // Wake a blocked thread (with g_k held).
-@@ -332,7 +364,7 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
+@@ -332,9 +364,13 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
              if (objs[i]->signaled()) return i;
          return -1;
      };
 -    auto until = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
 +    auto until = Clock::now() + std::chrono::nanoseconds(timeout < 0 ? 0 : timeout);
      KThread* self = t_self;
-     self->cancel = false;
+-    self->cancel = false;
++    // A CancelSynchronization that came before this wait is kept: as on Horizon, the wait ends with ResultCancelled at
++    // once (after signaled objects and a zero timeout). nn::os's MultiWait depends on it: SignalEvent marks the event
++    // and cancels the waiting thread's WaitSynchronizationN, and a cancel that lands between the waiter's look at its
++    // events and this call must still wake it. Cleared here, those wake-ups were lost for good (TOTK's movie decoder
++    // thread slept in WaitAny with its events signaled; TOTK e3f5d35).
      g_sync_waiters.push_back(self);
-@@ -351,11 +383,8 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
+     struct Leave {
+         KThread* t;
+@@ -347,15 +383,13 @@ static uint32_t svc_wait_synchronization(CPU& c, uint64_t handles, int32_t count
+             objs[i]->consume();
+             return 0;
+         }
++        if (timeout == 0) return 0xEA01;
+         if (self->cancel) {
              self->cancel = false;
              return 0xEC01;
          }
@@ -1789,12 +1801,12 @@ index 0b4e6b6..ec0b2fa 100644
 -            self->cv.wait(lk);
 -        else if (self->cv.wait_until(lk, until) == std::cv_status::timeout && ready() < 0)
 -            return 0xEA01;
-+        if (timeout == 0 || (timeout > 0 && Clock::now() >= until)) return 0xEA01;
++        if (timeout > 0 && Clock::now() >= until) return 0xEA01;
 +        wait_slice(lk, self, timeout < 0, until, [&] { return ready() >= 0 || self->cancel; });
      }
  }
  
-@@ -365,6 +394,7 @@ static void thread_main(void* p) {
+@@ -365,6 +399,7 @@ static void thread_main(void* p) {
      KThread* t = static_cast<KThread*>(p);
      t_self = t;
      t->host_tid = plat::current_thread_id();
@@ -1802,7 +1814,7 @@ index 0b4e6b6..ec0b2fa 100644
      char name[16];
      std::snprintf(name, sizeof name, "g%llx", (unsigned long long)t->id);
      plat::set_thread_name(name);
-@@ -405,6 +435,7 @@ uint32_t create_main_thread(uint64_t stack_size) {
+@@ -405,6 +440,7 @@ uint32_t create_main_thread(uint64_t stack_size) {
      t->started = true;
      t_self = t.get();
      t->host_tid = plat::current_thread_id();
@@ -10049,10 +10061,10 @@ index fa4ac38..5f176cc 100644
  bool write_watch_add(uint64_t addr, uint64_t size);
 diff --git a/runtime/src/platform_ps4.cpp b/runtime/src/platform_ps4.cpp
 new file mode 100644
-index 0000000..abf439b
+index 0000000..bac8165
 --- /dev/null
 +++ b/runtime/src/platform_ps4.cpp
-@@ -0,0 +1,1115 @@
+@@ -0,0 +1,1128 @@
 +// PS4 host (jailbroken, homebrew; SMW): guest memory on direct memory mapped on first touch, pthreads placed on the
 +// console's cores, VideoOut + RADV for Vulkan (ps4/ps4_vk_wsi.cpp), ScePad, sceAudioOut, and main.
 +//
@@ -10243,10 +10255,23 @@ index 0000000..abf439b
 +    return uint32_t(at / kChunk);
 +}
 +
++// Zeroes direct memory chunk `phys` before it shows at a guest address: mapped where the kernel likes, cleared there,
++// unmapped. Cleared in place, after mapping, the chunk was already every thread's while the memset ran, and a write
++// another thread made there meanwhile was lost: random guest corruption (found in SSBU v00.16; TOTK 640b099 took the
++// same fix). False when it could not be mapped (the caller clears in place, as before).
++bool zero_phys(uint32_t phys) {
++    void* at = nullptr;
++    if (ps4_map_direct(&at, kChunk, kProtCpuRw, 0, off_t(phys) * off_t(kChunk), kChunk) != 0 || !at) return false;
++    std::memset(at, 0, kChunk);  // direct memory comes with whatever was there before
++    ps4_munmap(at, kChunk);
++    return true;
++}
++
 +// Maps the chunk at `addr` (committed, unmapped) with zeroes. With g_lock held. False: out of direct memory.
 +bool map_chunk(Slice* s, uint64_t index, uint64_t addr) {
 +    uint32_t phys = take_phys();
 +    if (phys == kNoPhys) return false;
++    const bool zeroed = zero_phys(phys);
 +    ps4_munmap(reinterpret_cast<void*>(addr), kChunk);  // our reservation there: mapping over it fails
 +    void* at = reinterpret_cast<void*>(addr);
 +    int32_t r = ps4_map_direct(&at, kChunk, kProtCpuRw, kMapFixed, off_t(phys) * off_t(kChunk), kChunk);
@@ -10256,7 +10281,7 @@ index 0000000..abf439b
 +        if (g_free_count < kMaxFree) g_free[g_free_count++] = phys;
 +        return false;
 +    }
-+    std::memset(at, 0, kChunk);  // direct memory comes with whatever was there before
++    if (!zeroed) std::memset(at, 0, kChunk);  // no window to clear it in (no log: this runs in the fault handler)
 +    s->phys[index] = phys;
 +    s->state[index].store(kMapped, std::memory_order_release);
 +    g_mapped += kChunk;

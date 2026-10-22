@@ -157,6 +157,11 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
     command and descriptor pools in the submit's slot, and takes the upload ring 1 MB at a time.
   - **Logs.** nx.log shows "nvn: parallel passes: ... workers busy ... ms, replay thread waiting ... ms" with the
     draw stats. Untested on the console.
+- **v00.19** (recomp `30f0601`) adds two of TOTK's fixes:
+  - A CancelSynchronization that comes before WaitSynchronization is kept (TOTK `e3f5d35`). nn::os's MultiWait
+    wakes waiters this way, and clearing it lost wake-ups for good.
+  - Lazy guest memory is zeroed before it is mapped in place (TOTK `640b099`). A write another thread made while
+    the memset ran was lost.
 - **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
   each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
   gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,
