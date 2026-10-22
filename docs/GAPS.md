@@ -141,6 +141,22 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
     - pool caches kept when a pool registers.
 
   30 fps needs ~11 us per draw: a replay on several cores, or fewer draws.
+- **v00.18: parallel passes** (recomp `e71b792`; `NX_PARALLEL=1` from `games/botw/game.cpp`, the menu's "Parallel
+  draws" switches it at the next start).
+  - **Which passes.** A pass goes to the workers when its targets had 24 draws or more the last time they were
+    rendered (`NX_PARALLEL_MIN`). Submits with dispatches and the debug switches keep one thread.
+  - **The replay thread** walks the commands as before. For each draw it resolves the textures (with their uploads
+    and layout changes outside the pass), the image descriptors and the pipeline. It then pushes a job with a copy of
+    the bound state.
+  - **Three workers** (`NX_PARALLEL_WORKERS`) run on every core but the replay thread's. They copy uniforms and
+    vertex/index data, build and bind the descriptor sets, and record the draws into secondary command buffers, 48
+    to a buffer (`NX_PARALLEL_SEGMENT`). The pass executes them in order when it ends.
+  - **Guest-memory order.** The replay's own writes into guest memory (`UpdateUniformBuffer`, `ReportCounter`) first
+    wait until every job pushed before them is recorded.
+  - **Per-thread state.** Each thread has its own set cache, dedup copies and bound state. Each worker has its own
+    command and descriptor pools in the submit's slot, and takes the upload ring 1 MB at a time.
+  - **Logs.** nx.log shows "nvn: parallel passes: ... workers busy ... ms, replay thread waiting ... ms" with the
+    draw stats. Untested on the console.
 - **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
   each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
   gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,

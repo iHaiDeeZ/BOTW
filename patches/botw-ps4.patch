@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 761b5dd..b22d1de 100644
+index 761b5dd..4aadf2a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -4,6 +4,9 @@ project(SwitchGamesRecomp C CXX)
@@ -63,15 +63,16 @@ index 761b5dd..b22d1de 100644
      runtime/src/input_script.cpp
      runtime/src/touch_layout.cpp
      runtime/src/perf_hint.cpp
-@@ -138,6 +157,7 @@ set(NX_RUNTIME_SOURCES
+@@ -138,6 +157,8 @@ set(NX_RUNTIME_SOURCES
      runtime/src/nvn/nvn_image.cpp
      runtime/src/nvn/nvn_frames.cpp
      runtime/src/nvn/nvn_dedup.cpp
 +    runtime/src/nvn/nvn_vcache.cpp
++    runtime/src/nvn/nvn_parallel.cpp
      runtime/src/nvn/nvn_written.cpp
      runtime/src/nvn/nvn_replay.cpp
      runtime/src/nvn/nvn_debug.cpp
-@@ -166,6 +186,30 @@ set(NX_RUNTIME_SOURCES
+@@ -166,6 +187,30 @@ set(NX_RUNTIME_SOURCES
  file(GLOB NX_GAME_SOURCES CONFIGURE_DEPENDS "${NX_GAME_DIR}/*.cpp")
  list(APPEND NX_RUNTIME_SOURCES ${NX_GAME_SOURCES})
  
@@ -102,7 +103,7 @@ index 761b5dd..b22d1de 100644
  # Vulkan headers (the same registry version tools/gen_vk.py generated from). The loader comes with the GPU driver.
  if(DEFINED ENV{VULKAN_SDK})
      set(NX_VULKAN_SDK "$ENV{VULKAN_SDK}" CACHE PATH "Vulkan SDK")
-@@ -173,7 +217,31 @@ else()
+@@ -173,7 +218,31 @@ else()
      set(NX_VULKAN_SDK "C:/VulkanSDK/1.4.357.0" CACHE PATH "Vulkan SDK")
  endif()
  
@@ -135,7 +136,7 @@ index 761b5dd..b22d1de 100644
      # NativeActivity app: lib<game>.so, entry android_main (android_native_app_glue).
      set(GLUE "${ANDROID_NDK}/sources/android/native_app_glue")
      add_library(${NX_GAME} SHARED ${NX_RUNTIME_SOURCES} runtime/src/platform_android.cpp
-@@ -183,7 +251,7 @@ if(ANDROID)
+@@ -183,7 +252,7 @@ if(ANDROID)
      # Our ANativeActivity_onCreate (platform_android.cpp) runs first, on the UI thread, then calls the glue's.
      set_source_files_properties("${GLUE}/android_native_app_glue.c" PROPERTIES
          COMPILE_DEFINITIONS "ANativeActivity_onCreate=glue_ANativeActivity_onCreate")
@@ -144,7 +145,7 @@ index 761b5dd..b22d1de 100644
      target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden -fno-semantic-interposition -march=armv8.2-a+crypto)
      # The glue's ANativeActivity_onCreate must be exported. 16 KB page alignment: Android 15+ devices with 16 KB pages.
      target_link_options(${NX_GAME} PRIVATE -u ANativeActivity_onCreate -Wl,-z,max-page-size=16384)
-@@ -194,7 +262,7 @@ elseif(APPLE)
+@@ -194,7 +263,7 @@ elseif(APPLE)
      find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS /opt/homebrew/include /usr/local/include)
      add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_mac.cpp runtime/src/memguard_mac.cpp)
      target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
@@ -153,7 +154,7 @@ index 761b5dd..b22d1de 100644
      target_compile_options(${NX_GAME} PRIVATE -fvisibility=hidden)
      # The executable loads near 0x1_0000_0000, below the guest ranges (0x40_0000_0000 and up). The game runs on its
      # own thread with a 64 MiB stack (platform_mac.cpp), so the main thread's stack size does not matter.
-@@ -206,14 +274,14 @@ elseif(UNIX)
+@@ -206,14 +275,14 @@ elseif(UNIX)
      find_path(NX_VULKAN_INCLUDE vulkan/vulkan.h HINTS "${NX_VULKAN_SDK}/include" /usr/include /usr/local/include)
      add_executable(${NX_GAME} ${NX_RUNTIME_SOURCES} runtime/src/platform_linux.cpp runtime/src/memguard_linux.cpp)
      target_include_directories(${NX_GAME} PRIVATE runtime/include runtime/src "${NX_GAME_DIR}" "${NX_VULKAN_INCLUDE}")
@@ -170,7 +171,7 @@ index 761b5dd..b22d1de 100644
      # The runtime uses the portable C library (getenv, fopen, ...) on every host: no "_s" variants.
      target_compile_definitions(${NX_GAME} PRIVATE _CRT_SECURE_NO_WARNINGS _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
      if(MSVC)
-@@ -221,4 +289,12 @@ else()
+@@ -221,4 +290,12 @@ else()
          # main-thread stack (recompiled calls nest deeply); a link map for tools/symbolize.py.
          target_link_options(${NX_GAME} PRIVATE /STACK:67108864 /HIGHENTROPYVA:NO /MAP)
      endif()
@@ -202,10 +203,10 @@ index 29198e9..aae698c 100644
          if (rename(part.c_str(), final_path.c_str()) != 0) fail("cannot rename %s (%s)", part.c_str(), strerror(errno));
 diff --git a/games/botw/game.cpp b/games/botw/game.cpp
 new file mode 100644
-index 0000000..61e14d8
+index 0000000..d9e1a2c
 --- /dev/null
 +++ b/games/botw/game.cpp
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,50 @@
 +// The Legend of Zelda: Breath of the Wild (01007EF00011E000, 1.5.0, the version zeldaret/botw decompiles): what the
 +// shared runtime needs to know about the game. It draws through NVN (agl/gsys, an older SDK than Wonder's). Modules:
 +// main, sdk and any subsdk (modules.cmake), generated with --base 0x4000000000 (main), 0x4018000000 (+0x8000000 per
@@ -248,6 +249,9 @@ index 0000000..61e14d8
 +    // fullscreen quad sits at z = (k / 255) * 2 - 1 and tests EQUAL. Wonder's EQUAL -> LEQUAL with a bias toward the
 +    // camera lets a light through on every material at or behind its own. TOTK's lighting works this way too.
 +    setenv("NX_EQUAL_EXACT", "1", 0);
++    // Big passes recorded by worker threads next to the replay thread (nvn_parallel.cpp): outdoors the replay thread
++    // alone took ~105 ms a frame for ~3,000 draws (9 fps) while most cores idled. NX_PARALLEL=0: one thread.
++    setenv("NX_PARALLEL", "1", 0);
 +}
 +void game::renderer_start() {}
 +void game::first_frame() {}
@@ -2363,7 +2367,7 @@ index 7f11ab5..10033ea 100644
          p_vkGetPhysicalDeviceMemoryProperties(vk_physical(), &mp);
          for (uint32_t k = 0; k < mp.memoryTypeCount; k++)
 diff --git a/runtime/src/nvn/nvn_clears.cpp b/runtime/src/nvn/nvn_clears.cpp
-index f7fb931..12afd04 100644
+index f7fb931..88c23f7 100644
 --- a/runtime/src/nvn/nvn_clears.cpp
 +++ b/runtime/src/nvn/nvn_clears.cpp
 @@ -152,6 +152,7 @@ bool clears_transfer(VkCommandBuffer cb, const Targets& t) {
@@ -2381,7 +2385,7 @@ index f7fb931..12afd04 100644
 +    // NX_SKIP_CLEARS_AFTER_FS=<hash>[,<hash>...]: the clears that follow a draw with that fragment shader (before the
 +    // next draw) are skipped (bisecting what a clear wipes).
 +    // Rendering off (SetRenderEnable(false) or a false condition): clears are skipped too, as on the GPU.
-+    if (!replay::g_state.render_enable) return;
++    if (!g_state.render_enable) return;
 +    static const char* skip_after = std::getenv("NX_SKIP_CLEARS_AFTER_FS");
 +    if (skip_after && replay::g_last_draw_fs && std::strstr(skip_after, replay::g_last_draw_fs->hash.c_str())) return;
      uint64_t guest = color ? (c.n < 8 ? t.colors[c.n] : 0) : t.depth;
@@ -2413,7 +2417,33 @@ index f7fb931..12afd04 100644
      }
      uint32_t level = color ? t.views.level[c.n] : t.views.level[8];
      VkExtent2D full{std::max(1u, img->width >> level), std::max(1u, img->height >> level)};
-@@ -286,4 +307,94 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+@@ -223,8 +244,8 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+     static const bool no_mask = std::getenv("NX_CLEARS_NO_MASK") != nullptr;
+     // The part of the target the clear covers: the scissor (pass coordinates, as the draws') within the target.
+     VkRect2D rect{{0, 0}, full};
+-    if (!no_scissor && replay::g_state.has_scissor) {
+-        const int32_t* s = replay::g_state.scissor;
++    if (!no_scissor && g_state.has_scissor) {
++        const int32_t* s = g_state.scissor;
+         int64_t x0 = std::max(0, s[0]), y0 = std::max(0, s[1]);
+         int64_t x1 = std::min<int64_t>(int64_t(s[0]) + std::max(0, s[2]), full.width);
+         int64_t y1 = std::min<int64_t>(int64_t(s[1]) + std::max(0, s[3]), full.height);
+@@ -274,6 +295,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+             p_vkCmdClearDepthStencilImage(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &a.clearValue.depthStencil, 1, &r);
+         return;
+     }
++    if (masked) pass_inline(cb);  // a fullscreen draw of its own: not into the workers' command buffers
+     if (masked && mask_clear(cb, t, c.n, c.mask & 0xF, c.f, rect)) {
+         pass_mark_written(1u << c.n);
+         return;
+@@ -281,9 +303,100 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+     g_mask_fallback += masked;
+     VkClearRect r{rect, 0, 1};  // unscissored: all of the target, which is the pass's area
+     replay::trace_pass("clear in pass: slot, mask | bound channel mask << 8", t, color ? c.n : 8,
+-                       c.mask | (color ? uint32_t(replay::g_state.mask.mask[c.n]) << 8 : 0));
+-    p_vkCmdClearAttachments(cb, 1, &a, 1, &r);
++                       c.mask | (color ? uint32_t(g_state.mask.mask[c.n]) << 8 : 0));
++    pass_clear_attachment(cb, a, r);  // the workers' stream in a parallel pass
      pass_mark_written(color ? 1u << c.n : 1u << 8);  // a later draw sampling it needs a fresh pass
  }
  
@@ -2458,7 +2488,7 @@ index f7fb931..12afd04 100644
 +                img ? "not a colour texture" : "unknown texture");
 +        return;
 +    }
-+    if (!replay::g_state.render_enable || !(c.mask & 0xF)) return;
++    if (!g_state.render_enable || !(c.mask & 0xF)) return;
 +    const int32_t* r = info.region;
 +    uint32_t level = std::min(info.view.base_level, img->levels - 1);
 +    VkExtent2D full{std::max(1u, img->width >> level), std::max(1u, img->height >> level)};
@@ -2492,6 +2522,7 @@ index f7fb931..12afd04 100644
 +        int64_t x1 = std::min<int64_t>(int64_t(r[0]) + r[3], pe.width), y1 = std::min<int64_t>(int64_t(r[1]) + r[4], pe.height);
 +        if (x1 <= x0 || y1 <= y0) continue;
 +        VkRect2D rect{{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
++        if (clear.mask != 0xF) pass_inline(cb);
 +        if (clear.mask != 0xF && mask_clear(cb, t, 0, clear.mask, clear.f, rect)) {
 +            pass_mark_written(1);
 +            continue;
@@ -2500,7 +2531,7 @@ index f7fb931..12afd04 100644
 +        a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = 0;
 +        std::memcpy(a.clearValue.color.float32, clear.f, 16);
 +        VkClearRect cr{rect, 0, 1};
-+        p_vkCmdClearAttachments(cb, 1, &a, 1, &cr);
++        pass_clear_attachment(cb, a, cr);
 +        pass_mark_written(1);
 +    }
 +}
@@ -3201,33 +3232,43 @@ index 4f1910e..6450e72 100644
              write_ppm(snap.s, snap.w, snap.h, 0, snap.draw);  // frames/00000_<draw in hex>.ppm
          }
 diff --git a/runtime/src/nvn/nvn_dedup.cpp b/runtime/src/nvn/nvn_dedup.cpp
-index d57d68f..3a87f49 100644
+index d57d68f..3e17b5b 100644
 --- a/runtime/src/nvn/nvn_dedup.cpp
 +++ b/runtime/src/nvn/nvn_dedup.cpp
-@@ -4,11 +4,16 @@
+@@ -4,11 +4,22 @@
  // inline uniform updates (UpdateUniformBuffer, which invalidates what it overlaps) and compute results (ranges a
  // dispatch writes are read from their written copy, nvn_written.cpp, and invalidated here): a copy made once can
  // serve every later draw of the submit that binds the same bytes.
++//
++// Each thread that copies keeps copies of its own: the replay thread, and each worker recording parallel passes
++// (nvn_parallel.cpp), which shares its copies between its own draws only. A thread drops its copies the next time it
++// copies after the epoch moved on (dedup_reset: every submit, and a ring that wrapped).
 +#include <algorithm>
  #include <array>
++#include <atomic>
  #include <cstdint>
  #include <cstdlib>
  #include <cstring>
  #include <map>
 +#include <memory>
++#include <mutex>
 +#include <cstdio>
 +#include <string>
 +#include <vector>
  
  #include "nvn_draw_state.h"
  
-@@ -20,9 +25,49 @@ struct Entry {
+@@ -20,24 +31,108 @@ struct Entry {
      uint64_t size = 0, padded = 0;
      Upload upload;
  };
+-// By host address; several sizes of one address are rare, so the latest one is kept.
+-std::map<const uint8_t*, Entry> g_copies;
+-uint64_t g_saved = 0, g_copied = 0;
 +
-+// g_copies' nodes come from chunks that dedup_reset frees whole: thousands of nodes a submit each took a malloc, and a
-+// free at the reset (the allocator was ~2% of Breath of the Wild's replay thread). Erased nodes wait for the reset.
++// The copies' map nodes come from chunks that the reset frees whole: thousands of nodes a submit each took a malloc,
++// and a free at the reset (the allocator was ~2% of Breath of the Wild's replay thread). Erased nodes wait for the
++// reset.
 +struct Arena {
 +    std::vector<std::unique_ptr<char[]>> chunks;
 +    size_t used = 0, size = 0;
@@ -3247,131 +3288,217 @@ index d57d68f..3a87f49 100644
 +        used = 0;
 +    }
 +};
-+Arena g_arena;
 +
 +template <class T>
 +struct ArenaAlloc {
 +    using value_type = T;
-+    ArenaAlloc() = default;
++    Arena* arena = nullptr;
++    explicit ArenaAlloc(Arena* a) : arena(a) {}
 +    template <class U>
-+    ArenaAlloc(const ArenaAlloc<U>&) {}
-+    T* allocate(size_t n) { return static_cast<T*>(g_arena.take(n * sizeof(T))); }
++    ArenaAlloc(const ArenaAlloc<U>& o) : arena(o.arena) {}
++    T* allocate(size_t n) { return static_cast<T*>(arena->take(n * sizeof(T))); }
 +    void deallocate(T*, size_t) {}
 +    template <class U>
-+    bool operator==(const ArenaAlloc<U>&) const { return true; }
++    bool operator==(const ArenaAlloc<U>& o) const { return arena == o.arena; }
 +    template <class U>
-+    bool operator!=(const ArenaAlloc<U>&) const { return false; }
++    bool operator!=(const ArenaAlloc<U>& o) const { return arena != o.arena; }
 +};
-+
- // By host address; several sizes of one address are rare, so the latest one is kept.
--std::map<const uint8_t*, Entry> g_copies;
-+std::map<const uint8_t*, Entry, std::less<const uint8_t*>, ArenaAlloc<std::pair<const uint8_t* const, Entry>>> g_copies;
-+uint64_t g_copies_max = 0;  // the largest copy in g_copies (how far back an overlap can start)
- uint64_t g_saved = 0, g_copied = 0;
-+uint64_t g_kind_copied[5] = {}, g_kind_saved[5] = {}, g_kind_calls[5] = {};
  
  // In front of the map (a tree walk per bound buffer of every draw, and most are hits): a slot per address hash with a
- // copy of that address's entry in g_copies. A slot of the current generation always equals the map's entry: both are
-@@ -32,9 +77,10 @@ struct Front {
+-// copy of that address's entry in g_copies. A slot of the current generation always equals the map's entry: both are
+-// written together, dedup_invalidate clears the slot of each entry it erases, dedup_reset starts a new generation.
++// copy of that address's entry in the map. A slot of the current generation always equals the map's entry: both are
++// written together, dedup_invalidate clears the slot of each entry it erases, a reset starts a new generation.
+ struct Front {
+     const uint8_t* p = nullptr;
      uint64_t generation = 0;
      Entry entry;
  };
 -Front g_front[1024];
-+// 4096 slots: Breath of the Wild binds ~16,000 buffers a frame outdoors, and 1024 sent many hits to the tree walk.
-+Front g_front[4096];
- uint64_t g_generation = 1;
+-uint64_t g_generation = 1;
 -Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 1023]; }
-+Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 4095]; }
++// 4096 slots: Breath of the Wild binds ~16,000 buffers a frame outdoors, and 1024 sent many hits to the tree walk.
++constexpr size_t kFront = 4096;
++
++using Pair = std::pair<const uint8_t* const, Entry>;
++
++struct Dedup {
++    Arena arena;
++    // By host address; several sizes of one address are rare, so the latest one is kept.
++    std::map<const uint8_t*, Entry, std::less<const uint8_t*>, ArenaAlloc<Pair>> copies{ArenaAlloc<Pair>(&arena)};
++    uint64_t copies_max = 0;  // the largest copy in the map (how far back an overlap can start)
++    std::unique_ptr<Front[]> front{new Front[kFront]()};
++    uint64_t generation = 1, epoch = 0;
++    // Per log period.
++    uint64_t saved = 0, copied = 0;
++    uint64_t kind_copied[5] = {}, kind_saved[5] = {}, kind_calls[5] = {};
++    UploadStats stats;
++    Front& front_of(const uint8_t* p) { return front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & (kFront - 1)]; }
++};
++
++std::atomic<uint64_t> g_epoch{1};
++std::mutex g_all_lock;
++std::vector<Dedup*> g_all;  // every thread's, for dedup_invalidate and the log
++
++Dedup& walk_dedup() {  // the replay thread's (and any other thread's but the workers')
++    static Dedup* d = [] {
++        auto* n = new Dedup;
++        std::lock_guard lk(g_all_lock);
++        g_all.push_back(n);
++        return n;
++    }();
++    return *d;
++}
++
++thread_local Dedup* t_dedup = nullptr;  // a worker's own
++
++void forget(Dedup& d) {
++    d.copies.clear(), d.arena.reset(), d.generation++, d.copies_max = 0;
++}
++
++Dedup& dd() {
++    Dedup& d = t_dedup ? *t_dedup : walk_dedup();
++    uint64_t epoch = g_epoch.load(std::memory_order_relaxed);
++    if (d.epoch != epoch) forget(d), d.epoch = epoch;
++    return d;
++}
  
  }  // namespace
  
-@@ -47,26 +93,34 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
++void dedup_thread_init() {
++    if (t_dedup) return;
++    t_dedup = new Dedup;
++    std::lock_guard lk(g_all_lock);
++    g_all.push_back(t_dedup);
++}
++
+ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align) {
+     if (!p || !size) {
+         Upload u = upload_alloc(padded, align);
+@@ -45,40 +140,59 @@ Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t a
+         return u;
+     }
      static const bool off = std::getenv("NX_NO_DEDUP") != nullptr;  // bisecting: a fresh copy every time
-     Front& f = front_of(p);
+-    Front& f = front_of(p);
++    Dedup& d = dd();
++    Front& f = d.front_of(p);
      const Entry* e = nullptr;
-+    auto at = g_copies.end();  // where p is or would go, when the tree was walked: the insert below starts there
-     if (!off && f.generation == g_generation && f.p == p) {
+-    if (!off && f.generation == g_generation && f.p == p) {
++    auto at = d.copies.end();  // where p is or would go, when the tree was walked: the insert below starts there
++    if (!off && f.generation == d.generation && f.p == p) {
          e = &f.entry;  // the map's entry for p
 -    } else if (auto it = off ? g_copies.end() : g_copies.find(p); it != g_copies.end()) {
 -        f = {p, g_generation, it->second};
 -        e = &f.entry;
 +    } else if (!off) {
-+        at = g_copies.lower_bound(p);
-+        if (at != g_copies.end() && at->first == p) {
-+            f = {p, g_generation, at->second};
++        at = d.copies.lower_bound(p);
++        if (at != d.copies.end() && at->first == p) {
++            f = {p, d.generation, at->second};
 +            e = &f.entry;
 +        }
      }
 -    if (e && e->size == size && e->padded == padded && e->upload.offset % align == 0) {
 -        g_saved += padded;
 +    const int kind = g_upload_kind >= 0 && g_upload_kind < 5 ? g_upload_kind : 0;
-+    g_kind_calls[kind]++;
++    d.kind_calls[kind]++;
 +    if (e && (e->size == size || (g_upload_prefix_ok && e->size > size)) &&
 +        (e->padded == padded || (g_upload_prefix_ok && e->padded > padded)) && e->upload.offset % align == 0) {
-+        g_saved += padded, g_kind_saved[kind] += padded;
++        d.saved += padded, d.kind_saved[kind] += padded;
          return e->upload;
      }
      Upload u = upload_alloc(padded, align);
      std::memcpy(u.ptr, p, size);
      if (padded > size) std::memset(u.ptr + size, 0, padded - size);
 -    g_copies[p] = {size, padded, u};
-+    g_copies.insert_or_assign(at, p, Entry{size, padded, u});
-+    g_copies_max = std::max(g_copies_max, size);
-     f = {p, g_generation, {size, padded, u}};
+-    f = {p, g_generation, {size, padded, u}};
 -    g_copied += padded;
-+    g_copied += padded, g_kind_copied[kind] += padded;
++    d.copies.insert_or_assign(at, p, Entry{size, padded, u});
++    d.copies_max = std::max(d.copies_max, size);
++    f = {p, d.generation, {size, padded, u}};
++    d.copied += padded, d.kind_copied[kind] += padded;
      return u;
  }
  
 -void dedup_reset() { g_copies.clear(), g_generation++; }
-+void dedup_reset() { g_copies.clear(), g_arena.reset(), g_generation++, g_copies_max = 0; }
++void dedup_reset() { g_epoch.fetch_add(1, std::memory_order_relaxed); }
  
++// Guest bytes the replay thread wrote: every thread's copies of them go (the workers are idle then: a parallel pass is
++// flushed before such a write, nvn_draw_state.cpp).
  void dedup_invalidate(const uint8_t* p, uint64_t size) {
-     // Entries starting before p may still reach into it: look back over the few that can.
-@@ -74,7 +128,9 @@ void dedup_invalidate(const uint8_t* p, uint64_t size) {
-     while (it != g_copies.begin()) {
-         --it;
-         if (it->first + it->second.size <= p) {
+-    // Entries starting before p may still reach into it: look back over the few that can.
+-    auto it = g_copies.lower_bound(p + size);
+-    while (it != g_copies.begin()) {
+-        --it;
+-        if (it->first + it->second.size <= p) {
 -            if (p - it->first > (64ll << 20)) break;  // nothing larger than 64 MB is copied
-+            // Nothing further back reaches p: no copy this submit is larger than g_copies_max. (A fixed 64 MB walked
-+            // back over every uniform block copied below p at each replayed UpdateUniformBuffer.)
-+            if (uint64_t(p - it->first) > g_copies_max) break;
-             continue;
+-            continue;
++    std::lock_guard lk(g_all_lock);
++    const uint64_t epoch = g_epoch.load(std::memory_order_relaxed);
++    for (Dedup* dp : g_all) {
++        Dedup& d = *dp;
++        if (d.epoch != epoch) continue;  // forgets everything at its next copy anyway
++        // Entries starting before p may still reach into it: look back over the few that can.
++        auto it = d.copies.lower_bound(p + size);
++        while (it != d.copies.begin()) {
++            --it;
++            if (it->first + it->second.size <= p) {
++                // Nothing further back reaches p: no copy this submit is larger than copies_max. (A fixed 64 MB
++                // walked back over every uniform block copied below p at each replayed UpdateUniformBuffer.)
++                if (uint64_t(p - it->first) > d.copies_max) break;
++                continue;
++            }
++            if (Front& f = d.front_of(it->first); f.p == it->first) f.generation = 0;
++            it = d.copies.erase(it);
          }
-         if (Front& f = front_of(it->first); f.p == it->first) f.generation = 0;
-@@ -105,9 +161,32 @@ std::array<uint8_t, 0x1000> driver_constants(ShaderStage stage, int st) {
+-        if (Front& f = front_of(it->first); f.p == it->first) f.generation = 0;
+-        it = g_copies.erase(it);
+     }
+ }
+ 
+@@ -105,10 +219,40 @@ std::array<uint8_t, 0x1000> driver_constants(ShaderStage stage, int st) {
      return c0;
  }
  
-+int g_upload_kind = 0;
-+bool g_upload_prefix_ok = false;
-+uint64_t dedup_copied_bytes() { return g_copied; }
-+uint64_t g_vertex_by_pool[8] = {}, g_uniform_by_pool[8] = {};  // vertex bytes copied, by pool flags & 7 (draw_inputs)
++uint64_t dedup_copied_bytes() { return dd().copied; }
++UploadStats& upload_stats() { return dd().stats; }
 +
++// Every thread's counts (the workers are idle between submits, when this runs).
  void dedup_log() {
-     if (g_copied + g_saved)
-         log("nvn: uploads copied %.1f MB, reused %.1f MB", double(g_copied) / 1e6, double(g_saved) / 1e6);
+-    if (g_copied + g_saved)
+-        log("nvn: uploads copied %.1f MB, reused %.1f MB", double(g_copied) / 1e6, double(g_saved) / 1e6);
+-    g_copied = g_saved = 0;
++    std::lock_guard lk(g_all_lock);
++    uint64_t copied = 0, saved = 0, kind_copied[5] = {}, kind_saved[5] = {}, kind_calls[5] = {};
++    UploadStats s;
++    for (Dedup* d : g_all) {
++        copied += d->copied, saved += d->saved;
++        for (int k = 0; k < 5; k++)
++            kind_copied[k] += d->kind_copied[k], kind_saved[k] += d->kind_saved[k], kind_calls[k] += d->kind_calls[k];
++        for (int k = 0; k < 8; k++)
++            s.vertex_by_pool[k] += d->stats.vertex_by_pool[k], s.uniform_by_pool[k] += d->stats.uniform_by_pool[k];
++        d->copied = d->saved = 0;
++        for (int k = 0; k < 5; k++) d->kind_copied[k] = d->kind_saved[k] = d->kind_calls[k] = 0;
++        d->stats = {};
++    }
++    if (copied + saved) log("nvn: uploads copied %.1f MB, reused %.1f MB", double(copied) / 1e6, double(saved) / 1e6);
 +    static const char* names[5] = {"other", "vertex", "index", "uniform", "storage"};
 +    std::string line;
 +    for (int k = 0; k < 5; k++) {
 +        char b[96];
-+        std::snprintf(b, sizeof b, " %s %.1f/%.1f MB %llu calls,", names[k], double(g_kind_copied[k]) / 1e6,
-+                      double(g_kind_saved[k]) / 1e6, (unsigned long long)g_kind_calls[k]);
++        std::snprintf(b, sizeof b, " %s %.1f/%.1f MB %llu calls,", names[k], double(kind_copied[k]) / 1e6,
++                      double(kind_saved[k]) / 1e6, (unsigned long long)kind_calls[k]);
 +        line += b;
-+        g_kind_copied[k] = g_kind_saved[k] = g_kind_calls[k] = 0;
 +    }
 +    log("nvn: uploads by kind (copied/reused):%s", line.c_str());
++    const uint64_t* v = s.vertex_by_pool;
 +    log("nvn: vertex copied by pool CPU access: none %.1f MB, uncached %.1f MB, cached %.1f MB, other %.1f MB",
-+        double(g_vertex_by_pool[1]) / 1e6, double(g_vertex_by_pool[2]) / 1e6, double(g_vertex_by_pool[4]) / 1e6,
-+        double(g_vertex_by_pool[0] + g_vertex_by_pool[3] + g_vertex_by_pool[5] + g_vertex_by_pool[6] + g_vertex_by_pool[7]) / 1e6);
-+    for (uint64_t& v : g_vertex_by_pool) v = 0;
++        double(v[1]) / 1e6, double(v[2]) / 1e6, double(v[4]) / 1e6, double(v[0] + v[3] + v[5] + v[6] + v[7]) / 1e6);
++    const uint64_t* u = s.uniform_by_pool;
 +    log("nvn: uniform copied by pool CPU access: none %.1f MB, uncached %.1f MB, cached %.1f MB, other %.1f MB",
-+        double(g_uniform_by_pool[1]) / 1e6, double(g_uniform_by_pool[2]) / 1e6, double(g_uniform_by_pool[4]) / 1e6,
-+        double(g_uniform_by_pool[0] + g_uniform_by_pool[3] + g_uniform_by_pool[5] + g_uniform_by_pool[6] + g_uniform_by_pool[7]) / 1e6);
-+    for (uint64_t& v : g_uniform_by_pool) v = 0;
-     g_copied = g_saved = 0;
++        double(u[1]) / 1e6, double(u[2]) / 1e6, double(u[4]) / 1e6, double(u[0] + u[3] + u[5] + u[6] + u[7]) / 1e6);
  }
  
+ }  // namespace nx::nvn::replay
 diff --git a/runtime/src/nvn/nvn_device.cpp b/runtime/src/nvn/nvn_device.cpp
 index 564fd74..aabbd23 100644
 --- a/runtime/src/nvn/nvn_device.cpp
@@ -3419,10 +3546,33 @@ index 564fd74..aabbd23 100644
  
  }  // namespace
 diff --git a/runtime/src/nvn/nvn_draw.cpp b/runtime/src/nvn/nvn_draw.cpp
-index ff8d46a..0499472 100644
+index ff8d46a..b0d5504 100644
 --- a/runtime/src/nvn/nvn_draw.cpp
 +++ b/runtime/src/nvn/nvn_draw.cpp
-@@ -31,6 +31,7 @@ const uint8_t* guest_bytes(uint64_t gpu) {
+@@ -5,11 +5,13 @@
+ // before any transfer.
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <string>
+ #include <cstring>
+ #include <set>
++#include <unordered_map>
+ 
+ #include "nvn_draw_state.h"
+ #include "platform.h"
+@@ -21,7 +23,7 @@ using namespace nx::vk;
+ // The replay state shared with nvn_draw_trace.cpp (nvn_draw_state.h).
+ namespace replay {
+ 
+-State g_state;
++State g_walk_state;
+ Stats g_stats;
+ 
+ const uint8_t* guest_bytes(uint64_t gpu) {
+@@ -31,6 +33,7 @@ const uint8_t* guest_bytes(uint64_t gpu) {
      return host ? reinterpret_cast<const uint8_t*>(host) : nullptr;
  }
  
@@ -3430,7 +3580,7 @@ index ff8d46a..0499472 100644
  }  // namespace replay
  
  using namespace replay;
-@@ -54,6 +55,8 @@ bool narrow_pass_barrier() {
+@@ -54,11 +57,27 @@ bool narrow_pass_barrier() {
  // inside) and the writes so far are made visible to the vertex stages.
  void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs);  // the open pass is a render pass object (nvn_renderpass.cpp), not dynamic rendering
  Targets g_pass;           // what the open pass renders to
@@ -3439,7 +3589,52 @@ index ff8d46a..0499472 100644
  GpuImage* g_pass_images[9];  // their images (8: depth), resolved once per pass for gather_textures
  uint32_t g_pass_written = 0;  // targets the open pass's draws wrote: bit c colour c, bit 8 depth
  uint64_t g_pass_ends[8];  // passes ended, by draw_end_rendering reason
-@@ -130,11 +133,23 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+ uint64_t g_submit_ns = 0;  // when the submit being replayed started
+ VkExtent2D g_pass_extent{};
++bool g_pass_parallel = false;  // the open pass is recorded by the workers (nvn_parallel.cpp)
++uint32_t g_pass_draws = 0;     // draws into the open pass so far
++std::unordered_map<uint64_t, uint32_t> g_pass_history;  // the draws of the last pass on these targets (targets_key)
++
++uint64_t targets_key(const Targets& t) {  // targets_same's fields (the struct has padding)
++    uint64_t h = 14695981039346656037ull;
++    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
++    mix(t.color_count), mix(t.depth);
++    for (uint32_t k = 0; k < 9; k++) {
++        if (k < 8) mix(t.colors[k]);
++        mix(uint64_t(t.views.level[k]) | uint64_t(t.views.layer[k]) << 8 | uint64_t(t.views.format[k]) << 24);
++    }
++    return h;
++}
+ 
+ // What this submit's command buffer already has bound and set. Vulkan keeps the pipeline, vertex and index buffers
+ // and dynamic state of a command buffer across its dynamic-rendering passes, and most draws repeated what the draw
+@@ -77,8 +96,13 @@ struct Bound {
+     VkRect2D scissor{};
+     float blend[4] = {};
+     uint32_t raster[10] = {};  // raster_dynamic's inputs: stencil reference and masks per face, the depth bias
+-} g_bound;
+-uint64_t g_state_set = 0, g_state_kept = 0;  // state commands recorded and left out, for the log
++};
++Bound g_walk_bound;
++thread_local Bound* t_bound = &g_walk_bound;  // a worker's own (draw_thread_init), for its secondary command buffers
++#define g_bound (*t_bound)
++// State commands recorded and left out, for the log: each thread's; the workers add theirs up after each job.
++thread_local uint64_t g_state_set = 0, g_state_kept = 0;
++std::atomic<uint64_t> g_workers_set{0}, g_workers_kept{0};
+ 
+ template <typename T>
+ bool same_bytes(const T& a, const T& b) { return std::memcmp(&a, &b, sizeof(T)) == 0; }
+@@ -115,7 +139,8 @@ void set_dynamic(VkCommandBuffer cb, const VkViewport& vp, const VkRect2D& sc) {
+         raster_dynamic(cb, slack), std::memcpy(b.raster, raster, sizeof raster);  // (nvn_raster.cpp)
+ }
+ 
+-void begin_rendering(VkCommandBuffer cb, const Targets& t) {
++// parallel: the pass's draws are recorded by the workers into secondary command buffers (nvn_parallel.cpp).
++void begin_rendering(VkCommandBuffer cb, const Targets& t, bool parallel = false) {
+     if (clears_pending_other(t)) clears_flush(cb);  // other targets' clears first, in order
+     // An image never written (layout UNDEFINED) has nothing to load: loadOp CLEAR to zero, not a LOAD of whatever
+     // the memory held (G3, docs/nvn/DEBUG.md #50); a pending clear still wins (clears_apply). Env: bisecting.
+@@ -130,11 +155,23 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
          GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
          g_pass_images[k] = img;
          if (!img) continue;
@@ -3463,7 +3658,32 @@ index ff8d46a..0499472 100644
          colors[k].imageView = attachment_view(*img, level, t.views.layer[k], formats[k]);
          // NX_TRACE_CUBES=<first frame>: writes into cube images from that frame on. With 400 from the start, the log
          // ran out at the first 3D scene (frame ~171) and never reached a course load.
-@@ -222,6 +237,22 @@ void dispatch(VkCommandBuffer cb, const Cmd& c) {
+@@ -173,6 +210,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+     VkRenderingAttachmentInfo stencil = depth;  // same view, its own loadOp
+     uint32_t cleared = clears_apply(t, colors, depth, stencil);  // pending clears of these targets: loadOp CLEAR
+     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
++    ri.flags = parallel ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0;
+     ri.renderArea = {{0, 0}, extent};
+     ri.layerCount = 1;
+     ri.colorAttachmentCount = t.color_count;
+@@ -188,6 +226,16 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+     else
+         p_vkCmdBeginRendering(cb, &ri);
+     g_rendering = true;
++    g_pass_parallel = parallel && !g_render_pass, g_pass_draws = 0;
++    if (g_pass_parallel) {  // what the workers' command buffers inherit
++        PassFormats f;
++        f.color_count = t.color_count;
++        for (uint32_t k = 0; k < t.color_count && k < 8; k++)
++            f.colors[k] = colors[k].imageView ? formats[k] : VK_FORMAT_UNDEFINED;
++        f.depth = ri.pDepthAttachment ? dimg->format : VK_FORMAT_UNDEFINED;
++        f.stencil = ri.pStencilAttachment ? dimg->format : VK_FORMAT_UNDEFINED;
++        parallel_pass_begin(f);
++    }
+     g_pass_written = cleared | fresh;  // as a clear inside the pass: sampling it needs it stored first
+     trace_pass("begin: cleared, fresh", t, cleared, fresh);
+     g_pass = t;
+@@ -222,6 +270,22 @@ void dispatch(VkCommandBuffer cb, const Cmd& c) {
      if (!pipeline) return;
      draw_end_rendering(cb, 2);
      gather_textures(stages);
@@ -3486,7 +3706,7 @@ index ff8d46a..0499472 100644
      build_sets(cb, stages, layout);
      p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
      bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
-@@ -254,13 +285,50 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
+@@ -254,13 +318,158 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
      g_vertex_pending = false, g_vertex_barriers++, g_vertex_visible_at = g_pass_serial;
  }
  
@@ -3506,6 +3726,77 @@ index ff8d46a..0499472 100644
 +};
 +}  // namespace
 +
++// The pipeline of a draw into `t` (`tt`: the targets of its pass, the depth maybe left out).
++VkPipeline draw_pipeline(const Targets& t, const Targets& tt, uint32_t mode, const ShaderInfo* vs, const ShaderInfo* fs,
++                         const ProgramLayout& layout, bool may_defer) {
++    PipelineKey key;
++    std::memset(&key, 0, sizeof key);  // the key is compared byte for byte
++    key.vs = vs, key.fs = fs;
++    key.topology = mode;
++    key.attrib_count = uint32_t(std::min<size_t>(g_state.attribs.size(), 16));
++    std::copy_n(g_state.attribs.begin(), key.attrib_count, key.attribs);
++    key.stream_count = uint32_t(std::min<size_t>(g_state.streams.size(), 16));
++    std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
++    std::copy_n(g_state.blend, 8, key.blend);
++    key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
++    // NX_NO_DEPTH_TEST_FS=<hash>[,<hash>...]: those fragment shaders drawn without the depth test (bisecting).
++    static const char* no_depth_fs = std::getenv("NX_NO_DEPTH_TEST_FS");
++    if (no_depth_fs && fs && std::strstr(no_depth_fs, fs->hash.c_str())) key.depth.depth_test = 0;
++    key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
++    key.alpha_to_coverage = g_state.alpha_to_coverage;
++    for (uint32_t k = 0; k < t.color_count; k++) {
++        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
++        key.color_formats[k] = img ? view_format(*img, t.views.format[k]) : unused_slot_format();
++        if (img && (img->nvn_format == 0x3f || t.views.format[k] == 0x3f)) key.ufloat_colors |= 1u << k;  // G4
++    }
++    GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
++    key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
++    return graphics_pipeline(key, layout, may_defer);
++}
++
++// The viewport and scissor of a draw: the bound ones, else the pass's extent.
++void draw_viewport(VkViewport& vp, VkRect2D& sc) {
++    vp = {0, 0, float(g_pass_extent.width), float(g_pass_extent.height), 0, 1};
++    if (g_state.has_viewport)
++        vp = {float(g_state.viewport[0]), float(g_state.viewport[1]), float(g_state.viewport[2]),
++              float(g_state.viewport[3]), g_state.depth_near, g_state.depth_far};
++    // NVN's upper-left window origin (what Wonder sets) maps NDC +Y to the top of the render target, like D3D;
++    // Vulkan maps it to the bottom. A negative-height viewport gives NVN's mapping, and with it NVN's front faces.
++    // (Before this, the front face was inverted instead: triangles were culled right, but every render target was
++    // upside down, which the post chain undid in some scenes and not in others: the first course showed a
++    // mirrored sky.)
++    vp.y += vp.height, vp.height = -vp.height;
++    sc = {{0, 0}, g_pass_extent};
++    if (g_state.has_scissor)
++        sc = {{std::max(0, g_state.scissor[0]), std::max(0, g_state.scissor[1])},
++              {uint32_t(std::max(0, g_state.scissor[2])), uint32_t(std::max(0, g_state.scissor[3]))}};
++}
++
++// Whether a draw may go to the workers: not with the debug switches that read or change what a draw sees on this
++// thread (snapshots, dumps, skin and vertex traces, the probe fill), the storyboard or the GPU profile, with render
++// pass objects, without the set cache, nor for shaders that store into buffers (their write-backs are this thread's).
++bool parallel_draw_ok(const ShaderInfo* vs, const ShaderInfo* fs) {
++    static const bool debug = [] {
++        for (const char* e : {"NX_SNAP_FS", "NX_SNAP_FS_BEFORE", "NX_SNAP_DRAWS", "NX_SNAP_FOLLOW", "NX_DUMP_ON_TARGET",
++                              "NX_DUMP_ON_FS", "NX_TRACE_SKIN", "NX_CHECK_VERTS", "NX_PROBE_FILL"})
++            if (std::getenv(e)) return true;
++        return false;
++    }();
++    if (debug || render_pass_objects() || !set_cache_on() || draw_slow(~0u) || diag_active() || gpu_profile_on())
++        return false;
++    return !written_storage_bindings(vs) && !(fs && written_storage_bindings(fs));
++}
++
++// A pass goes to the workers when its targets had NX_PARALLEL_MIN draws (24) or more the last time.
++bool parallel_wanted(const Targets& t) {
++    static const uint32_t min_draws = [] {
++        const char* e = std::getenv("NX_PARALLEL_MIN");
++        return e ? uint32_t(std::max(1, std::atoi(e))) : 24u;
++    }();
++    auto it = g_pass_history.find(targets_key(t));
++    return it != g_pass_history.end() && it->second >= min_draws;
++}
++
 +void phase_log(uint64_t frames) {
 +    if (!g_phase_draws || !frames) return;
 +    const double f = double(frames) * 1e6;
@@ -3515,6 +3806,43 @@ index ff8d46a..0499472 100644
 +        g_phase_ns[kPhInputs] / f, g_phase_ns[kPhPass] / f, g_phase_ns[kPhPipeline] / f, g_phase_ns[kPhCommands] / f);
 +    for (uint64_t& n : g_phase_ns) n = 0;
 +    g_phase_draws = 0;
++}
++
++// A draw of a parallel pass: its image descriptors here (what textures sample needs its uploads and layouts done
++// outside the pass, which gather_textures ended for them), the pass begun, the pipeline; the rest on a worker
++// (draw_job).
++bool draw_parallel(VkCommandBuffer cb, const Targets& t, const Targets& tt, uint32_t mode, bool indexed, const Cmd& c,
++                   const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout, const ShaderInfo* vs,
++                   const ShaderInfo* fs, bool may_defer, PhaseClock& clock) {
++    DrawJob& j = parallel_job();
++    sets_target(&j.d);
++    begin_sets(shaders, layout);
++    build_images(cb, shaders, layout);
++    sets_target(nullptr);
++    clock.mark(kPhSets);
++    clock.mark(kPhInputs);
++    if (!g_rendering) begin_rendering(cb, tt, true);
++    clock.mark(kPhPass);
++    VkPipeline pipeline = draw_pipeline(t, tt, mode, vs, fs, layout, may_defer);
++    clock.mark(kPhPipeline);
++    if (!pipeline) {  // the job is not pushed: the next one takes its place
++        g_stats.no_pipeline++;
++        if (diag_active()) diag_line("  skipped draw (no pipeline) vs " + vs->hash + " fs " + (fs ? fs->hash : "-"));
++        return false;
++    }
++    j.clear = false;
++    j.state = g_state;
++    j.shaders = &shaders, j.layout = &layout, j.vs = vs, j.pipeline = pipeline;
++    j.cmd = c, j.indexed = indexed;
++    draw_viewport(j.vp, j.sc);
++    parallel_push(j);
++    g_stats.done++, g_pass_draws++;
++    clock.mark(kPhCommands);
++    g_phase_draws++;
++    g_last_draw_fs = fs;
++    g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
++    trace_draw(t, mode, indexed, c, vs, fs, g_textures.bindings, g_textures.handles);
++    return true;
 +}
 +
  bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
@@ -3539,7 +3867,7 @@ index ff8d46a..0499472 100644
      }
      const ShaderInfo* vs = nullptr;
      const ShaderInfo* fs = nullptr;
-@@ -270,7 +338,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -270,7 +479,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
      }
      if (!vs) {
          g_stats.no_vertex++;
@@ -3548,7 +3876,7 @@ index ff8d46a..0499472 100644
      }
      std::vector<const ShaderInfo*> swapped;  // NX_SWAP_FS / NX_SKIP_FS (nvn_draw_trace.cpp)
      if (!debug_shader_overrides(shaders, fs, swapped)) return false;
-@@ -293,7 +361,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -293,7 +502,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
              }
      }
      // Textures first: an upload or a layout change cannot happen inside the render pass.
@@ -3572,11 +3900,18 @@ index ff8d46a..0499472 100644
      // A pass that neither tests nor writes depth but keeps its depth image bound while sampling that same image (the
      // world map's depth-to-colour linearization, fs 0aa56d1b): on Metal the image is then attached and read in one
      // encoder, which is undefined, and the copy came out 0 everywhere; the composite then took the player for
-@@ -325,15 +408,18 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -325,15 +549,25 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          draw_end_rendering(cb, 1);
      }
  
 +    probe_fill(t, fs);  // NX_PROBE_FILL (nvn_draw_trace.cpp)
++    // A big pass goes to the workers (nvn_parallel.cpp).
++    bool parallel = g_rendering ? g_pass_parallel : parallel_on() && parallel_wanted(tt);
++    if (parallel && (shaders == &swapped || !parallel_draw_ok(vs, fs))) {
++        if (g_rendering) draw_end_rendering(cb, 1);  // this one is recorded here, in a pass of its own
++        parallel = false;
++    }
++    if (parallel) return draw_parallel(cb, t, tt, mode, indexed, c, *shaders, layout, vs, fs, may_defer, clock);
      build_sets(cb, *shaders, layout);
 +    clock.mark(kPhSets);
      // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
@@ -3592,30 +3927,34 @@ index ff8d46a..0499472 100644
      if (!g_rendering) {
          if (gpu_profile_on()) {
              GpuImage* img = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
-@@ -344,6 +430,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -344,31 +578,14 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          }
          begin_rendering(cb, tt);
      }
 +    clock.mark(kPhPass);
  
      // Pipeline.
-     PipelineKey key;
-@@ -356,6 +443,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
-     std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
-     std::copy_n(g_state.blend, 8, key.blend);
-     key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
-+    // NX_NO_DEPTH_TEST_FS=<hash>[,<hash>...]: those fragment shaders drawn without the depth test (bisecting).
-+    static const char* no_depth_fs = std::getenv("NX_NO_DEPTH_TEST_FS");
-+    if (no_depth_fs && fs && std::strstr(no_depth_fs, fs->hash.c_str())) key.depth.depth_test = 0;
-     key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
-     key.alpha_to_coverage = g_state.alpha_to_coverage;
-     for (uint32_t k = 0; k < t.color_count; k++) {
-@@ -365,10 +455,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
-     }
-     GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
-     key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
+-    PipelineKey key;
+-    std::memset(&key, 0, sizeof key);  // the key is compared byte for byte
+-    key.vs = vs, key.fs = fs;
+-    key.topology = mode;
+-    key.attrib_count = uint32_t(std::min<size_t>(g_state.attribs.size(), 16));
+-    std::copy_n(g_state.attribs.begin(), key.attrib_count, key.attribs);
+-    key.stream_count = uint32_t(std::min<size_t>(g_state.streams.size(), 16));
+-    std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
+-    std::copy_n(g_state.blend, 8, key.blend);
+-    key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
+-    key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
+-    key.alpha_to_coverage = g_state.alpha_to_coverage;
+-    for (uint32_t k = 0; k < t.color_count; k++) {
+-        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+-        key.color_formats[k] = img ? view_format(*img, t.views.format[k]) : unused_slot_format();
+-        if (img && (img->nvn_format == 0x3f || t.views.format[k] == 0x3f)) key.ufloat_colors |= 1u << k;  // G4
+-    }
+-    GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
+-    key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
 -    VkPipeline pipeline = graphics_pipeline(key, layout);
-+    VkPipeline pipeline = graphics_pipeline(key, layout, may_defer);
++    VkPipeline pipeline = draw_pipeline(t, tt, mode, vs, fs, layout, may_defer);
 +    clock.mark(kPhPipeline);
      if (!pipeline) {
          g_stats.no_pipeline++;
@@ -3624,10 +3963,36 @@ index ff8d46a..0499472 100644
      }
  
      if (g_bound.cb != cb || draw_slow(kSlowState)) g_bound = Bound{}, g_bound.cb = cb;
-@@ -420,6 +511,10 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -385,20 +602,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+         if (in.used >> s & 1) bind_vertex(cb, s, in.vertex[s]);
+     bind_vertex(cb, 15, zero_stream());
+ 
+-    VkViewport vp{0, 0, float(g_pass_extent.width), float(g_pass_extent.height), 0, 1};
+-    if (g_state.has_viewport)
+-        vp = {float(g_state.viewport[0]), float(g_state.viewport[1]), float(g_state.viewport[2]),
+-              float(g_state.viewport[3]), g_state.depth_near, g_state.depth_far};
+-    // NVN's upper-left window origin (what Wonder sets) maps NDC +Y to the top of the render target, like D3D;
+-    // Vulkan maps it to the bottom. A negative-height viewport gives NVN's mapping, and with it NVN's front faces.
+-    // (Before this, the front face was inverted instead: triangles were culled right, but every render target was
+-    // upside down, which the post chain undid in some scenes and not in others: the first course showed a
+-    // mirrored sky.)
+-    vp.y += vp.height, vp.height = -vp.height;
+-    VkRect2D sc{{0, 0}, g_pass_extent};
+-    if (g_state.has_scissor)
+-        sc = {{std::max(0, g_state.scissor[0]), std::max(0, g_state.scissor[1])},
+-              {uint32_t(std::max(0, g_state.scissor[2])), uint32_t(std::max(0, g_state.scissor[3]))}};
++    VkViewport vp;
++    VkRect2D sc;
++    draw_viewport(vp, sc);
+     set_dynamic(cb, vp, sc);
+ 
+     trace_skin(indexed, c, vs, fs);
+@@ -419,7 +625,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+         p_vkCmdDraw(cb, uint32_t(c.i[1]), uint32_t(std::max(1, c.i[3])), uint32_t(c.i[0]), uint32_t(c.i[2]));
          if (q) zero_draws_end(cb);
      }
-     g_stats.done++;
+-    g_stats.done++;
++    g_stats.done++, g_pass_draws++;
 +    clock.mark(kPhCommands);
 +    g_phase_draws++;
 +    if (diag_active()) g_diag_draws++, g_diag_fs = fs ? fs->hash : vs->hash;
@@ -3635,7 +4000,7 @@ index ff8d46a..0499472 100644
      g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
      // NX_SNAP_FS=<hash>,<hash>[@<first draw>]: also snapshot after draws with those fragment shaders (8 at most, or
      // NX_SNAP_FS_MAX).
-@@ -478,6 +573,7 @@ void draw_begin_submit() {
+@@ -478,6 +688,7 @@ void draw_begin_submit() {
      sets_begin_submit();
      clears_begin_submit();
      g_submit_ns = plat::monotonic_ns();
@@ -3643,7 +4008,7 @@ index ff8d46a..0499472 100644
      dedup_reset();
      written_reset();
      pipeline_begin_submit();
-@@ -488,6 +584,7 @@ uint64_t recorded_draws();
+@@ -488,14 +699,17 @@ uint64_t recorded_draws();
  void draw_log_stats() {
      if (g_vertex_barriers) log("nvn passes: %llu vertex-read barriers (G4)", (unsigned long long)g_vertex_barriers);
      dedup_log();
@@ -3651,7 +4016,39 @@ index ff8d46a..0499472 100644
      render_pass_log();
      written_log();
      sampled_ready_log();
-@@ -541,10 +638,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
+     sets_log();
+-    if (g_state_set + g_state_kept)
+-        log("nvn: draw state: %llu binds and sets recorded, %llu already in place", (unsigned long long)g_state_set,
+-            (unsigned long long)g_state_kept);
++    const uint64_t set = g_state_set + g_workers_set.exchange(0), kept = g_state_kept + g_workers_kept.exchange(0);
++    if (set + kept)
++        log("nvn: draw state: %llu binds and sets recorded, %llu already in place", (unsigned long long)set,
++            (unsigned long long)kept);
+     g_state_set = g_state_kept = 0;
++    parallel_log();
+     clears_log();
+     log("nvn passes ended: %llu submit end, %llu draw, %llu dispatch, %llu clear of other targets, %llu clear larger than "
+         "the pass, %llu copy, %llu snapshot, %llu SetRenderTargets", (unsigned long long)g_pass_ends[0],
+@@ -514,11 +728,18 @@ void draw_log_stats() {
+ void pass_end_only(VkCommandBuffer cb, int reason) {
+     if (!g_rendering) return;
+     g_pass_ends[reason & 7]++, trace_pass("end: reason", g_pass, uint32_t(reason), 0);
++    if (g_pass_parallel) {  // the workers' secondary command buffers, in order (nvn_parallel.cpp)
++        parallel_pass_end(cb);
++        g_pass_parallel = false;
++        g_bound = Bound{};  // after vkCmdExecuteCommands the primary's bound state is undefined
++    }
+     if (g_render_pass)
+         p_vkCmdEndRenderPass(cb);
+     else
+         p_vkCmdEndRendering(cb);
+     g_rendering = false;
++    if (g_pass_history.size() > 4096) g_pass_history.clear();
++    g_pass_history[targets_key(g_pass)] = g_pass_draws;
+     // What the pass wrote is read by what follows (sampled, copied, loaded by the next pass), and what it sampled may
+     // be rendered over next. The images stay GENERAL, so transition() records no barrier. Metal (MoltenVK) and the
+     // Intel driver ordered passes anyway; NVIDIA overlaps them, and later passes read half-written tiles: the course
+@@ -541,10 +762,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
          p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
          g_vertex_pending |= narrow_pass_barrier();
      }
@@ -3671,7 +4068,81 @@ index ff8d46a..0499472 100644
      gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
  }
  void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)
-@@ -581,4 +686,8 @@ uint64_t draw_take_dump_request() {
+@@ -559,6 +788,73 @@ void pass_begin(VkCommandBuffer cb, const Targets& t) { begin_rendering(cb, t);
+ // and scissor (nvn_mask_clear.cpp): the next draw sets everything again.
+ void pass_mark_written(uint32_t bits) { g_pass_written |= bits, g_bound = Bound{}; }
+ 
++bool pass_parallel() { return g_rendering && g_pass_parallel; }
++
++void pass_clear_attachment(VkCommandBuffer cb, const VkClearAttachment& a, const VkClearRect& r) {
++    if (!pass_parallel()) {
++        p_vkCmdClearAttachments(cb, 1, &a, 1, &r);
++        return;
++    }
++    DrawJob& j = parallel_job();
++    j.clear = true, j.attachment = a, j.rect = r;
++    parallel_push(j);
++}
++
++void pass_inline(VkCommandBuffer cb) {
++    if (!pass_parallel()) return;
++    Targets t = g_pass;
++    pass_end_only(cb, 3);
++    begin_rendering(cb, t);  // loads what the workers drew
++}
++
++// A worker's part of a parallel pass's draw (draw_parallel made the job): its buffer descriptors and inputs copied
++// from guest memory, the sets bound, its state and the draw call, into the worker's secondary command buffer.
++void replay::draw_job(DrawJob& j, VkCommandBuffer cb) {
++    if (g_bound.cb != cb) g_bound = Bound{}, g_bound.cb = cb;
++    if (j.clear) {
++        p_vkCmdClearAttachments(cb, 1, &j.attachment, 1, &j.rect);
++        return;
++    }
++    t_state = &j.state;
++    sets_target(&j.d);
++    build_buffers(cb, *j.shaders, *j.layout);
++    DrawInputs in;
++    if (draw_inputs_shared(cb, j.vs, j.indexed, j.cmd, in)) {
++        if (g_bound.pipeline != j.pipeline) {
++            p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, j.pipeline);
++            g_bound.pipeline = j.pipeline, g_state_set++;
++        } else {
++            g_state_kept++;
++        }
++        bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, *j.layout);
++        for (uint32_t s = 0; s < 15; s++)
++            if (in.used >> s & 1) bind_vertex(cb, s, in.vertex[s]);
++        bind_vertex(cb, 15, zero_stream());
++        set_dynamic(cb, j.vp, j.sc);
++        const Cmd& c = j.cmd;
++        if (j.indexed) {
++            if (g_bound.has_index && g_bound.index.buffer == in.index.buffer && g_bound.index.offset == in.index.offset &&
++                g_bound.index_type == in.index_type) {
++                g_state_kept++;
++            } else {
++                p_vkCmdBindIndexBuffer(cb, in.index.buffer, in.index.offset, in.index_type);
++                g_bound.has_index = true, g_bound.index = in.index, g_bound.index_type = in.index_type, g_state_set++;
++            }
++            p_vkCmdDrawIndexed(cb, uint32_t(c.i[0]), uint32_t(std::max(1, c.i[3])), 0, c.i[1], uint32_t(c.i[2]));
++        } else {
++            p_vkCmdDraw(cb, uint32_t(c.i[1]), uint32_t(std::max(1, c.i[3])), uint32_t(c.i[0]), uint32_t(c.i[2]));
++        }
++    }
++    sets_target(nullptr);
++    g_workers_set.fetch_add(g_state_set, std::memory_order_relaxed);
++    g_workers_kept.fetch_add(g_state_kept, std::memory_order_relaxed);
++    g_state_set = g_state_kept = 0;
++}
++
++void replay::draw_thread_init() {
++    if (t_bound == &g_walk_bound) t_bound = new Bound;
++}
++
+ bool replay::pass_wrote(const GpuImage* img) {
+     if (!g_rendering || !img) return false;
+     uint32_t hit = g_pass.depth && g_pass_images[8] == img ? 1u << 8 : 0;
+@@ -581,4 +877,8 @@ uint64_t draw_take_dump_request() {
      return r;
  }
  
@@ -3681,7 +4152,7 @@ index ff8d46a..0499472 100644
 +
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_draw_state.cpp b/runtime/src/nvn/nvn_draw_state.cpp
-index 7ae207c..92b8e0c 100644
+index 7ae207c..5aa6dd1 100644
 --- a/runtime/src/nvn/nvn_draw_state.cpp
 +++ b/runtime/src/nvn/nvn_draw_state.cpp
 @@ -3,6 +3,7 @@
@@ -3731,7 +4202,20 @@ index 7ae207c..92b8e0c 100644
          case Cmd::SetScissor:
              std::memcpy(s.scissor, c.i, sizeof s.scissor), s.has_scissor = true;
              break;
-@@ -125,7 +156,14 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
+@@ -110,6 +141,7 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
+                     (unsigned long long)g_stats.done, (unsigned long long)c.a[0], (unsigned long long)c.a[1],
+                     (unsigned long long)off, b.size(), f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+             }
++            if (pass_parallel()) parallel_flush();  // the workers still to copy the bytes from before (nvn_parallel.cpp)
+             if (c.blob < list.blobs.size())
+                 if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0] + off))) {
+                     std::memcpy(p, list.blobs[c.blob].data(), list.blobs[c.blob].size());
+@@ -121,11 +153,19 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
+         case Cmd::ReportCounter: {  // {value, timestamp}: the work before it is done when the replay gets here
+             static uint64_t reports = 0, types_seen = 0;
+             if (c.n < 64 && !(types_seen >> c.n & 1)) types_seen |= 1ull << c.n, log("nvn: first counter report of type %u", c.n);
++            if (pass_parallel()) parallel_flush();  // as for UpdateUniformBuffer
+             if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0]))) {
                  // NX_FAKE_GPU_TIME=1: every report of a submit carries the submit's start (a GPU with no cost):
                  // the game picks its present interval from the timings it measures (bisecting its 30 fps mode).
                  static const bool fake = std::getenv("NX_FAKE_GPU_TIME") != nullptr;
@@ -3748,25 +4232,44 @@ index 7ae207c..92b8e0c 100644
                  dedup_invalidate(p, sizeof v);
                  written_cpu_write(p, sizeof v);
 diff --git a/runtime/src/nvn/nvn_draw_state.h b/runtime/src/nvn/nvn_draw_state.h
-index 9dded7d..e2ce469 100644
+index 9dded7d..7dad023 100644
 --- a/runtime/src/nvn/nvn_draw_state.h
 +++ b/runtime/src/nvn/nvn_draw_state.h
-@@ -81,6 +81,14 @@ namespace nx::nvn::replay {
+@@ -47,7 +47,13 @@ struct Stats {
+     uint64_t breaks_textures = 0, breaks_targets = 0;  // render passes ended by a draw: uploads/layouts, new targets
+ };
+ 
+-extern State g_state;
++// The bound state the replay code reads: the walk's (g_walk_state, which the state commands change) on the replay
++// thread, a draw's copy on a worker recording a parallel pass (nvn_parallel.cpp). g_state is that state.
++extern State g_walk_state;
++// Inline and constant-initialized, as t_replay_mark (nvn.h): an extern thread_local would be reached through a TLS
++// init function the PS4 loader cannot resolve (create-fself: "missing module for symbol _ZTH...").
++inline thread_local State* t_state = &g_walk_state;
++#define g_state (*::nx::nvn::replay::t_state)
+ extern Stats g_stats;
+ 
+ const uint8_t* guest_bytes(uint64_t gpu);
+@@ -81,16 +87,32 @@ namespace nx::nvn::replay {
  
  // nvn_dedup.cpp: one copy per submit of the same guest bytes (padded to `padded` with zeros).
  Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align);
 +// What the next uploads are for (dedup_log counts the bytes copied per kind): 0 other, 1 vertex, 2 index, 3 uniform,
 +// 4 storage.
-+extern int g_upload_kind;
++inline thread_local int g_upload_kind = 0;
 +// The next upload may be served by a longer copy of the same address (its first bytes): set around a uniform bind
 +// shortened to what the shader reads (nvn_sets.cpp), whose tail nothing reads.
-+extern bool g_upload_prefix_ok;
-+uint64_t dedup_copied_bytes();
-+extern uint64_t g_vertex_by_pool[8], g_uniform_by_pool[8];
++inline thread_local bool g_upload_prefix_ok = false;
++uint64_t dedup_copied_bytes();  // this thread's
++struct UploadStats {
++    uint64_t vertex_by_pool[8] = {}, uniform_by_pool[8] = {};  // bytes copied, by pool flags & 7
++};
++UploadStats& upload_stats();  // this thread's (dedup_log sums them)
  void dedup_reset();                                     // at each submit
- void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay
+-void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay
++void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay (every thread's copies)
  void dedup_log();
-@@ -88,9 +96,14 @@ void dedup_log();
+ // nvn_written.cpp: compute results within a submit (docs/nvn/GLITCH-PLAN.md G5), one copy per written guest range.
  bool written_separate();  // NX_COMPUTE_SEPARATE=1: a copy per binding, as before
  // A dispatch's storage binding it writes: the range's copy (made, reused or merged), kAlign aligned.
  Upload written_bind(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_t padded);
@@ -3781,7 +4284,7 @@ index 9dded7d..e2ce469 100644
  bool written_overlaps(const uint8_t* p, uint64_t size);
  // A draw's storage binding over a written region (it may write the copy): counted as written_bind calls are, so a
  // pipelined split (nvn_frames.cpp) does not copy the region back before that draw ran.
-@@ -124,9 +137,15 @@ struct DrawTextures {
+@@ -124,9 +146,43 @@ struct DrawTextures {
      std::vector<uint64_t> handles;
      std::vector<ResolvedTexture> resolved;
  };
@@ -3792,6 +4295,34 @@ index 9dded7d..e2ce469 100644
 +// kTexturesPending: a texture is being decoded in the background (astc_pending): the draw is skipped this time.
 +enum : uint32_t { kNeedBreak = 1, kSampledPending = 2, kTexturesPending = 4 };
 +uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may_defer = false);
++
++// The sets being built for a draw: scratch kept from draw to draw, or a parallel pass's job's own.
++struct SetWrite {  // one write of a set, as the set cache compares it
++    uint32_t binding = 0, type = 0;
++    uint64_t a = 0, b = 0, c = 0;  // buffer, offset, range; or view, sampler, layout
++};
++struct Descriptors {
++    VkDescriptorSet sets[4] = {};
++    std::vector<VkWriteDescriptorSet> writes;
++    std::vector<uint8_t> set_index;  // the set of each write (its dstSet is filled when the set is known)
++    std::vector<VkDescriptorBufferInfo> buffers;
++    std::vector<VkDescriptorImageInfo> images;
++    std::vector<SetWrite> key;  // scratch for the set cache
++    uint64_t dynamic = 0;              // set 0 bindings given a dynamic offset (ProgramLayout::dynamic)
++    uint32_t dynamic_offset[64] = {};  // their ring offsets, by binding
++};
++// build_sets in its parts, for parallel passes: the walk makes a job's image descriptors (sets 2 and 3: what textures
++// sample, with their uploads and layouts), the worker its buffer descriptors (sets 0 and 1: the guest bytes copied)
++// and binds the sets. g_sets is `d` from sets_target(&d) on, this thread's own after sets_target(nullptr).
++void sets_target(Descriptors* d);
++void begin_sets(const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
++void build_buffers(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
++void build_images(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
++bool set_cache_on();
++// The set caches, dedup copies and draw state of the calling worker: its own, from its first job on.
++void sets_thread_init();
++void dedup_thread_init();
++void draw_thread_init();
 +// nvn_upload.cpp: true while `texture`'s ASTC texels are decoded in the background, which this starts when the draw
 +// may wait (may_defer); false when the upload can go ahead (it waits for a decode under way itself).
 +bool astc_pending(uint64_t texture, bool may_defer);
@@ -3799,7 +4330,7 @@ index 9dded7d..e2ce469 100644
  void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
  // vkUpdateDescriptorSets for what build_sets made, then the sets bound at `point`.
  void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayout& layout);
-@@ -152,6 +171,9 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
+@@ -152,9 +208,56 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
  bool raster_command(const Cmd& c);
  void raster_dynamic(VkCommandBuffer cb, bool slack);  // slack: equal_slack_pass (nvn.h)
  
@@ -3809,6 +4340,53 @@ index 9dded7d..e2ce469 100644
  void trace_compute_once(const ShaderInfo* cs, uint32_t x, uint32_t y, uint32_t z);
  
  // NX_TRACE_SKIN: skinned draws' inputs, vertex uniform blocks and the bone rows they select.
+ void trace_skin(bool indexed, const Cmd& c, const ShaderInfo* vs, const ShaderInfo* fs);
+ 
++// A draw (or a clear inside the pass) of a pass recorded by the workers (nvn_parallel.cpp): what the walk resolved
++// for it (its bound state, its image descriptors, the pipeline, viewport and scissor) and what a worker then does with
++// it (draw_job, nvn_draw.cpp): its buffer descriptors and inputs copied, binds and the draw call.
++struct DrawJob {
++    bool clear = false;  // vkCmdClearAttachments with `attachment` and `rect` instead of a draw
++    VkClearAttachment attachment{};
++    VkClearRect rect{};
++    State state;
++    Descriptors d;
++    const std::vector<const ShaderInfo*>* shaders = nullptr;
++    const ProgramLayout* layout = nullptr;
++    const ShaderInfo* vs = nullptr;
++    VkPipeline pipeline = VK_NULL_HANDLE;
++    Cmd cmd;
++    bool indexed = false;
++    VkViewport vp{};
++    VkRect2D sc{};
++};
++void draw_job(DrawJob& j, VkCommandBuffer cb);  // nvn_draw.cpp, on a worker
++
++// nvn_parallel.cpp. The open parallel pass's attachment formats (its secondary command buffers inherit them).
++struct PassFormats {
++    uint32_t color_count = 0;
++    VkFormat colors[8] = {};
++    VkFormat depth = VK_FORMAT_UNDEFINED, stencil = VK_FORMAT_UNDEFINED;
++};
++bool parallel_on();  // NX_PARALLEL=1, for this submit, with the workers started (on the first call)
++DrawJob& parallel_job();  // the next job of the open parallel pass, to fill and then push (or not: the next call)
++void parallel_pass_begin(const PassFormats& f);
++void parallel_push(DrawJob& j);
++// What was pushed is recorded: before the walk writes guest memory the workers may still read (UpdateUniformBuffer,
++// ReportCounter).
++void parallel_flush();
++void parallel_pass_end(VkCommandBuffer cb);  // the pass's secondary command buffers executed into `cb`, in order
++void parallel_log();
++
+ }  // namespace nx::nvn::replay
++
++namespace nx::nvn {
++bool pass_parallel();  // nvn_draw.cpp: the open pass is recorded by the workers
++// A clear inside the open pass: into the workers' stream when it is a parallel one (nvn_clears.cpp).
++void pass_clear_attachment(VkCommandBuffer cb, const VkClearAttachment& a, const VkClearRect& r);
++// The open pass becomes one recorded here (a masked clear's fullscreen draw cannot go to the workers).
++void pass_inline(VkCommandBuffer cb);
++}  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_draw_trace.cpp b/runtime/src/nvn/nvn_draw_trace.cpp
 index e75c126..393e5a9 100644
 --- a/runtime/src/nvn/nvn_draw_trace.cpp
@@ -4074,10 +4652,35 @@ index 8af9918..256a149 100644
          case 0x95: return VK_FORMAT_B5G6R5_UNORM_PACK16;
          case 0x96:
 diff --git a/runtime/src/nvn/nvn_frames.cpp b/runtime/src/nvn/nvn_frames.cpp
-index c91843c..dd8a32f 100644
+index c91843c..c309ca2 100644
 --- a/runtime/src/nvn/nvn_frames.cpp
 +++ b/runtime/src/nvn/nvn_frames.cpp
-@@ -106,6 +106,15 @@ uint64_t g_staging_count = 0, g_staging_bytes = 0;  // staging_alloc's buffers,
+@@ -75,6 +75,16 @@ struct Slot {
+     bool replay = false;  // a submit's replay (not a present)
+     uint64_t binds_at_split = 0;  // replay::written_bind_count() at the split
+     uint64_t begin_ns = 0;
++    // The replay workers' (nvn_parallel.cpp): a command pool for their secondary command buffers and a descriptor pool
++    // each, made on first use and reset with the slot's own.
++    struct Worker {
++        VkCommandPool pool = VK_NULL_HANDLE;
++        std::vector<VkCommandBuffer> cbs;  // allocated so far; the first cbs_used taken since the last reset
++        uint32_t cbs_used = 0;
++        VkDescriptorPool descriptors = VK_NULL_HANDLE;
++        bool used = false;
++    };
++    Worker workers[replay::kMaxReplayWorkers];
+ };
+ 
+ Slot g_slots[kMaxSlots];
+@@ -95,6 +105,7 @@ struct Stats {
+ // A command pool per slot, reset whole when the slot is taken again (PHASE3.md C2): resetting each part's command
+ // buffer was 6-9% of the replay thread on Adreno (it frees the driver's per-pass objects). NX_CB_RESET=1: as before.
+ bool g_slot_pools = false;
++uint32_t g_queue_family = 0;          // for the workers' command pools
+ uint64_t g_chunk_draws = 0;           // NX_SUBMIT_CHUNK_DRAWS (frame_init); 0: no chunks
+ bool g_chunking = false;              // this submit is chunked (frame_plan_split)
+ uint64_t g_chunk_from = UINT64_MAX;   // the draw count at the last part's start (UINT64_MAX: the next call's)
+@@ -106,6 +117,15 @@ uint64_t g_staging_count = 0, g_staging_bytes = 0;  // staging_alloc's buffers,
  VkBuffer g_ring = VK_NULL_HANDLE;
  uint8_t* g_ring_ptr = nullptr;
  uint64_t g_ring_size = 0, g_head = 0, g_tail = 0, g_begin = 0;
@@ -4093,7 +4696,7 @@ index c91843c..dd8a32f 100644
  
  // Images of destroyed textures, with the serial of the last submit that may still use them.
  std::mutex g_grave_lock;
-@@ -134,6 +143,58 @@ ReuseKey reuse_key(const Texture& t) {
+@@ -134,6 +154,58 @@ ReuseKey reuse_key(const Texture& t) {
  std::map<ReuseKey, std::pair<uint64_t, std::shared_ptr<GpuImage>>> g_reusable;  // key -> (kept at, image)
  uint64_t g_reuse_clock = 0, g_reused = 0;
  
@@ -4152,18 +4755,61 @@ index c91843c..dd8a32f 100644
  void wait_fences(const VkFence* fences, uint32_t n) {
      if (!n) return;
      uint64_t t0 = plat::monotonic_ns();
-@@ -370,6 +431,7 @@ VkCommandBuffer frame_begin(bool replay) {
+@@ -144,6 +216,16 @@ void wait_fences(const VkFence* fences, uint32_t n) {
+     g_times.fence_ns += plat::monotonic_ns() - t0;
+ }
+ 
++// The workers' pools of a slot none of whose parts runs any more.
++void reset_workers(Slot& s) {
++    for (Slot::Worker& w : s.workers) {
++        if (!w.used) continue;
++        if (w.pool) p_vkResetCommandPool(vk_device(), w.pool, 0);
++        if (w.descriptors) p_vkResetDescriptorPool(vk_device(), w.descriptors, 0);
++        w.cbs_used = 0, w.used = false;
++    }
++}
++
+ // Compute results to guest memory: after the fence of the part that holds the submit's dispatches.
+ void apply_write_backs(Slot& s) {
+     for (const WriteBack& w : s.write_backs) {
+@@ -180,11 +262,13 @@ bool retire_oldest() {
+             if (g_slot_pools && s->pool_used) p_vkResetCommandPool(vk_device(), s->pool, 0);
+             if (s->descriptors_used) p_vkResetDescriptorPool(vk_device(), s->descriptors, 0);
+             s->pool_used = s->descriptors_used = false;
++            reset_workers(*s);
+             s->reset_done.store(true, std::memory_order_release);
+         });
+     } else {
+         if (s->descriptors_used) p_vkResetDescriptorPool(vk_device(), s->descriptors, 0);
+         s->descriptors_used = false;
++        reset_workers(*s);
+     }
+     g_tail = std::max(g_tail, s->ring_end);
+     g_completed = s->serial;
+@@ -328,6 +412,7 @@ void frame_init(VkCommandPool pool, uint32_t family, VkBuffer ring, uint8_t* rin
+     g_max_replays = frames;
+     g_slot_count = std::min(kMaxSlots, frames * 2);
+     VkDevice d = vk_device();
++    g_queue_family = family;
+     g_slot_pools = std::getenv("NX_CB_RESET") == nullptr;
+     for (uint32_t k = 0; k < g_slot_count; k++) {
+         if (g_slot_pools) {
+@@ -368,8 +453,10 @@ VkCommandBuffer frame_begin(bool replay) {
+     janitor_wait(s.reset_done);
+     if (g_slot_pools && s.pool_used) p_vkResetCommandPool(vk_device(), s.pool, 0);  // none of its parts is in flight
      s.pool_used = true;
++    reset_workers(s);  // a slot left unqueued was never retired
      g_next = (g_next + 1) % g_slot_count;
      g_begin = g_head;
 +    g_spill = {};
      s.replay = replay, s.part = s.queued = s.waited = 0, s.split_part = -1, s.ok = true;
      s.begin_ns = plat::monotonic_ns();
      g_plan_dispatches = g_seen_dispatches = 0;
-@@ -525,6 +587,46 @@ void frame_log(uint64_t frames) {
+@@ -525,7 +612,52 @@ void frame_log(uint64_t frames) {
      g_stats = {};
  }
  
+-Upload frame_upload_alloc(uint64_t size, uint64_t align) {
 +// Room in this submit's spill buffer (64 MB each, or the upload's size), a new one when it is full. {} if the
 +// allocation fails (the caller then wraps the ring as before).
 +Upload spill_alloc(uint64_t size, uint64_t align) {
@@ -4204,10 +4850,16 @@ index c91843c..dd8a32f 100644
 +    return {g_spill.buffer, at, g_spill.ptr + at};
 +}
 +
- Upload frame_upload_alloc(uint64_t size, uint64_t align) {
++namespace {
++
++// The ring, its spill buffers and the retiring of slots for room, once replay workers take room too (nvn_parallel.cpp).
++std::mutex g_ring_lock;
++
++Upload ring_alloc(uint64_t size, uint64_t align) {
      uint64_t at = (g_head + align - 1) & ~(align - 1);
      if (at % g_ring_size + size > g_ring_size) at += g_ring_size - at % g_ring_size;  // never split: the next lap
-@@ -536,6 +638,7 @@ Upload frame_upload_alloc(uint64_t size, uint64_t align) {
+     while (at + size > g_tail + g_ring_size)  // the oldest submits' data is still read: wait for them
+@@ -536,6 +668,7 @@ Upload frame_upload_alloc(uint64_t size, uint64_t align) {
                  wait_fences(fences, queued_fences(*g_current, g_current->part, fences));
                  g_current->waited = g_current->part;
              }
@@ -4215,7 +4867,92 @@ index c91843c..dd8a32f 100644
              log("nvn/vk: upload buffer full (%llu bytes in this submit)", (unsigned long long)(at + size - g_begin));
              g_tail = at + size - g_ring_size;  // this submit wraps over its own first data, as the synchronous path
              replay::dedup_reset();
-@@ -590,6 +693,14 @@ void free_retired_images(uint64_t completed) {
+@@ -546,13 +679,46 @@ Upload frame_upload_alloc(uint64_t size, uint64_t align) {
+     return {g_ring, off, g_ring_ptr + off};
+ }
+ 
++// A worker's room in the ring, taken a chunk at a time (a lock per chunk, not per upload), within the submit it was
++// taken for: the slot frees the ring up to its own end.
++struct Chunk {
++    uint64_t submit = 0;  // the submit being recorded at the take (g_submitted + 1)
++    Upload base;
++    uint64_t used = 0, size = 0;
++};
++thread_local Chunk t_chunk;
++
++}  // namespace
++
++Upload frame_upload_alloc(uint64_t size, uint64_t align) {
++    if (replay::parallel_worker() < 0 || size > (256ull << 10)) {
++        std::lock_guard lk(g_ring_lock);
++        return ring_alloc(size, align);
++    }
++    Chunk& c = t_chunk;
++    const uint64_t submit = g_submitted.load(std::memory_order_relaxed) + 1;
++    uint64_t at = (c.used + align - 1) & ~(align - 1);
++    if (c.submit != submit || !c.base.buffer || at + size > c.size) {
++        constexpr uint64_t kChunk = 1ull << 20;
++        std::lock_guard lk(g_ring_lock);
++        c = {submit, ring_alloc(kChunk, 256), 0, kChunk};
++        at = 0;
++    }
++    c.used = at + size;
++    return {c.base.buffer, c.base.offset + at, c.base.ptr + at};
++}
++
+ VkDescriptorSet frame_descriptor_set(VkDescriptorSetLayout layout) {
+     if (!g_current) return VK_NULL_HANDLE;
+     Slot& s = *g_current;
+-    if (!s.descriptors) s.descriptors = make_descriptor_pool();
+-    s.descriptors_used = true;
++    VkDescriptorPool* pool = &s.descriptors;  // a worker's own (pools are not shared between threads)
++    bool* used = &s.descriptors_used;
++    if (int w = replay::parallel_worker(); w >= 0 && w < replay::kMaxReplayWorkers)
++        pool = &s.workers[w].descriptors, used = &s.workers[w].used;
++    if (!*pool) *pool = make_descriptor_pool();
++    *used = true;
+     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+-    ai.descriptorPool = s.descriptors;
++    ai.descriptorPool = *pool;
+     ai.descriptorSetCount = 1;
+     ai.pSetLayouts = &layout;
+     VkDescriptorSet set = VK_NULL_HANDLE;
+@@ -560,6 +726,34 @@ VkDescriptorSet frame_descriptor_set(VkDescriptorSetLayout layout) {
+     return set;
+ }
+ 
++VkCommandBuffer frame_secondary(int worker) {
++    Slot* s = g_current;
++    if (!s || worker < 0 || worker >= replay::kMaxReplayWorkers) return VK_NULL_HANDLE;
++    Slot::Worker& w = s->workers[worker];
++    w.used = true;
++    if (!w.pool) {
++        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
++        pci.queueFamilyIndex = g_queue_family;
++        if (p_vkCreateCommandPool(vk_device(), &pci, nullptr, &w.pool) != VK_SUCCESS) return VK_NULL_HANDLE;
++    }
++    if (w.cbs_used == w.cbs.size()) {
++        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
++        ai.commandPool = w.pool;
++        ai.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
++        ai.commandBufferCount = 1;
++        VkCommandBuffer cb = VK_NULL_HANDLE;
++        if (p_vkAllocateCommandBuffers(vk_device(), &ai, &cb) != VK_SUCCESS) return VK_NULL_HANDLE;
++        w.cbs.push_back(cb);
++    }
++    return w.cbs[w.cbs_used++];
++}
++
++uint32_t submit_dispatches(const std::vector<std::shared_ptr<CmdList>>& lists) {
++    uint32_t n = 0;
++    for (const auto& l : lists) n += count_dispatches(*l, 0);
++    return n;
++}
++
+ // nvn.h: what nvnQueueFenceSync records and nvnSyncWait / nvnQueueFinish wait for. The synchronous path has nothing
+ // in flight when the game gets control back: 0, and no wait. Pipelined submits are in flight, but nothing the game
+ // can observe depends on them: compute results are in guest memory when gpu_submit returns, the GPU reads its inputs
+@@ -590,6 +784,14 @@ void free_retired_images(uint64_t completed) {
                  ++it;
              }
          if (g_reuse_clock % 3600 == 0 && g_reused) log("nvn/vk: %llu images reused", (unsigned long long)g_reused);
@@ -4230,7 +4967,7 @@ index c91843c..dd8a32f 100644
          auto done = std::stable_partition(g_grave.begin(), g_grave.end(),
                                            [&](const auto& e) { return e.first > completed; });
          for (auto it = done; it != g_grave.end(); ++it) dead.push_back(std::move(it->second));
-@@ -628,6 +739,7 @@ Texture::~Texture() {
+@@ -628,6 +830,7 @@ Texture::~Texture() {
          slot = {g_reuse_clock, std::move(image)};
          return;
      }
@@ -4238,7 +4975,7 @@ index c91843c..dd8a32f 100644
      g_grave.push_back({g_submitted + 1, std::move(image)});
  }
  
-@@ -681,4 +793,19 @@ std::shared_ptr<GpuImage> reuse_image(const Texture& t) {
+@@ -681,4 +884,19 @@ std::shared_ptr<GpuImage> reuse_image(const Texture& t) {
      return img;
  }
  
@@ -5113,6 +5850,217 @@ index a2a7dd0..b67f553 100644
  NX_HLE("nvnSamplerPoolInitialize", DescriptorPoolInitialize);
  NX_HLE("nvnTexturePoolInitialize", DescriptorPoolInitialize);
  NX_HLE("nvnSamplerPoolFinalize", DescriptorPoolFinalize);
+diff --git a/runtime/src/nvn/nvn_parallel.cpp b/runtime/src/nvn/nvn_parallel.cpp
+new file mode 100644
+index 0000000..091d6bd
+--- /dev/null
++++ b/runtime/src/nvn/nvn_parallel.cpp
+@@ -0,0 +1,205 @@
++// Parallel passes (NX_PARALLEL=1). The replay thread walks a submit's commands as before, but the draws of a big pass
++// (one whose targets had NX_PARALLEL_MIN draws or more the last time they were rendered, nvn_draw.cpp) are only
++// resolved there: their textures with any upload or layout change, their image descriptors, the pipeline. Each is
++// handed over as a job with a copy of the bound state, and worker threads copy its buffers and vertex inputs, build
++// and bind its descriptor sets and record the draw into a secondary command buffer, NX_PARALLEL_SEGMENT jobs to a
++// buffer. The pass executes the buffers in order when it ends. Breath of the Wild outdoors replayed ~3,000 draws a
++// frame at ~33 us each on the one thread (9 fps), with most of the PS4's cores idle.
++//
++// The workers read guest memory after the walk has gone on: the replay's own writes into it (UpdateUniformBuffer,
++// ReportCounter, nvn_draw_state.cpp) first wait until every job pushed before them is recorded (parallel_flush). A
++// submit with dispatches is replayed on the one thread, as before (its compute results are read within the submit).
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <deque>
++#include <mutex>
++#include <vector>
++
++#include "nvn_draw_state.h"
++#include "platform.h"
++
++namespace nx::nvn::replay {
++
++using namespace nx::vk;
++
++namespace {
++
++struct Segment {
++    std::vector<DrawJob*> jobs;
++    VkCommandBuffer cb = VK_NULL_HANDLE;  // recorded (null: it could not be)
++};
++
++std::mutex g_lock;
++std::condition_variable g_work_cv, g_done_cv;
++std::deque<Segment*> g_queue;  // under g_lock
++uint32_t g_unfinished = 0;     // segments queued and not recorded yet, under g_lock
++int g_workers = 0;
++bool g_submit_ok = false;  // this submit may (parallel_begin_submit)
++PassFormats g_formats;     // the open pass's, set before its first segment is queued
++uint32_t g_segment_size = 48;
++
++// The replay thread's: the open pass's segments in order, and the jobs, kept for the next passes (deques: what was
++// handed to a worker stays where it is while more are added).
++std::deque<Segment> g_segments;
++size_t g_segments_used = 0;
++Segment* g_open = nullptr;  // being filled
++std::deque<DrawJob> g_jobs;
++size_t g_jobs_used = 0;
++std::vector<VkCommandBuffer> g_execute;
++
++thread_local int t_worker = -1;
++
++// Per log period.
++uint64_t g_passes = 0, g_jobs_done = 0, g_segments_done = 0, g_flushes = 0, g_wait_ns = 0;
++std::atomic<uint64_t> g_worker_ns{0};
++
++void worker_main(void* arg) {
++    t_worker = int(reinterpret_cast<intptr_t>(arg));
++    char name[16];
++    std::snprintf(name, sizeof name, "nvn worker %d", t_worker);
++    plat::set_thread_name(name);
++    plat::place_frame_thread(2);
++    sets_thread_init(), dedup_thread_init(), draw_thread_init();
++    for (;;) {
++        Segment* s = nullptr;
++        {
++            std::unique_lock lk(g_lock);
++            // Re-checked every 25 ms: a lost notify (kernel.cpp wait_slice).
++            while (g_queue.empty()) g_work_cv.wait_for(lk, std::chrono::milliseconds(25));
++            s = g_queue.front();
++            g_queue.pop_front();
++        }
++        const uint64_t t0 = plat::monotonic_ns();
++        VkCommandBuffer cb = frame_secondary(t_worker);
++        if (cb) {
++            VkCommandBufferInheritanceRenderingInfo ri{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO};
++            ri.colorAttachmentCount = g_formats.color_count;
++            ri.pColorAttachmentFormats = g_formats.colors;
++            ri.depthAttachmentFormat = g_formats.depth;
++            ri.stencilAttachmentFormat = g_formats.stencil;
++            ri.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
++            VkCommandBufferInheritanceInfo ii{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO, &ri};
++            VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
++            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
++            bi.pInheritanceInfo = &ii;
++            if (p_vkBeginCommandBuffer(cb, &bi) == VK_SUCCESS) {
++                for (DrawJob* j : s->jobs) draw_job(*j, cb);
++                p_vkEndCommandBuffer(cb);
++            } else {
++                cb = VK_NULL_HANDLE;
++            }
++        }
++        if (!cb) {
++            static std::atomic<int> logged{0};
++            if (logged++ < 10) log("nvn: a parallel pass's segment of %zu draws could not be recorded", s->jobs.size());
++        }
++        g_worker_ns += plat::monotonic_ns() - t0;
++        {
++            std::lock_guard lk(g_lock);
++            s->cb = cb;
++            g_unfinished--;
++        }
++        g_done_cv.notify_all();
++    }
++}
++
++bool start() {
++    const char* e = std::getenv("NX_PARALLEL_WORKERS");
++    int n = e ? std::atoi(e) : 3;
++    n = n < 1 ? 1 : n > kMaxReplayWorkers ? kMaxReplayWorkers : n;
++    if (const char* s = std::getenv("NX_PARALLEL_SEGMENT")) g_segment_size = uint32_t(std::max(1, std::atoi(s)));
++    for (int k = 0; k < n; k++) plat::start_thread(worker_main, reinterpret_cast<void*>(intptr_t(k)), 1u << 20);
++    g_workers = n;
++    log("nvn: parallel passes: %d workers, %u draws to a secondary command buffer (NX_PARALLEL)", n, g_segment_size);
++    return true;
++}
++
++void queue_open() {
++    if (!g_open) return;
++    {
++        std::lock_guard lk(g_lock);
++        g_queue.push_back(g_open);
++        g_unfinished++;
++    }
++    g_work_cv.notify_one();
++    g_open = nullptr;
++    g_segments_done++;
++}
++
++void wait_all() {
++    queue_open();
++    const uint64_t t0 = plat::monotonic_ns();
++    std::unique_lock lk(g_lock);
++    while (g_unfinished) g_done_cv.wait_for(lk, std::chrono::milliseconds(25));  // re-checked: a lost notify
++    g_wait_ns += plat::monotonic_ns() - t0;
++}
++
++}  // namespace
++
++int parallel_worker() { return t_worker; }
++
++void parallel_begin_submit(bool allowed) { g_submit_ok = allowed; }
++
++bool parallel_on() {
++    static const bool on = [] {
++        const char* e = std::getenv("NX_PARALLEL");
++        return e && e[0] == '1';
++    }();
++    if (!on || !g_submit_ok || !async_gpu()) return false;  // the workers' pools live in the submit's slot
++    static const bool started = start();
++    return started && g_workers > 0;
++}
++
++DrawJob& parallel_job() {
++    if (g_jobs_used == g_jobs.size()) g_jobs.emplace_back();
++    return g_jobs[g_jobs_used];
++}
++
++void parallel_pass_begin(const PassFormats& f) {
++    g_formats = f;
++    g_segments_used = 0, g_jobs_used = 0, g_open = nullptr;
++    g_passes++;
++}
++
++void parallel_push(DrawJob& j) {
++    g_jobs_used++;  // j is the job parallel_job() gave
++    if (!g_open) {
++        if (g_segments_used == g_segments.size()) g_segments.emplace_back();
++        g_open = &g_segments[g_segments_used++];
++        g_open->jobs.clear(), g_open->cb = VK_NULL_HANDLE;
++    }
++    g_open->jobs.push_back(&j);
++    if (g_open->jobs.size() >= g_segment_size) queue_open();
++}
++
++void parallel_flush() {
++    if (!g_segments_used) return;
++    wait_all();
++    g_flushes++;
++}
++
++void parallel_pass_end(VkCommandBuffer cb) {
++    wait_all();
++    g_execute.clear();
++    for (size_t k = 0; k < g_segments_used; k++)
++        if (g_segments[k].cb) g_execute.push_back(g_segments[k].cb);
++    if (!g_execute.empty()) p_vkCmdExecuteCommands(cb, uint32_t(g_execute.size()), g_execute.data());
++    g_jobs_done += g_jobs_used;
++    g_segments_used = 0, g_jobs_used = 0;
++}
++
++void parallel_log() {
++    if (!g_passes) return;
++    log("nvn: parallel passes: %llu passes, %llu draws in %llu segments, %llu flushes (uniform updates, counters); "
++        "workers busy %.1f ms, replay thread waiting %.1f ms in all",
++        (unsigned long long)g_passes, (unsigned long long)g_jobs_done, (unsigned long long)g_segments_done,
++        (unsigned long long)g_flushes, double(g_worker_ns.exchange(0)) / 1e6, double(g_wait_ns) / 1e6);
++    g_passes = g_jobs_done = g_segments_done = g_flushes = g_wait_ns = 0;
++}
++
++}  // namespace nx::nvn::replay
 diff --git a/runtime/src/nvn/nvn_pipeline.cpp b/runtime/src/nvn/nvn_pipeline.cpp
 index e29b321..b6cc5b8 100644
 --- a/runtime/src/nvn/nvn_pipeline.cpp
@@ -5836,10 +6784,84 @@ index b0748f7..817cef5 100644
  NX_HLE("nvnSamplerPoolRegisterSamplerBuilder", RegisterSamplerBuilder);
  NX_HLE("nvnSamplerGetMinMagFilter", GetMinMagFilter);
 diff --git a/runtime/src/nvn/nvn_sets.cpp b/runtime/src/nvn/nvn_sets.cpp
-index a114065..9b3a1eb 100644
+index a114065..36963a1 100644
 --- a/runtime/src/nvn/nvn_sets.cpp
 +++ b/runtime/src/nvn/nvn_sets.cpp
-@@ -244,9 +244,28 @@ bool all_write_backs() {  // NX_WRITE_BACK_ALL=1: every compute storage binding,
+@@ -3,10 +3,13 @@
+ // shared inputs. The replay's CPU shortcuts of docs/nvn/PERF-PLAN.md live here and in nvn_draw.cpp; NX_DRAW_SLOW
+ // turns them off (draw_slow, nvn_draw_state.h). Everything here runs under the GPU lock, one draw at a time.
+ #include <algorithm>
++#include <atomic>
+ #include <cstdlib>
+ #include <cstring>
+ #include <memory>
++#include <mutex>
+ #include <string>
++#include <vector>
+ 
+ #include "nvn_draw_state.h"
+ 
+@@ -158,7 +161,7 @@ constexpr uint32_t kHandleSlots = 2048;  // a course frame names a few hundred h
+ HandleSlot g_handle_slots[kHandleSlots];
+ uint64_t g_handle_generation = 1, g_handle_mark = 0;
+ uint32_t g_handle_used = 0;
+-uint64_t g_handle_hits = 0, g_handle_misses = 0, g_sets_skipped = 0;
++uint64_t g_handle_hits = 0, g_handle_misses = 0;
+ 
+ void handles_reset() { g_handle_generation++, g_handle_used = 0; }
+ 
+@@ -202,17 +205,21 @@ struct ConstantsBlock {
+     std::array<uint8_t, 0x1000> bytes;
+ };
+ constexpr size_t kBlocks = 32;  // more distinct ones in a submit: copied per draw, as before
+-std::vector<std::unique_ptr<SupportBlock>> g_support;
+-std::vector<std::unique_ptr<ConstantsBlock>> g_constants;
+-size_t g_support_used = 0, g_constants_used = 0;
++struct Blocks {  // a thread's (its SetsCtx, below)
++    std::vector<std::unique_ptr<SupportBlock>> support;
++    std::vector<std::unique_ptr<ConstantsBlock>> constants;
++    size_t support_used = 0, constants_used = 0;
++};
++Blocks& blocks();
+ 
+ const SupportBuffer* support_block(float width, float height) {
+-    for (size_t k = 0; k < g_support_used; k++)
+-        if (std::memcmp(&g_support[k]->width, &width, 4) == 0 && std::memcmp(&g_support[k]->height, &height, 4) == 0)
+-            return &g_support[k]->sb;
+-    if (g_support_used == kBlocks) return nullptr;
+-    if (g_support_used == g_support.size()) g_support.push_back(std::make_unique<SupportBlock>());
+-    SupportBlock& b = *g_support[g_support_used++];
++    Blocks& g = blocks();
++    for (size_t k = 0; k < g.support_used; k++)
++        if (std::memcmp(&g.support[k]->width, &width, 4) == 0 && std::memcmp(&g.support[k]->height, &height, 4) == 0)
++            return &g.support[k]->sb;
++    if (g.support_used == kBlocks) return nullptr;
++    if (g.support_used == g.support.size()) g.support.push_back(std::make_unique<SupportBlock>());
++    SupportBlock& b = *g.support[g.support_used++];
+     b.width = width, b.height = height;
+     b.sb = support_buffer_defaults();
+     support_buffer_set_viewport(b.sb, width, height);
+@@ -223,12 +230,13 @@ const uint8_t* constants_block(ShaderStage stage, int st) {
+     if (stage == ShaderStage::Compute) return nullptr;  // its table also lists the uniform blocks; a few per frame
+     int hw = stage == ShaderStage::Fragment ? 4 : 0;
+     const Range* key = g_state.storage[st];
+-    for (size_t k = 0; k < g_constants_used; k++)
+-        if (g_constants[k]->hw == hw && std::memcmp(g_constants[k]->storage, key, sizeof g_constants[k]->storage) == 0)
+-            return g_constants[k]->bytes.data();
+-    if (g_constants_used == kBlocks) return nullptr;
+-    if (g_constants_used == g_constants.size()) g_constants.push_back(std::make_unique<ConstantsBlock>());
+-    ConstantsBlock& b = *g_constants[g_constants_used++];
++    Blocks& g = blocks();
++    for (size_t k = 0; k < g.constants_used; k++)
++        if (g.constants[k]->hw == hw && std::memcmp(g.constants[k]->storage, key, sizeof g.constants[k]->storage) == 0)
++            return g.constants[k]->bytes.data();
++    if (g.constants_used == kBlocks) return nullptr;
++    if (g.constants_used == g.constants.size()) g.constants.push_back(std::make_unique<ConstantsBlock>());
++    ConstantsBlock& b = *g.constants[g.constants_used++];
+     b.hw = hw;
+     std::memcpy(b.storage, key, sizeof b.storage);
+     b.bytes = driver_constants(stage, st);
+@@ -244,9 +252,28 @@ bool all_write_backs() {  // NX_WRITE_BACK_ALL=1: every compute storage binding,
      static const bool on = std::getenv("NX_WRITE_BACK_ALL") != nullptr;
      return on;
  }
@@ -5868,7 +6890,199 @@ index a114065..9b3a1eb 100644
  VkDescriptorBufferInfo buffer_of(VkCommandBuffer cb, const void* bytes, uint64_t size, uint64_t min_size = 16,
                                   bool write_back = false, bool guest = true) {
      uint64_t n = std::max<uint64_t>((size + 15) & ~15ull, min_size);
-@@ -456,17 +475,64 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
+@@ -270,23 +297,6 @@ VkDescriptorBufferInfo buffer_of(VkCommandBuffer cb, const void* bytes, uint64_t
+     return {u.buffer, u.offset, n};
+ }
+ 
+-// The sets being built: scratch kept from draw to draw (three vectors, one of them ~130 KB, were allocated per draw).
+-struct SetWrite {  // one write of a set, as the set cache compares it
+-    uint32_t binding = 0, type = 0;
+-    uint64_t a = 0, b = 0, c = 0;  // buffer, offset, range; or view, sampler, layout
+-};
+-struct Descriptors {
+-    VkDescriptorSet sets[4] = {};
+-    std::vector<VkWriteDescriptorSet> writes;
+-    std::vector<uint8_t> set_index;  // the set of each write (its dstSet is filled when the set is known)
+-    std::vector<VkDescriptorBufferInfo> buffers;
+-    std::vector<VkDescriptorImageInfo> images;
+-    std::vector<SetWrite> key;  // scratch for the set cache
+-    uint64_t dynamic = 0;              // set 0 bindings given a dynamic offset (ProgramLayout::dynamic)
+-    uint32_t dynamic_offset[64] = {};  // their ring offsets, by binding
+-};
+-Descriptors g_sets;
+-
+ // The set cache (docs/nvn/android-perf/PLAN.md R3): a set with the same layout and the same writes as one made earlier
+ // in this submit is that set. Every draw allocated and wrote up to four sets (~1,500 allocations and ~5,000 writes per
+ // course frame), most of it driver time on Adreno; texture sets repeat across the draws of a material, and buffer sets
+@@ -299,19 +309,51 @@ struct CachedSet {
+     VkDescriptorSet set = VK_NULL_HANDLE;
+ };
+ constexpr uint32_t kSetSlots = 8192;
+-CachedSet g_set_cache[kSetSlots];
+-std::vector<SetWrite> g_set_arena;
+-uint64_t g_set_generation = 1, g_set_hits = 0, g_set_misses = 0;
+-uint32_t g_set_used = 0;
+ 
+-bool set_cache_on() {
+-    static const bool on = [] {
+-        const char* e = std::getenv("NX_SET_CACHE");
+-        return !(e && e[0] == '0') && !draw_slow(kSlowEmptySets);
++// A thread's set cache, support and constants blocks and scratch sets (kept from draw to draw: three vectors, one of
++// them ~130 KB, were allocated per draw): the replay thread's, or a worker's (sets_thread_init). They start over at
++// the thread's next use once the submit epoch moved on (sets_begin_submit).
++struct SetsCtx {
++    std::unique_ptr<CachedSet[]> cache{new CachedSet[kSetSlots]()};
++    std::vector<SetWrite> arena;
++    uint64_t generation = 1, epoch = 0;
++    uint32_t used = 0;
++    uint64_t hits = 0, misses = 0, skipped = 0;  // per log period
++    Blocks blocks;
++    Descriptors own;  // g_sets unless a job's is targeted (sets_target)
++};
++std::atomic<uint64_t> g_sets_epoch{1};
++std::mutex g_ctx_lock;
++std::vector<SetsCtx*> g_ctxs;  // every thread's, for the log
++
++SetsCtx& walk_ctx() {  // the replay thread's (and any other thread's but the workers')
++    static SetsCtx* c = [] {
++        auto* n = new SetsCtx;
++        std::lock_guard lk(g_ctx_lock);
++        g_ctxs.push_back(n);
++        return n;
+     }();
+-    return on;
++    return *c;
+ }
+ 
++thread_local SetsCtx* t_sctx = nullptr;     // a worker's own
++thread_local Descriptors* t_sets = nullptr;  // a job's (sets_target)
++
++SetsCtx& sctx() {
++    SetsCtx& c = t_sctx ? *t_sctx : walk_ctx();
++    uint64_t e = g_sets_epoch.load(std::memory_order_relaxed);
++    if (c.epoch != e) {
++        c.generation++, c.used = 0, c.arena.clear();
++        c.blocks.support_used = c.blocks.constants_used = 0;
++        c.epoch = e;
++    }
++    return c;
++}
++
++Blocks& blocks() { return sctx().blocks; }
++
++#define g_sets (t_sets ? *t_sets : sctx().own)
++
+ template <typename H>
+ uint64_t handle_bits(H h) {
+     uint64_t v = 0;
+@@ -322,6 +364,7 @@ uint64_t handle_bits(H h) {
+ // d.sets from the cache or newly made, the writes of the cached ones dropped and the rest pointed at their new sets.
+ void resolve_sets(const ProgramLayout& layout) {
+     Descriptors& d = g_sets;
++    SetsCtx& sc = sctx();
+     for (uint32_t k = 0; k < 4; k++) {
+         d.key.clear();
+         uint64_t h = handle_bits(layout.sets[k]) * 0x9E3779B97F4A7C15ull;
+@@ -343,25 +386,25 @@ void resolve_sets(const ProgramLayout& layout) {
+         if (d.key.empty()) continue;
+         CachedSet* slot = nullptr;
+         for (uint32_t probe = uint32_t(h >> 32);; probe++) {
+-            CachedSet& c = g_set_cache[probe & (kSetSlots - 1)];
+-            if (c.generation != g_set_generation) {
++            CachedSet& c = sc.cache[probe & (kSetSlots - 1)];
++            if (c.generation != sc.generation) {
+                 slot = &c;
+                 break;
+             }
+             if (c.hash == h && c.layout == layout.sets[k] && c.n == d.key.size() &&
+-                std::memcmp(&g_set_arena[c.at], d.key.data(), d.key.size() * sizeof(SetWrite)) == 0) {
+-                d.sets[k] = c.set, g_set_hits++;
++                std::memcmp(&sc.arena[c.at], d.key.data(), d.key.size() * sizeof(SetWrite)) == 0) {
++                d.sets[k] = c.set, sc.hits++;
+                 break;
+             }
+         }
+         if (d.sets[k]) continue;
+-        d.sets[k] = descriptor_set(layout.sets[k]), g_set_misses++;
++        d.sets[k] = descriptor_set(layout.sets[k]), sc.misses++;
+         for (size_t i = 0; i < d.writes.size(); i++)
+             if (d.set_index[i] == k) d.writes[i].dstSet = d.sets[k];
+-        if (!d.sets[k] || g_set_used >= kSetSlots / 2) continue;
+-        *slot = {g_set_generation, h, layout.sets[k], uint32_t(g_set_arena.size()), uint32_t(d.key.size()), d.sets[k]};
+-        g_set_arena.insert(g_set_arena.end(), d.key.begin(), d.key.end());
+-        g_set_used++;
++        if (!d.sets[k] || sc.used >= kSetSlots / 2) continue;
++        *slot = {sc.generation, h, layout.sets[k], uint32_t(sc.arena.size()), uint32_t(d.key.size()), d.sets[k]};
++        sc.arena.insert(sc.arena.end(), d.key.begin(), d.key.end());
++        sc.used++;
+     }
+     size_t kept = 0;  // the writes of new sets only
+     for (size_t i = 0; i < d.writes.size(); i++)
+@@ -371,6 +414,14 @@ void resolve_sets(const ProgramLayout& layout) {
+ 
+ }  // namespace
+ 
++bool set_cache_on() {
++    static const bool on = [] {
++        const char* e = std::getenv("NX_SET_CACHE");
++        return !(e && e[0] == '0') && !draw_slow(kSlowEmptySets);
++    }();
++    return on;
++}
++
+ std::vector<WriteBack>& separate_write_backs() { return g_write_backs; }
+ 
+ void texture_for(uint64_t handle, uint64_t& texture, SamplerInfo& sampler, ViewInfo* view) {
+@@ -385,25 +436,38 @@ void texture_for(uint64_t handle, uint64_t& texture, SamplerInfo& sampler, ViewI
+ // gather_textures left them), storage images (set 3). Records uploads and layout changes, so it runs outside render
+ // passes when textures or images need them. A set is allocated when its first binding is written: the sets no stage
+ // declares anything in (usually two of the four) are neither allocated nor bound.
+-void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
++// The set of a write into set k: made (or found) in bind_sets with the set cache, now without it.
++static VkDescriptorSet set_for(Descriptors& d, const ProgramLayout& layout, uint32_t k) {
++    d.set_index.push_back(uint8_t(k));
++    if (set_cache_on()) return VK_NULL_HANDLE;
++    if (!d.sets[k]) d.sets[k] = descriptor_set(layout.sets[k]);
++    return d.sets[k];
++}
++
++void sets_target(Descriptors* d) { t_sets = d; }
++
++void begin_sets(const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
+     Descriptors& d = g_sets;
+     if (draw_slow(kSlowScratch))
+         d = Descriptors{};
+     else
+         d.writes.clear(), d.set_index.clear(), d.buffers.clear(), d.images.clear();
+     d.dynamic = 0;
+-    const bool every_set = draw_slow(kSlowEmptySets), shared = !draw_slow(kSlowUploads), cached = set_cache_on();
++    const bool every_set = draw_slow(kSlowEmptySets);
+     for (int k = 0; k < 4; k++) d.sets[k] = every_set ? descriptor_set(layout.sets[k]) : VK_NULL_HANDLE;
+-    auto set_of = [&](uint32_t k) {  // with the set cache, made (or found) in bind_sets
+-        d.set_index.push_back(uint8_t(k));
+-        if (cached) return VkDescriptorSet(VK_NULL_HANDLE);
+-        if (!d.sets[k]) d.sets[k] = descriptor_set(layout.sets[k]);
+-        return d.sets[k];
+-    };
++    // The writes keep pointers into the vectors: room for every binding of the stages (a write each at most), so they
++    // never move. The replay thread's scratch keeps its room from draw to draw.
++    size_t n = 64;
++    for (const ShaderInfo* s : shaders) n += s->refl.bindings.size();
++    d.buffers.reserve(n), d.images.reserve(n), d.writes.reserve(n);
++}
++
++void build_buffers(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
++    Descriptors& d = g_sets;
++    const bool shared = !draw_slow(kSlowUploads);
++    auto set_of = [&](uint32_t k) { return set_for(d, layout, k); };
+     auto& writes = d.writes;
+     auto& buffers = d.buffers;
+-    auto& images = d.images;
+-    buffers.reserve(1024), images.reserve(1024), writes.reserve(2048);  // pointers into them are kept
+     float vw = g_state.has_viewport ? float(g_state.viewport[2]) : 1280.0f;
+     float vh = g_state.has_viewport ? float(g_state.viewport[3]) : 720.0f;
+     SupportBuffer sb;  // built when a binding gets a copy of its own
+@@ -456,17 +520,64 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                      // Banks the shader indexes with a computed value (clamped to 64 KB, nvn_spirv_patch.cpp): all
                      // 64 KB, so every read past the data returns 0 as on Maxwell.
                      bool indexed = b.set == 0 && b.binding < 64 && (dynamic_uniform_bindings(s) >> b.binding & 1);
@@ -5885,7 +7099,7 @@ index a114065..9b3a1eb 100644
 +                    if (uint64_t copied = dedup_copied_bytes() - copied_before) {
 +                        uint64_t off = 0;
 +                        MemoryPool* pool = r.address ? pool_at_gpu(r.address, &off) : nullptr;
-+                        g_uniform_by_pool[pool ? pool->flags & 7 : 0] += copied;
++                        upload_stats().uniform_by_pool[pool ? pool->flags & 7 : 0] += copied;
 +                    }
                      break;
                  }
@@ -5935,7 +7149,43 @@ index a114065..9b3a1eb 100644
                      break;
                  }
                  case NvnSource::DriverConstants: {
-@@ -572,7 +638,7 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
+@@ -496,6 +607,13 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
+             writes.push_back(w);
+         }
+     }
++}
++
++void build_images(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
++    Descriptors& d = g_sets;
++    auto set_of = [&](uint32_t k) { return set_for(d, layout, k); };
++    auto& writes = d.writes;
++    auto& images = d.images;
+     const DrawTextures& t = g_textures;
+     for (size_t k = 0; k < t.bindings.size(); k++) {
+         auto [s, b] = t.bindings[k];
+@@ -540,6 +658,12 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
+     }
+ }
+ 
++void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
++    begin_sets(shaders, layout);
++    build_buffers(cb, shaders, layout);
++    build_images(cb, shaders, layout);
++}
++
+ // A set with no binding in the layout is statically used by no shader, so nothing need be bound there: the runs of
+ // sets build_sets allocated are bound, in ascending order (each bind leaves the lower sets, bound with this same
+ // layout, undisturbed).
+@@ -560,7 +684,7 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
+     }
+     for (uint32_t k = 0; k < 4;) {
+         if (!d.sets[k]) {
+-            k++, g_sets_skipped++;
++            k++, sctx().skipped++;
+             continue;
+         }
+         uint32_t n = 1;
+@@ -572,7 +696,7 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
  
  // Texture bindings of a program's stages and their handles, into g_textures. kNeedBreak: one needs a transfer or a
  // layout change (so no render pass may be open while the sets are built); kSampledPending: one has a pending clear.
@@ -5944,7 +7194,7 @@ index a114065..9b3a1eb 100644
      DrawTextures& t = g_textures;
      if (draw_slow(kSlowScratch))
          t = DrawTextures{};
-@@ -617,6 +683,7 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
+@@ -617,6 +741,7 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
                  texture = 0;
          }
          r.texture = texture;
@@ -5952,7 +7202,7 @@ index a114065..9b3a1eb 100644
          if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak;
          if (!texture) continue;
          GpuImage* img = image_of(texture);
-@@ -650,7 +717,12 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed,
+@@ -650,24 +775,43 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed,
      if (!p) return false;
      in.index_type = vk_index_type(c.mask);
      uint64_t bytes = uint64_t(uint32_t(c.i[0])) * index_size(c.mask);
@@ -5965,6 +7215,46 @@ index a114065..9b3a1eb 100644
      return true;
  }
  
+ void sets_begin_submit() {
+     handles_reset();
+-    g_set_generation++, g_set_used = 0, g_set_arena.clear();
+-    g_support_used = g_constants_used = 0;
++    g_sets_epoch.fetch_add(1, std::memory_order_relaxed);  // every thread's set cache and blocks, at its next use
++}
++
++void sets_thread_init() {
++    if (t_sctx) return;
++    t_sctx = new SetsCtx;
++    std::lock_guard lk(g_ctx_lock);
++    g_ctxs.push_back(t_sctx);
+ }
+ 
+-void sets_log() {
+-    if (g_handle_hits + g_handle_misses + g_sets_skipped)
++void sets_log() {  // every thread's counts (the workers are idle between submits, when this runs)
++    uint64_t skipped = 0, hits = 0, misses = 0;
++    {
++        std::lock_guard lk(g_ctx_lock);
++        for (SetsCtx* c : g_ctxs) {
++            skipped += c->skipped, hits += c->hits, misses += c->misses;
++            c->skipped = c->hits = c->misses = 0;
++        }
++    }
++    if (g_handle_hits + g_handle_misses + skipped)
+         log("nvn: texture handles: %llu from the submit's cache, %llu looked up; %llu empty descriptor sets skipped",
+-            (unsigned long long)g_handle_hits, (unsigned long long)g_handle_misses, (unsigned long long)g_sets_skipped);
+-    if (g_set_hits + g_set_misses)
+-        log("nvn: descriptor sets: %llu reused from the submit's cache, %llu made", (unsigned long long)g_set_hits,
+-            (unsigned long long)g_set_misses);
+-    g_handle_hits = g_handle_misses = g_sets_skipped = g_set_hits = g_set_misses = 0;
++            (unsigned long long)g_handle_hits, (unsigned long long)g_handle_misses, (unsigned long long)skipped);
++    if (hits + misses)
++        log("nvn: descriptor sets: %llu reused from the submit's cache, %llu made", (unsigned long long)hits,
++            (unsigned long long)misses);
++    g_handle_hits = g_handle_misses = 0;
+ }
+ 
+ }  // namespace nx::nvn::replay
 diff --git a/runtime/src/nvn/nvn_shaders.cpp b/runtime/src/nvn/nvn_shaders.cpp
 index c3c76b4..fc7f8ef 100644
 --- a/runtime/src/nvn/nvn_shaders.cpp
@@ -7404,10 +8694,10 @@ index c221804..30ccf5f 100644
          u = staging_alloc(linear.size());
 diff --git a/runtime/src/nvn/nvn_vcache.cpp b/runtime/src/nvn/nvn_vcache.cpp
 new file mode 100644
-index 0000000..3fc7f32
+index 0000000..33319d6
 --- /dev/null
 +++ b/runtime/src/nvn/nvn_vcache.cpp
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,197 @@
 +// Vertex data kept from frame to frame. Every draw's vertex buffers were copied from guest memory into the upload ring
 +// at replay time, once per submit (nvn_dedup.cpp): Tears of the Kingdom copied ~29 MB of vertex data a frame, 99% of it
 +// from CPU_CACHED memory pools, mostly meshes that never change, and on the PS4 that copying was a quarter of the
@@ -7541,9 +8831,13 @@ index 0000000..3fc7f32
 +    }
 +}
 +
++// The replay workers recording parallel passes (nvn_parallel.cpp) bind vertex data too.
++std::mutex g_bind_lock;
++
 +}  // namespace
 +
 +bool vcache_bind(const uint8_t* p, uint64_t size, uint64_t padded, Upload& out) {
++    std::lock_guard lk(g_bind_lock);
 +    if (!enabled() || !p || !size || g_reset_pending || !make_arena()) return false;
 +    drain();
 +    static const bool check = std::getenv("NX_VERTEX_CACHE_CHECK") != nullptr;
@@ -7602,7 +8896,7 @@ index 0000000..3fc7f32
 +
 +}  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_vk.cpp b/runtime/src/nvn/nvn_vk.cpp
-index fac2914..5d0842f 100644
+index fac2914..983c217 100644
 --- a/runtime/src/nvn/nvn_vk.cpp
 +++ b/runtime/src/nvn/nvn_vk.cpp
 @@ -237,7 +237,11 @@ bool init() {
@@ -7628,7 +8922,16 @@ index fac2914..5d0842f 100644
      g_timing = {};
  }
  
-@@ -695,6 +700,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
+@@ -552,6 +557,8 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
+     // Pipelined: the part up to the last dispatch is queued as soon as it is recorded (nvn_frames.cpp). Not with the
+     // profile or the zero-draw queries: they span the submit, which is then waited for whole.
+     size_t split_after = gpu_profile_on() || zero_draws_on() ? SIZE_MAX : frame_plan_split(lists);
++    // Big passes on the replay workers (nvn_parallel.cpp), unless compute results are read back within the submit.
++    replay::parallel_begin_submit(!gpu_profile_on() && !zero_draws_on() && submit_dispatches(lists) == 0);
+     uint64_t t0 = plat::monotonic_ns();
+     const FrameTimes f0 = frame_times();
+     Targets st;
+@@ -695,6 +702,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
      pi.pImageIndices = &index;
      r = p_vkQueuePresentKHR(g_queue, &pi);
      plat::frame_presented();  // cores, CPU time, present intervals (frame_stats.cpp)
@@ -7641,7 +8944,7 @@ index fac2914..5d0842f 100644
      // the swapchain's transform is not the display's (a Galaxy S23 did for Hades), a rebuild per frame.
      bool remake = r == VK_ERROR_OUT_OF_DATE_KHR;
 diff --git a/runtime/src/nvn/nvn_vk.h b/runtime/src/nvn/nvn_vk.h
-index b899dbd..e87cbf6 100644
+index b899dbd..46f64a3 100644
 --- a/runtime/src/nvn/nvn_vk.h
 +++ b/runtime/src/nvn/nvn_vk.h
 @@ -32,6 +32,14 @@ struct GpuImage {
@@ -7737,6 +9040,24 @@ index b899dbd..e87cbf6 100644
  
  // nvn_debug.cpp: GPU time per render pass (NX_GPU_PROFILE=1).
  bool gpu_profile_on();  // NX_GPU_PROFILE=1: per-pass labels, every submit waited for (nvn_debug.cpp)
+@@ -259,6 +296,17 @@ void dedup_reset();  // nvn_dedup.cpp
+ bool written_separate();         // nvn_written.cpp (nvn_draw_state.h)
+ uint64_t written_bind_count();   // nvn_written.cpp: written_bind calls so far (a dispatch bound storage it writes)
+ void trace_nan_write_back(const uint8_t* from, const uint8_t* to, uint64_t size);  // nvn_draw_trace.cpp
++// nvn_parallel.cpp: the threads that record a big pass's draws next to the replay thread (NX_PARALLEL).
++constexpr int kMaxReplayWorkers = 6;
++int parallel_worker();  // this thread's worker number, -1 on every other thread
++// gpu_submit: whether this submit's passes may be recorded in parallel (no dispatches, no profile).
++void parallel_begin_submit(bool allowed);
+ }
+ 
++// nvn_frames.cpp, for the replay workers: a secondary command buffer of the current submit's slot for `worker`, freed
++// with the slot (its own command pool there, as its descriptor pool and its stretches of the upload ring).
++VkCommandBuffer frame_secondary(int worker);
++// DispatchCompute commands in a submit's lists (the lists they call included).
++uint32_t submit_dispatches(const std::vector<std::shared_ptr<CmdList>>& lists);
++
+ }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_worker.cpp b/runtime/src/nvn/nvn_worker.cpp
 index c932bc8..69dae15 100644
 --- a/runtime/src/nvn/nvn_worker.cpp
@@ -7843,7 +9164,7 @@ index c932bc8..69dae15 100644
  
  uint64_t worker_last() {
 diff --git a/runtime/src/nvn/nvn_written.cpp b/runtime/src/nvn/nvn_written.cpp
-index acb66da..c2091c1 100644
+index acb66da..c86844c 100644
 --- a/runtime/src/nvn/nvn_written.cpp
 +++ b/runtime/src/nvn/nvn_written.cpp
 @@ -149,9 +149,48 @@ Upload written_bind(VkCommandBuffer cb, const uint8_t* p, uint64_t size, uint64_
@@ -7909,7 +9230,7 @@ index acb66da..c2091c1 100644
  }
  
  bool written_indirect(VkCommandBuffer cb, const uint8_t* p) {
-@@ -197,7 +239,16 @@ bool draw_inputs(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const C
+@@ -197,7 +239,17 @@ bool draw_inputs(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const C
          const Range& r = g_state.vertex_buffers[s];
          const uint8_t* p = r.address ? guest_bytes(r.address) : nullptr;
          uint64_t size = p ? std::min<uint64_t>(r.size, 64ull << 20) : 0;
@@ -7923,11 +9244,12 @@ index acb66da..c2091c1 100644
 +        const uint64_t before = dedup_copied_bytes();
 +        in.vertex[s] = read_upload(cb, p, size, padded, 16);
 +        g_upload_kind = 0;
-+        if (uint64_t copied = dedup_copied_bytes() - before) g_vertex_by_pool[pool ? pool->flags & 7 : 0] += copied;
++        if (uint64_t copied = dedup_copied_bytes() - before)
++            upload_stats().vertex_by_pool[pool ? pool->flags & 7 : 0] += copied;
      }
      if (!indexed) return true;
      uint32_t count = uint32_t(c.i[0]);
-@@ -270,6 +321,7 @@ void check_vertex_ranges(const ShaderInfo* vs, const ShaderInfo* fs, bool indexe
+@@ -270,6 +322,7 @@ void check_vertex_ranges(const ShaderInfo* vs, const ShaderInfo* fs, bool indexe
  }
  
  void written_cpu_write(const uint8_t* p, uint64_t size) {
@@ -7935,7 +9257,7 @@ index acb66da..c2091c1 100644
      // UpdateUniformBuffer / ReportCounter into a range a dispatch of this submit writes: the copy misses the bytes
      // (they reach guest memory at replay time) and the write-back replaces them. Not handled: logged.
      static int logs = 0;
-@@ -304,6 +356,7 @@ namespace nx::nvn {
+@@ -304,6 +357,7 @@ namespace nx::nvn {
  // exploded into beams and a band of stretched triangles at the horizon, for the rest of the run (DEBUG.md #56). Only
  // the words the GPU changed go back. NX_WRITE_BACK_WHOLE=1: the old whole-range copy.
  void apply_write_back(const WriteBack& w) {
@@ -7943,7 +9265,7 @@ index acb66da..c2091c1 100644
      static const bool whole = std::getenv("NX_WRITE_BACK_WHOLE") != nullptr;
      if (whole || !w.before || w.before->size() < w.size) {
          std::memcpy(w.to, w.from, w.size);
-@@ -311,6 +364,12 @@ void apply_write_back(const WriteBack& w) {
+@@ -311,6 +365,12 @@ void apply_write_back(const WriteBack& w) {
      }
      const uint8_t* was = w.before->data();
      uint64_t k = 0;
@@ -8682,7 +10004,7 @@ index 0000000..6150a87
 +------------------------------------------------------------------------------
 +*/
 diff --git a/runtime/src/platform.h b/runtime/src/platform.h
-index fa4ac38..26a33d2 100644
+index fa4ac38..5f176cc 100644
 --- a/runtime/src/platform.h
 +++ b/runtime/src/platform.h
 @@ -40,6 +40,9 @@ bool make_dirs(const std::string& path);
@@ -8710,12 +10032,13 @@ index fa4ac38..26a33d2 100644
  // Touch controls to draw over the picture (touch_layout.cpp, platform_android_input.cpp): circles at x, y (0..1
  // across the landscape screen), radius r (a fraction of its height), opacity alpha. 0 where nothing is drawn.
  struct OverlayShape {
-@@ -82,6 +93,13 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
+@@ -82,6 +93,14 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
  // role 0: the thread that replays and presents (frame_presented ticks it); 1: the game's main thread.
  void frame_thread_tick(int role);
  void frame_presented();  // after each present to the display
 +// Placement on the host's cores (platform_ps4.cpp; nothing elsewhere): the guest thread on host thread `host_tid`
-+// runs on guest core `core` now (svcCreateThread, svcSetThreadCoreMask); the calling thread has frame role `role`.
++// runs on guest core `core` now (svcCreateThread, svcSetThreadCoreMask); the calling thread has frame role `role`
++// (0 the replay thread, 1 the game's presenting thread, 2 a replay worker, nvn_parallel.cpp).
 +void set_guest_core(int64_t host_tid, int core);
 +void place_frame_thread(int role);
 +// Makes [addr, addr + size) of committed guest memory present, so the OS kernel can write there (platform_ps4.cpp
@@ -8726,10 +10049,10 @@ index fa4ac38..26a33d2 100644
  bool write_watch_add(uint64_t addr, uint64_t size);
 diff --git a/runtime/src/platform_ps4.cpp b/runtime/src/platform_ps4.cpp
 new file mode 100644
-index 0000000..a615673
+index 0000000..abf439b
 --- /dev/null
 +++ b/runtime/src/platform_ps4.cpp
-@@ -0,0 +1,1110 @@
+@@ -0,0 +1,1115 @@
 +// PS4 host (jailbroken, homebrew; SMW): guest memory on direct memory mapped on first touch, pthreads placed on the
 +// console's cores, VideoOut + RADV for Vulkan (ps4/ps4_vk_wsi.cpp), ScePad, sceAudioOut, and main.
 +//
@@ -9317,6 +10640,11 @@ index 0000000..a615673
 +}
 +
 +void place_frame_thread(int role) {
++    if (role == 2) {  // a replay worker (nvn_parallel.cpp): every core but the replay thread's, as high as it
++        ps4_set_affinity(ps4_pthread_self(), g_app_cores & ~(1ull << kCoreReplay));
++        ps4_boost_thread();
++        return;
++    }
 +    // /data/SMW/profile.txt: these two are the threads worth sampling (port/ps4_sampler.cpp, samples.log)
 +    if (profile_requested()) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
 +    Known* k = known(ps4_thread_id());
@@ -10247,10 +11575,10 @@ index 0000000..3959be4
 +}  // namespace nx::plat::ps4
 diff --git a/runtime/src/ps4/ps4_menu.cpp b/runtime/src/ps4/ps4_menu.cpp
 new file mode 100644
-index 0000000..b9534e0
+index 0000000..4bb8ecc
 --- /dev/null
 +++ b/runtime/src/ps4/ps4_menu.cpp
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,581 @@
 +// PS4 quick menu: see ps4_menu.h. Drawn by the CPU into the boot screen's write-combined VideoOut buffers: each gets
 +// the dimmed frame once, then only the panel is composed (in a host buffer, since write-combined memory is slow to
 +// read) and copied out. Text: /app0/boot/menu_font.bin (plain glyphs, coloured here, with a drop shadow); the title
@@ -10339,6 +11667,7 @@ index 0000000..b9534e0
 +    bool fsr = true;
 +    float sharp = 0.2f;     // FSR stops: 0 sharpest, 2 none
 +    int cores = 0;          // kCores
++    bool parallel = true;   // NX_PARALLEL: big passes recorded by replay workers (nvn_parallel.cpp)
 +    int counter = 0;        // kCounter
 +    int map[kNxCount];      // kDs4 index per Switch button, -1 none
 +};
@@ -10404,7 +11733,7 @@ index 0000000..b9534e0
 +// config.txt with the menu's keys replaced (other lines, comments included, stay as they are).
 +void save() {
 +    static const char* const kOwned[] = {"NX_RENDER_RES", "NX_HANDHELD", "NX_FSR", "NX_FSR_SHARP", "NX_PS4_CORES",
-+                                         "NX_PS4_MAP", "NX_PS4_FPS"};
++                                         "NX_PS4_MAP", "NX_PS4_FPS", "NX_PARALLEL"};
 +    std::vector<std::string> lines;
 +    if (FILE* f = std::fopen(kConfig, "r")) {
 +        char buf[512];
@@ -10427,6 +11756,7 @@ index 0000000..b9534e0
 +    lines.push_back(std::string("NX_FSR=") + (g_set.fsr ? "1" : "0"));
 +    lines.push_back(std::string("NX_FSR_SHARP=") + sharp);
 +    lines.push_back(std::string("NX_PS4_CORES=") + kCores[g_set.cores]);
++    lines.push_back(std::string("NX_PARALLEL=") + (g_set.parallel ? "1" : "0"));
 +    lines.push_back("NX_PS4_FPS=" + std::to_string(g_set.counter));
 +    lines.push_back("NX_PS4_MAP=" + map_string(g_set.map));
 +    std::string tmp = std::string(kConfig) + ".tmp";
@@ -10434,8 +11764,8 @@ index 0000000..b9534e0
 +        for (const std::string& l : lines) std::fprintf(f, "%s\n", l.c_str());
 +        if (std::fclose(f) == 0) std::rename(tmp.c_str(), kConfig);
 +    }
-+    log("menu: settings saved (%s, FSR %s %.1f, cores %s, counter %d)", r.label, g_set.fsr ? "on" : "off",
-+        double(g_set.sharp), kCores[g_set.cores], g_set.counter);
++    log("menu: settings saved (%s, FSR %s %.1f, cores %s, parallel draws %s, counter %d)", r.label,
++        g_set.fsr ? "on" : "off", double(g_set.sharp), kCores[g_set.cores], g_set.parallel ? "on" : "off", g_set.counter);
 +}
 +
 +// ---- drawing --------------------------------------------------------------------------------------------------------
@@ -10600,6 +11930,7 @@ index 0000000..b9534e0
 +                {"FSR sharpness (0 = sharpest)", sharp},
 +                {"Frame counter", kCounter[g_set.counter]},
 +                {"CPU cores", kCores[g_set.cores], true},
++                {"Parallel draws", g_set.parallel ? "On" : "Off", true},
 +                {"Controls", ">"},
 +                {"Capture a diagnostics frame", ""},
 +                {"Restart the game now", ""}};
@@ -10619,9 +11950,10 @@ index 0000000..b9534e0
 +                break;
 +            case 4: if (dx) g_set.counter = (g_set.counter + 3 + dx) % 3; break;
 +            case 5: if (dx) g_set.cores = (g_set.cores + 3 + dx) % 3; break;
-+            case 6: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
-+            case 7: if (ok) m.diag = m.done = true; break;
-+            case 8: if (ok) m.restart = m.done = true; break;
++            case 6: if (dx) g_set.parallel = !g_set.parallel; break;
++            case 7: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
++            case 8: if (ok) m.diag = m.done = true; break;
++            case 9: if (ok) m.restart = m.done = true; break;
 +        }
 +        if (in.pressed & ORBIS_PAD_BUTTON_CIRCLE) m.done = true;
 +        const uint32_t both = ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3;
@@ -10703,6 +12035,8 @@ index 0000000..b9534e0
 +        for (int k = 0; k < 3; k++)
 +            if (std::strcmp(kCores[k], c) == 0) g_set.cores = k;
 +    if (const char* c = std::getenv("NX_PS4_FPS")) g_set.counter = std::clamp(std::atoi(c), 0, 2);
++    const char* par = std::getenv("NX_PARALLEL");
++    g_set.parallel = par && par[0] == '1';
 +    if (const char* m = std::getenv("NX_PS4_MAP")) parse_map(m, g_set.map);
 +    publish();
 +}
