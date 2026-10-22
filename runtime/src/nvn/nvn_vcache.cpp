@@ -131,9 +131,13 @@ void drain() {
     }
 }
 
+// The replay workers recording parallel passes (nvn_parallel.cpp) bind vertex data too.
+std::mutex g_bind_lock;
+
 }  // namespace
 
 bool vcache_bind(const uint8_t* p, uint64_t size, uint64_t padded, Upload& out) {
+    std::lock_guard lk(g_bind_lock);
     if (!enabled() || !p || !size || g_reset_pending || !make_arena()) return false;
     drain();
     static const bool check = std::getenv("NX_VERTEX_CACHE_CHECK") != nullptr;

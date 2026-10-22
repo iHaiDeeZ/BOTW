@@ -557,6 +557,8 @@ void gpu_submit(const std::vector<std::shared_ptr<CmdList>>& lists, std::shared_
     // Pipelined: the part up to the last dispatch is queued as soon as it is recorded (nvn_frames.cpp). Not with the
     // profile or the zero-draw queries: they span the submit, which is then waited for whole.
     size_t split_after = gpu_profile_on() || zero_draws_on() ? SIZE_MAX : frame_plan_split(lists);
+    // Big passes on the replay workers (nvn_parallel.cpp), unless compute results are read back within the submit.
+    replay::parallel_begin_submit(!gpu_profile_on() && !zero_draws_on() && submit_dispatches(lists) == 0);
     uint64_t t0 = plat::monotonic_ns();
     const FrameTimes f0 = frame_times();
     Targets st;

@@ -3,10 +3,13 @@
 // shared inputs. The replay's CPU shortcuts of docs/nvn/PERF-PLAN.md live here and in nvn_draw.cpp; NX_DRAW_SLOW
 // turns them off (draw_slow, nvn_draw_state.h). Everything here runs under the GPU lock, one draw at a time.
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "nvn_draw_state.h"
 
@@ -158,7 +161,7 @@ constexpr uint32_t kHandleSlots = 2048;  // a course frame names a few hundred h
 HandleSlot g_handle_slots[kHandleSlots];
 uint64_t g_handle_generation = 1, g_handle_mark = 0;
 uint32_t g_handle_used = 0;
-uint64_t g_handle_hits = 0, g_handle_misses = 0, g_sets_skipped = 0;
+uint64_t g_handle_hits = 0, g_handle_misses = 0;
 
 void handles_reset() { g_handle_generation++, g_handle_used = 0; }
 
@@ -202,17 +205,21 @@ struct ConstantsBlock {
     std::array<uint8_t, 0x1000> bytes;
 };
 constexpr size_t kBlocks = 32;  // more distinct ones in a submit: copied per draw, as before
-std::vector<std::unique_ptr<SupportBlock>> g_support;
-std::vector<std::unique_ptr<ConstantsBlock>> g_constants;
-size_t g_support_used = 0, g_constants_used = 0;
+struct Blocks {  // a thread's (its SetsCtx, below)
+    std::vector<std::unique_ptr<SupportBlock>> support;
+    std::vector<std::unique_ptr<ConstantsBlock>> constants;
+    size_t support_used = 0, constants_used = 0;
+};
+Blocks& blocks();
 
 const SupportBuffer* support_block(float width, float height) {
-    for (size_t k = 0; k < g_support_used; k++)
-        if (std::memcmp(&g_support[k]->width, &width, 4) == 0 && std::memcmp(&g_support[k]->height, &height, 4) == 0)
-            return &g_support[k]->sb;
-    if (g_support_used == kBlocks) return nullptr;
-    if (g_support_used == g_support.size()) g_support.push_back(std::make_unique<SupportBlock>());
-    SupportBlock& b = *g_support[g_support_used++];
+    Blocks& g = blocks();
+    for (size_t k = 0; k < g.support_used; k++)
+        if (std::memcmp(&g.support[k]->width, &width, 4) == 0 && std::memcmp(&g.support[k]->height, &height, 4) == 0)
+            return &g.support[k]->sb;
+    if (g.support_used == kBlocks) return nullptr;
+    if (g.support_used == g.support.size()) g.support.push_back(std::make_unique<SupportBlock>());
+    SupportBlock& b = *g.support[g.support_used++];
     b.width = width, b.height = height;
     b.sb = support_buffer_defaults();
     support_buffer_set_viewport(b.sb, width, height);
@@ -223,12 +230,13 @@ const uint8_t* constants_block(ShaderStage stage, int st) {
     if (stage == ShaderStage::Compute) return nullptr;  // its table also lists the uniform blocks; a few per frame
     int hw = stage == ShaderStage::Fragment ? 4 : 0;
     const Range* key = g_state.storage[st];
-    for (size_t k = 0; k < g_constants_used; k++)
-        if (g_constants[k]->hw == hw && std::memcmp(g_constants[k]->storage, key, sizeof g_constants[k]->storage) == 0)
-            return g_constants[k]->bytes.data();
-    if (g_constants_used == kBlocks) return nullptr;
-    if (g_constants_used == g_constants.size()) g_constants.push_back(std::make_unique<ConstantsBlock>());
-    ConstantsBlock& b = *g_constants[g_constants_used++];
+    Blocks& g = blocks();
+    for (size_t k = 0; k < g.constants_used; k++)
+        if (g.constants[k]->hw == hw && std::memcmp(g.constants[k]->storage, key, sizeof g.constants[k]->storage) == 0)
+            return g.constants[k]->bytes.data();
+    if (g.constants_used == kBlocks) return nullptr;
+    if (g.constants_used == g.constants.size()) g.constants.push_back(std::make_unique<ConstantsBlock>());
+    ConstantsBlock& b = *g.constants[g.constants_used++];
     b.hw = hw;
     std::memcpy(b.storage, key, sizeof b.storage);
     b.bytes = driver_constants(stage, st);
@@ -289,23 +297,6 @@ VkDescriptorBufferInfo buffer_of(VkCommandBuffer cb, const void* bytes, uint64_t
     return {u.buffer, u.offset, n};
 }
 
-// The sets being built: scratch kept from draw to draw (three vectors, one of them ~130 KB, were allocated per draw).
-struct SetWrite {  // one write of a set, as the set cache compares it
-    uint32_t binding = 0, type = 0;
-    uint64_t a = 0, b = 0, c = 0;  // buffer, offset, range; or view, sampler, layout
-};
-struct Descriptors {
-    VkDescriptorSet sets[4] = {};
-    std::vector<VkWriteDescriptorSet> writes;
-    std::vector<uint8_t> set_index;  // the set of each write (its dstSet is filled when the set is known)
-    std::vector<VkDescriptorBufferInfo> buffers;
-    std::vector<VkDescriptorImageInfo> images;
-    std::vector<SetWrite> key;  // scratch for the set cache
-    uint64_t dynamic = 0;              // set 0 bindings given a dynamic offset (ProgramLayout::dynamic)
-    uint32_t dynamic_offset[64] = {};  // their ring offsets, by binding
-};
-Descriptors g_sets;
-
 // The set cache (docs/nvn/android-perf/PLAN.md R3): a set with the same layout and the same writes as one made earlier
 // in this submit is that set. Every draw allocated and wrote up to four sets (~1,500 allocations and ~5,000 writes per
 // course frame), most of it driver time on Adreno; texture sets repeat across the draws of a material, and buffer sets
@@ -318,18 +309,50 @@ struct CachedSet {
     VkDescriptorSet set = VK_NULL_HANDLE;
 };
 constexpr uint32_t kSetSlots = 8192;
-CachedSet g_set_cache[kSetSlots];
-std::vector<SetWrite> g_set_arena;
-uint64_t g_set_generation = 1, g_set_hits = 0, g_set_misses = 0;
-uint32_t g_set_used = 0;
 
-bool set_cache_on() {
-    static const bool on = [] {
-        const char* e = std::getenv("NX_SET_CACHE");
-        return !(e && e[0] == '0') && !draw_slow(kSlowEmptySets);
+// A thread's set cache, support and constants blocks and scratch sets (kept from draw to draw: three vectors, one of
+// them ~130 KB, were allocated per draw): the replay thread's, or a worker's (sets_thread_init). They start over at
+// the thread's next use once the submit epoch moved on (sets_begin_submit).
+struct SetsCtx {
+    std::unique_ptr<CachedSet[]> cache{new CachedSet[kSetSlots]()};
+    std::vector<SetWrite> arena;
+    uint64_t generation = 1, epoch = 0;
+    uint32_t used = 0;
+    uint64_t hits = 0, misses = 0, skipped = 0;  // per log period
+    Blocks blocks;
+    Descriptors own;  // g_sets unless a job's is targeted (sets_target)
+};
+std::atomic<uint64_t> g_sets_epoch{1};
+std::mutex g_ctx_lock;
+std::vector<SetsCtx*> g_ctxs;  // every thread's, for the log
+
+SetsCtx& walk_ctx() {  // the replay thread's (and any other thread's but the workers')
+    static SetsCtx* c = [] {
+        auto* n = new SetsCtx;
+        std::lock_guard lk(g_ctx_lock);
+        g_ctxs.push_back(n);
+        return n;
     }();
-    return on;
+    return *c;
 }
+
+thread_local SetsCtx* t_sctx = nullptr;     // a worker's own
+thread_local Descriptors* t_sets = nullptr;  // a job's (sets_target)
+
+SetsCtx& sctx() {
+    SetsCtx& c = t_sctx ? *t_sctx : walk_ctx();
+    uint64_t e = g_sets_epoch.load(std::memory_order_relaxed);
+    if (c.epoch != e) {
+        c.generation++, c.used = 0, c.arena.clear();
+        c.blocks.support_used = c.blocks.constants_used = 0;
+        c.epoch = e;
+    }
+    return c;
+}
+
+Blocks& blocks() { return sctx().blocks; }
+
+#define g_sets (t_sets ? *t_sets : sctx().own)
 
 template <typename H>
 uint64_t handle_bits(H h) {
@@ -341,6 +364,7 @@ uint64_t handle_bits(H h) {
 // d.sets from the cache or newly made, the writes of the cached ones dropped and the rest pointed at their new sets.
 void resolve_sets(const ProgramLayout& layout) {
     Descriptors& d = g_sets;
+    SetsCtx& sc = sctx();
     for (uint32_t k = 0; k < 4; k++) {
         d.key.clear();
         uint64_t h = handle_bits(layout.sets[k]) * 0x9E3779B97F4A7C15ull;
@@ -362,25 +386,25 @@ void resolve_sets(const ProgramLayout& layout) {
         if (d.key.empty()) continue;
         CachedSet* slot = nullptr;
         for (uint32_t probe = uint32_t(h >> 32);; probe++) {
-            CachedSet& c = g_set_cache[probe & (kSetSlots - 1)];
-            if (c.generation != g_set_generation) {
+            CachedSet& c = sc.cache[probe & (kSetSlots - 1)];
+            if (c.generation != sc.generation) {
                 slot = &c;
                 break;
             }
             if (c.hash == h && c.layout == layout.sets[k] && c.n == d.key.size() &&
-                std::memcmp(&g_set_arena[c.at], d.key.data(), d.key.size() * sizeof(SetWrite)) == 0) {
-                d.sets[k] = c.set, g_set_hits++;
+                std::memcmp(&sc.arena[c.at], d.key.data(), d.key.size() * sizeof(SetWrite)) == 0) {
+                d.sets[k] = c.set, sc.hits++;
                 break;
             }
         }
         if (d.sets[k]) continue;
-        d.sets[k] = descriptor_set(layout.sets[k]), g_set_misses++;
+        d.sets[k] = descriptor_set(layout.sets[k]), sc.misses++;
         for (size_t i = 0; i < d.writes.size(); i++)
             if (d.set_index[i] == k) d.writes[i].dstSet = d.sets[k];
-        if (!d.sets[k] || g_set_used >= kSetSlots / 2) continue;
-        *slot = {g_set_generation, h, layout.sets[k], uint32_t(g_set_arena.size()), uint32_t(d.key.size()), d.sets[k]};
-        g_set_arena.insert(g_set_arena.end(), d.key.begin(), d.key.end());
-        g_set_used++;
+        if (!d.sets[k] || sc.used >= kSetSlots / 2) continue;
+        *slot = {sc.generation, h, layout.sets[k], uint32_t(sc.arena.size()), uint32_t(d.key.size()), d.sets[k]};
+        sc.arena.insert(sc.arena.end(), d.key.begin(), d.key.end());
+        sc.used++;
     }
     size_t kept = 0;  // the writes of new sets only
     for (size_t i = 0; i < d.writes.size(); i++)
@@ -389,6 +413,14 @@ void resolve_sets(const ProgramLayout& layout) {
 }
 
 }  // namespace
+
+bool set_cache_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_SET_CACHE");
+        return !(e && e[0] == '0') && !draw_slow(kSlowEmptySets);
+    }();
+    return on;
+}
 
 std::vector<WriteBack>& separate_write_backs() { return g_write_backs; }
 
@@ -404,25 +436,38 @@ void texture_for(uint64_t handle, uint64_t& texture, SamplerInfo& sampler, ViewI
 // gather_textures left them), storage images (set 3). Records uploads and layout changes, so it runs outside render
 // passes when textures or images need them. A set is allocated when its first binding is written: the sets no stage
 // declares anything in (usually two of the four) are neither allocated nor bound.
-void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
+// The set of a write into set k: made (or found) in bind_sets with the set cache, now without it.
+static VkDescriptorSet set_for(Descriptors& d, const ProgramLayout& layout, uint32_t k) {
+    d.set_index.push_back(uint8_t(k));
+    if (set_cache_on()) return VK_NULL_HANDLE;
+    if (!d.sets[k]) d.sets[k] = descriptor_set(layout.sets[k]);
+    return d.sets[k];
+}
+
+void sets_target(Descriptors* d) { t_sets = d; }
+
+void begin_sets(const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
     Descriptors& d = g_sets;
     if (draw_slow(kSlowScratch))
         d = Descriptors{};
     else
         d.writes.clear(), d.set_index.clear(), d.buffers.clear(), d.images.clear();
     d.dynamic = 0;
-    const bool every_set = draw_slow(kSlowEmptySets), shared = !draw_slow(kSlowUploads), cached = set_cache_on();
+    const bool every_set = draw_slow(kSlowEmptySets);
     for (int k = 0; k < 4; k++) d.sets[k] = every_set ? descriptor_set(layout.sets[k]) : VK_NULL_HANDLE;
-    auto set_of = [&](uint32_t k) {  // with the set cache, made (or found) in bind_sets
-        d.set_index.push_back(uint8_t(k));
-        if (cached) return VkDescriptorSet(VK_NULL_HANDLE);
-        if (!d.sets[k]) d.sets[k] = descriptor_set(layout.sets[k]);
-        return d.sets[k];
-    };
+    // The writes keep pointers into the vectors: room for every binding of the stages (a write each at most), so they
+    // never move. The replay thread's scratch keeps its room from draw to draw.
+    size_t n = 64;
+    for (const ShaderInfo* s : shaders) n += s->refl.bindings.size();
+    d.buffers.reserve(n), d.images.reserve(n), d.writes.reserve(n);
+}
+
+void build_buffers(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
+    Descriptors& d = g_sets;
+    const bool shared = !draw_slow(kSlowUploads);
+    auto set_of = [&](uint32_t k) { return set_for(d, layout, k); };
     auto& writes = d.writes;
     auto& buffers = d.buffers;
-    auto& images = d.images;
-    buffers.reserve(1024), images.reserve(1024), writes.reserve(2048);  // pointers into them are kept
     float vw = g_state.has_viewport ? float(g_state.viewport[2]) : 1280.0f;
     float vh = g_state.has_viewport ? float(g_state.viewport[3]) : 720.0f;
     SupportBuffer sb;  // built when a binding gets a copy of its own
@@ -487,7 +532,7 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
                     if (uint64_t copied = dedup_copied_bytes() - copied_before) {
                         uint64_t off = 0;
                         MemoryPool* pool = r.address ? pool_at_gpu(r.address, &off) : nullptr;
-                        g_uniform_by_pool[pool ? pool->flags & 7 : 0] += copied;
+                        upload_stats().uniform_by_pool[pool ? pool->flags & 7 : 0] += copied;
                     }
                     break;
                 }
@@ -562,6 +607,13 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
             writes.push_back(w);
         }
     }
+}
+
+void build_images(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
+    Descriptors& d = g_sets;
+    auto set_of = [&](uint32_t k) { return set_for(d, layout, k); };
+    auto& writes = d.writes;
+    auto& images = d.images;
     const DrawTextures& t = g_textures;
     for (size_t k = 0; k < t.bindings.size(); k++) {
         auto [s, b] = t.bindings[k];
@@ -606,6 +658,12 @@ void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shader
     }
 }
 
+void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout) {
+    begin_sets(shaders, layout);
+    build_buffers(cb, shaders, layout);
+    build_images(cb, shaders, layout);
+}
+
 // A set with no binding in the layout is statically used by no shader, so nothing need be bound there: the runs of
 // sets build_sets allocated are bound, in ascending order (each bind leaves the lower sets, bound with this same
 // layout, undisturbed).
@@ -626,7 +684,7 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
     }
     for (uint32_t k = 0; k < 4;) {
         if (!d.sets[k]) {
-            k++, g_sets_skipped++;
+            k++, sctx().skipped++;
             continue;
         }
         uint32_t n = 1;
@@ -728,18 +786,32 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, 
 
 void sets_begin_submit() {
     handles_reset();
-    g_set_generation++, g_set_used = 0, g_set_arena.clear();
-    g_support_used = g_constants_used = 0;
+    g_sets_epoch.fetch_add(1, std::memory_order_relaxed);  // every thread's set cache and blocks, at its next use
 }
 
-void sets_log() {
-    if (g_handle_hits + g_handle_misses + g_sets_skipped)
+void sets_thread_init() {
+    if (t_sctx) return;
+    t_sctx = new SetsCtx;
+    std::lock_guard lk(g_ctx_lock);
+    g_ctxs.push_back(t_sctx);
+}
+
+void sets_log() {  // every thread's counts (the workers are idle between submits, when this runs)
+    uint64_t skipped = 0, hits = 0, misses = 0;
+    {
+        std::lock_guard lk(g_ctx_lock);
+        for (SetsCtx* c : g_ctxs) {
+            skipped += c->skipped, hits += c->hits, misses += c->misses;
+            c->skipped = c->hits = c->misses = 0;
+        }
+    }
+    if (g_handle_hits + g_handle_misses + skipped)
         log("nvn: texture handles: %llu from the submit's cache, %llu looked up; %llu empty descriptor sets skipped",
-            (unsigned long long)g_handle_hits, (unsigned long long)g_handle_misses, (unsigned long long)g_sets_skipped);
-    if (g_set_hits + g_set_misses)
-        log("nvn: descriptor sets: %llu reused from the submit's cache, %llu made", (unsigned long long)g_set_hits,
-            (unsigned long long)g_set_misses);
-    g_handle_hits = g_handle_misses = g_sets_skipped = g_set_hits = g_set_misses = 0;
+            (unsigned long long)g_handle_hits, (unsigned long long)g_handle_misses, (unsigned long long)skipped);
+    if (hits + misses)
+        log("nvn: descriptor sets: %llu reused from the submit's cache, %llu made", (unsigned long long)hits,
+            (unsigned long long)misses);
+    g_handle_hits = g_handle_misses = 0;
 }
 
 }  // namespace nx::nvn::replay

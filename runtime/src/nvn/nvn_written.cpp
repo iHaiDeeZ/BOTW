@@ -248,7 +248,8 @@ bool draw_inputs(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed, const C
         const uint64_t before = dedup_copied_bytes();
         in.vertex[s] = read_upload(cb, p, size, padded, 16);
         g_upload_kind = 0;
-        if (uint64_t copied = dedup_copied_bytes() - before) g_vertex_by_pool[pool ? pool->flags & 7 : 0] += copied;
+        if (uint64_t copied = dedup_copied_bytes() - before)
+            upload_stats().vertex_by_pool[pool ? pool->flags & 7 : 0] += copied;
     }
     if (!indexed) return true;
     uint32_t count = uint32_t(c.i[0]);

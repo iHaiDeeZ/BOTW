@@ -141,6 +141,7 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
                     (unsigned long long)g_stats.done, (unsigned long long)c.a[0], (unsigned long long)c.a[1],
                     (unsigned long long)off, b.size(), f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
             }
+            if (pass_parallel()) parallel_flush();  // the workers still to copy the bytes from before (nvn_parallel.cpp)
             if (c.blob < list.blobs.size())
                 if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0] + off))) {
                     std::memcpy(p, list.blobs[c.blob].data(), list.blobs[c.blob].size());
@@ -152,6 +153,7 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
         case Cmd::ReportCounter: {  // {value, timestamp}: the work before it is done when the replay gets here
             static uint64_t reports = 0, types_seen = 0;
             if (c.n < 64 && !(types_seen >> c.n & 1)) types_seen |= 1ull << c.n, log("nvn: first counter report of type %u", c.n);
+            if (pass_parallel()) parallel_flush();  // as for UpdateUniformBuffer
             if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0]))) {
                 // NX_FAKE_GPU_TIME=1: every report of a submit carries the submit's start (a GPU with no cost):
                 // the game picks its present interval from the timings it measures (bisecting its 30 fps mode).

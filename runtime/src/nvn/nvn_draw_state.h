@@ -47,7 +47,13 @@ struct Stats {
     uint64_t breaks_textures = 0, breaks_targets = 0;  // render passes ended by a draw: uploads/layouts, new targets
 };
 
-extern State g_state;
+// The bound state the replay code reads: the walk's (g_walk_state, which the state commands change) on the replay
+// thread, a draw's copy on a worker recording a parallel pass (nvn_parallel.cpp). g_state is that state.
+extern State g_walk_state;
+// Inline and constant-initialized, as t_replay_mark (nvn.h): an extern thread_local would be reached through a TLS
+// init function the PS4 loader cannot resolve (create-fself: "missing module for symbol _ZTH...").
+inline thread_local State* t_state = &g_walk_state;
+#define g_state (*::nx::nvn::replay::t_state)
 extern Stats g_stats;
 
 const uint8_t* guest_bytes(uint64_t gpu);
@@ -83,14 +89,17 @@ namespace nx::nvn::replay {
 Upload dedup_upload(const uint8_t* p, uint64_t size, uint64_t padded, uint64_t align);
 // What the next uploads are for (dedup_log counts the bytes copied per kind): 0 other, 1 vertex, 2 index, 3 uniform,
 // 4 storage.
-extern int g_upload_kind;
+inline thread_local int g_upload_kind = 0;
 // The next upload may be served by a longer copy of the same address (its first bytes): set around a uniform bind
 // shortened to what the shader reads (nvn_sets.cpp), whose tail nothing reads.
-extern bool g_upload_prefix_ok;
-uint64_t dedup_copied_bytes();
-extern uint64_t g_vertex_by_pool[8], g_uniform_by_pool[8];
+inline thread_local bool g_upload_prefix_ok = false;
+uint64_t dedup_copied_bytes();  // this thread's
+struct UploadStats {
+    uint64_t vertex_by_pool[8] = {}, uniform_by_pool[8] = {};  // bytes copied, by pool flags & 7
+};
+UploadStats& upload_stats();  // this thread's (dedup_log sums them)
 void dedup_reset();                                     // at each submit
-void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay
+void dedup_invalidate(const uint8_t* p, uint64_t size);  // guest bytes written during the replay (every thread's copies)
 void dedup_log();
 // nvn_written.cpp: compute results within a submit (docs/nvn/GLITCH-PLAN.md G5), one copy per written guest range.
 bool written_separate();  // NX_COMPUTE_SEPARATE=1: a copy per binding, as before
@@ -142,6 +151,34 @@ extern DrawTextures g_textures;  // filled by gather_textures, read by build_set
 // kTexturesPending: a texture is being decoded in the background (astc_pending): the draw is skipped this time.
 enum : uint32_t { kNeedBreak = 1, kSampledPending = 2, kTexturesPending = 4 };
 uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may_defer = false);
+
+// The sets being built for a draw: scratch kept from draw to draw, or a parallel pass's job's own.
+struct SetWrite {  // one write of a set, as the set cache compares it
+    uint32_t binding = 0, type = 0;
+    uint64_t a = 0, b = 0, c = 0;  // buffer, offset, range; or view, sampler, layout
+};
+struct Descriptors {
+    VkDescriptorSet sets[4] = {};
+    std::vector<VkWriteDescriptorSet> writes;
+    std::vector<uint8_t> set_index;  // the set of each write (its dstSet is filled when the set is known)
+    std::vector<VkDescriptorBufferInfo> buffers;
+    std::vector<VkDescriptorImageInfo> images;
+    std::vector<SetWrite> key;  // scratch for the set cache
+    uint64_t dynamic = 0;              // set 0 bindings given a dynamic offset (ProgramLayout::dynamic)
+    uint32_t dynamic_offset[64] = {};  // their ring offsets, by binding
+};
+// build_sets in its parts, for parallel passes: the walk makes a job's image descriptors (sets 2 and 3: what textures
+// sample, with their uploads and layouts), the worker its buffer descriptors (sets 0 and 1: the guest bytes copied)
+// and binds the sets. g_sets is `d` from sets_target(&d) on, this thread's own after sets_target(nullptr).
+void sets_target(Descriptors* d);
+void begin_sets(const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
+void build_buffers(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
+void build_images(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
+bool set_cache_on();
+// The set caches, dedup copies and draw state of the calling worker: its own, from its first job on.
+void sets_thread_init();
+void dedup_thread_init();
+void draw_thread_init();
 // nvn_upload.cpp: true while `texture`'s ASTC texels are decoded in the background, which this starts when the draw
 // may wait (may_defer); false when the upload can go ahead (it waits for a decode under way itself).
 bool astc_pending(uint64_t texture, bool may_defer);
@@ -179,4 +216,48 @@ void trace_compute_once(const ShaderInfo* cs, uint32_t x, uint32_t y, uint32_t z
 // NX_TRACE_SKIN: skinned draws' inputs, vertex uniform blocks and the bone rows they select.
 void trace_skin(bool indexed, const Cmd& c, const ShaderInfo* vs, const ShaderInfo* fs);
 
+// A draw (or a clear inside the pass) of a pass recorded by the workers (nvn_parallel.cpp): what the walk resolved
+// for it (its bound state, its image descriptors, the pipeline, viewport and scissor) and what a worker then does with
+// it (draw_job, nvn_draw.cpp): its buffer descriptors and inputs copied, binds and the draw call.
+struct DrawJob {
+    bool clear = false;  // vkCmdClearAttachments with `attachment` and `rect` instead of a draw
+    VkClearAttachment attachment{};
+    VkClearRect rect{};
+    State state;
+    Descriptors d;
+    const std::vector<const ShaderInfo*>* shaders = nullptr;
+    const ProgramLayout* layout = nullptr;
+    const ShaderInfo* vs = nullptr;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    Cmd cmd;
+    bool indexed = false;
+    VkViewport vp{};
+    VkRect2D sc{};
+};
+void draw_job(DrawJob& j, VkCommandBuffer cb);  // nvn_draw.cpp, on a worker
+
+// nvn_parallel.cpp. The open parallel pass's attachment formats (its secondary command buffers inherit them).
+struct PassFormats {
+    uint32_t color_count = 0;
+    VkFormat colors[8] = {};
+    VkFormat depth = VK_FORMAT_UNDEFINED, stencil = VK_FORMAT_UNDEFINED;
+};
+bool parallel_on();  // NX_PARALLEL=1, for this submit, with the workers started (on the first call)
+DrawJob& parallel_job();  // the next job of the open parallel pass, to fill and then push (or not: the next call)
+void parallel_pass_begin(const PassFormats& f);
+void parallel_push(DrawJob& j);
+// What was pushed is recorded: before the walk writes guest memory the workers may still read (UpdateUniformBuffer,
+// ReportCounter).
+void parallel_flush();
+void parallel_pass_end(VkCommandBuffer cb);  // the pass's secondary command buffers executed into `cb`, in order
+void parallel_log();
+
 }  // namespace nx::nvn::replay
+
+namespace nx::nvn {
+bool pass_parallel();  // nvn_draw.cpp: the open pass is recorded by the workers
+// A clear inside the open pass: into the workers' stream when it is a parallel one (nvn_clears.cpp).
+void pass_clear_attachment(VkCommandBuffer cb, const VkClearAttachment& a, const VkClearRect& r);
+// The open pass becomes one recorded here (a masked clear's fullscreen draw cannot go to the workers).
+void pass_inline(VkCommandBuffer cb);
+}  // namespace nx::nvn

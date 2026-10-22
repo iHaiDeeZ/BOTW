@@ -203,7 +203,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     // NX_SKIP_CLEARS_AFTER_FS=<hash>[,<hash>...]: the clears that follow a draw with that fragment shader (before the
     // next draw) are skipped (bisecting what a clear wipes).
     // Rendering off (SetRenderEnable(false) or a false condition): clears are skipped too, as on the GPU.
-    if (!replay::g_state.render_enable) return;
+    if (!g_state.render_enable) return;
     static const char* skip_after = std::getenv("NX_SKIP_CLEARS_AFTER_FS");
     if (skip_after && replay::g_last_draw_fs && std::strstr(skip_after, replay::g_last_draw_fs->hash.c_str())) return;
     uint64_t guest = color ? (c.n < 8 ? t.colors[c.n] : 0) : t.depth;
@@ -244,8 +244,8 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     static const bool no_mask = std::getenv("NX_CLEARS_NO_MASK") != nullptr;
     // The part of the target the clear covers: the scissor (pass coordinates, as the draws') within the target.
     VkRect2D rect{{0, 0}, full};
-    if (!no_scissor && replay::g_state.has_scissor) {
-        const int32_t* s = replay::g_state.scissor;
+    if (!no_scissor && g_state.has_scissor) {
+        const int32_t* s = g_state.scissor;
         int64_t x0 = std::max(0, s[0]), y0 = std::max(0, s[1]);
         int64_t x1 = std::min<int64_t>(int64_t(s[0]) + std::max(0, s[2]), full.width);
         int64_t y1 = std::min<int64_t>(int64_t(s[1]) + std::max(0, s[3]), full.height);
@@ -295,6 +295,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
             p_vkCmdClearDepthStencilImage(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &a.clearValue.depthStencil, 1, &r);
         return;
     }
+    if (masked) pass_inline(cb);  // a fullscreen draw of its own: not into the workers' command buffers
     if (masked && mask_clear(cb, t, c.n, c.mask & 0xF, c.f, rect)) {
         pass_mark_written(1u << c.n);
         return;
@@ -302,8 +303,8 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     g_mask_fallback += masked;
     VkClearRect r{rect, 0, 1};  // unscissored: all of the target, which is the pass's area
     replay::trace_pass("clear in pass: slot, mask | bound channel mask << 8", t, color ? c.n : 8,
-                       c.mask | (color ? uint32_t(replay::g_state.mask.mask[c.n]) << 8 : 0));
-    p_vkCmdClearAttachments(cb, 1, &a, 1, &r);
+                       c.mask | (color ? uint32_t(g_state.mask.mask[c.n]) << 8 : 0));
+    pass_clear_attachment(cb, a, r);  // the workers' stream in a parallel pass
     pass_mark_written(color ? 1u << c.n : 1u << 8);  // a later draw sampling it needs a fresh pass
 }
 
@@ -348,7 +349,7 @@ void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list)
                 img ? "not a colour texture" : "unknown texture");
         return;
     }
-    if (!replay::g_state.render_enable || !(c.mask & 0xF)) return;
+    if (!g_state.render_enable || !(c.mask & 0xF)) return;
     const int32_t* r = info.region;
     uint32_t level = std::min(info.view.base_level, img->levels - 1);
     VkExtent2D full{std::max(1u, img->width >> level), std::max(1u, img->height >> level)};
@@ -382,6 +383,7 @@ void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list)
         int64_t x1 = std::min<int64_t>(int64_t(r[0]) + r[3], pe.width), y1 = std::min<int64_t>(int64_t(r[1]) + r[4], pe.height);
         if (x1 <= x0 || y1 <= y0) continue;
         VkRect2D rect{{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+        if (clear.mask != 0xF) pass_inline(cb);
         if (clear.mask != 0xF && mask_clear(cb, t, 0, clear.mask, clear.f, rect)) {
             pass_mark_written(1);
             continue;
@@ -390,7 +392,7 @@ void replay_clear_texture(VkCommandBuffer cb, const Cmd& c, const CmdList& list)
         a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = 0;
         std::memcpy(a.clearValue.color.float32, clear.f, 16);
         VkClearRect cr{rect, 0, 1};
-        p_vkCmdClearAttachments(cb, 1, &a, 1, &cr);
+        pass_clear_attachment(cb, a, cr);
         pass_mark_written(1);
     }
 }

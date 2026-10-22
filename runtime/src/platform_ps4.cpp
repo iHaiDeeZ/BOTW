@@ -585,6 +585,11 @@ bool profile_requested() {
 }
 
 void place_frame_thread(int role) {
+    if (role == 2) {  // a replay worker (nvn_parallel.cpp): every core but the replay thread's, as high as it
+        ps4_set_affinity(ps4_pthread_self(), g_app_cores & ~(1ull << kCoreReplay));
+        ps4_boost_thread();
+        return;
+    }
     // /data/SMW/profile.txt: these two are the threads worth sampling (port/ps4_sampler.cpp, samples.log)
     if (profile_requested()) ps4_sampler_register_thread(role == 0 ? "replay" : "game main");
     Known* k = known(ps4_thread_id());

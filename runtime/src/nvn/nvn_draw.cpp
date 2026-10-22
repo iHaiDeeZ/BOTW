@@ -5,11 +5,13 @@
 // before any transfer.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <cstring>
 #include <set>
+#include <unordered_map>
 
 #include "nvn_draw_state.h"
 #include "platform.h"
@@ -21,7 +23,7 @@ using namespace nx::vk;
 // The replay state shared with nvn_draw_trace.cpp (nvn_draw_state.h).
 namespace replay {
 
-State g_state;
+State g_walk_state;
 Stats g_stats;
 
 const uint8_t* guest_bytes(uint64_t gpu) {
@@ -62,6 +64,20 @@ uint32_t g_pass_written = 0;  // targets the open pass's draws wrote: bit c colo
 uint64_t g_pass_ends[8];  // passes ended, by draw_end_rendering reason
 uint64_t g_submit_ns = 0;  // when the submit being replayed started
 VkExtent2D g_pass_extent{};
+bool g_pass_parallel = false;  // the open pass is recorded by the workers (nvn_parallel.cpp)
+uint32_t g_pass_draws = 0;     // draws into the open pass so far
+std::unordered_map<uint64_t, uint32_t> g_pass_history;  // the draws of the last pass on these targets (targets_key)
+
+uint64_t targets_key(const Targets& t) {  // targets_same's fields (the struct has padding)
+    uint64_t h = 14695981039346656037ull;
+    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    mix(t.color_count), mix(t.depth);
+    for (uint32_t k = 0; k < 9; k++) {
+        if (k < 8) mix(t.colors[k]);
+        mix(uint64_t(t.views.level[k]) | uint64_t(t.views.layer[k]) << 8 | uint64_t(t.views.format[k]) << 24);
+    }
+    return h;
+}
 
 // What this submit's command buffer already has bound and set. Vulkan keeps the pipeline, vertex and index buffers
 // and dynamic state of a command buffer across its dynamic-rendering passes, and most draws repeated what the draw
@@ -80,8 +96,13 @@ struct Bound {
     VkRect2D scissor{};
     float blend[4] = {};
     uint32_t raster[10] = {};  // raster_dynamic's inputs: stencil reference and masks per face, the depth bias
-} g_bound;
-uint64_t g_state_set = 0, g_state_kept = 0;  // state commands recorded and left out, for the log
+};
+Bound g_walk_bound;
+thread_local Bound* t_bound = &g_walk_bound;  // a worker's own (draw_thread_init), for its secondary command buffers
+#define g_bound (*t_bound)
+// State commands recorded and left out, for the log: each thread's; the workers add theirs up after each job.
+thread_local uint64_t g_state_set = 0, g_state_kept = 0;
+std::atomic<uint64_t> g_workers_set{0}, g_workers_kept{0};
 
 template <typename T>
 bool same_bytes(const T& a, const T& b) { return std::memcmp(&a, &b, sizeof(T)) == 0; }
@@ -118,7 +139,8 @@ void set_dynamic(VkCommandBuffer cb, const VkViewport& vp, const VkRect2D& sc) {
         raster_dynamic(cb, slack), std::memcpy(b.raster, raster, sizeof raster);  // (nvn_raster.cpp)
 }
 
-void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+// parallel: the pass's draws are recorded by the workers into secondary command buffers (nvn_parallel.cpp).
+void begin_rendering(VkCommandBuffer cb, const Targets& t, bool parallel = false) {
     if (clears_pending_other(t)) clears_flush(cb);  // other targets' clears first, in order
     // An image never written (layout UNDEFINED) has nothing to load: loadOp CLEAR to zero, not a LOAD of whatever
     // the memory held (G3, docs/nvn/DEBUG.md #50); a pending clear still wins (clears_apply). Env: bisecting.
@@ -188,6 +210,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
     VkRenderingAttachmentInfo stencil = depth;  // same view, its own loadOp
     uint32_t cleared = clears_apply(t, colors, depth, stencil);  // pending clears of these targets: loadOp CLEAR
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.flags = parallel ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0;
     ri.renderArea = {{0, 0}, extent};
     ri.layerCount = 1;
     ri.colorAttachmentCount = t.color_count;
@@ -203,6 +226,16 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
     else
         p_vkCmdBeginRendering(cb, &ri);
     g_rendering = true;
+    g_pass_parallel = parallel && !g_render_pass, g_pass_draws = 0;
+    if (g_pass_parallel) {  // what the workers' command buffers inherit
+        PassFormats f;
+        f.color_count = t.color_count;
+        for (uint32_t k = 0; k < t.color_count && k < 8; k++)
+            f.colors[k] = colors[k].imageView ? formats[k] : VK_FORMAT_UNDEFINED;
+        f.depth = ri.pDepthAttachment ? dimg->format : VK_FORMAT_UNDEFINED;
+        f.stencil = ri.pStencilAttachment ? dimg->format : VK_FORMAT_UNDEFINED;
+        parallel_pass_begin(f);
+    }
     g_pass_written = cleared | fresh;  // as a clear inside the pass: sampling it needs it stored first
     trace_pass("begin: cleared, fresh", t, cleared, fresh);
     g_pass = t;
@@ -301,6 +334,77 @@ struct PhaseClock {
 };
 }  // namespace
 
+// The pipeline of a draw into `t` (`tt`: the targets of its pass, the depth maybe left out).
+VkPipeline draw_pipeline(const Targets& t, const Targets& tt, uint32_t mode, const ShaderInfo* vs, const ShaderInfo* fs,
+                         const ProgramLayout& layout, bool may_defer) {
+    PipelineKey key;
+    std::memset(&key, 0, sizeof key);  // the key is compared byte for byte
+    key.vs = vs, key.fs = fs;
+    key.topology = mode;
+    key.attrib_count = uint32_t(std::min<size_t>(g_state.attribs.size(), 16));
+    std::copy_n(g_state.attribs.begin(), key.attrib_count, key.attribs);
+    key.stream_count = uint32_t(std::min<size_t>(g_state.streams.size(), 16));
+    std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
+    std::copy_n(g_state.blend, 8, key.blend);
+    key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
+    // NX_NO_DEPTH_TEST_FS=<hash>[,<hash>...]: those fragment shaders drawn without the depth test (bisecting).
+    static const char* no_depth_fs = std::getenv("NX_NO_DEPTH_TEST_FS");
+    if (no_depth_fs && fs && std::strstr(no_depth_fs, fs->hash.c_str())) key.depth.depth_test = 0;
+    key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
+    key.alpha_to_coverage = g_state.alpha_to_coverage;
+    for (uint32_t k = 0; k < t.color_count; k++) {
+        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+        key.color_formats[k] = img ? view_format(*img, t.views.format[k]) : unused_slot_format();
+        if (img && (img->nvn_format == 0x3f || t.views.format[k] == 0x3f)) key.ufloat_colors |= 1u << k;  // G4
+    }
+    GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
+    key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
+    return graphics_pipeline(key, layout, may_defer);
+}
+
+// The viewport and scissor of a draw: the bound ones, else the pass's extent.
+void draw_viewport(VkViewport& vp, VkRect2D& sc) {
+    vp = {0, 0, float(g_pass_extent.width), float(g_pass_extent.height), 0, 1};
+    if (g_state.has_viewport)
+        vp = {float(g_state.viewport[0]), float(g_state.viewport[1]), float(g_state.viewport[2]),
+              float(g_state.viewport[3]), g_state.depth_near, g_state.depth_far};
+    // NVN's upper-left window origin (what Wonder sets) maps NDC +Y to the top of the render target, like D3D;
+    // Vulkan maps it to the bottom. A negative-height viewport gives NVN's mapping, and with it NVN's front faces.
+    // (Before this, the front face was inverted instead: triangles were culled right, but every render target was
+    // upside down, which the post chain undid in some scenes and not in others: the first course showed a
+    // mirrored sky.)
+    vp.y += vp.height, vp.height = -vp.height;
+    sc = {{0, 0}, g_pass_extent};
+    if (g_state.has_scissor)
+        sc = {{std::max(0, g_state.scissor[0]), std::max(0, g_state.scissor[1])},
+              {uint32_t(std::max(0, g_state.scissor[2])), uint32_t(std::max(0, g_state.scissor[3]))}};
+}
+
+// Whether a draw may go to the workers: not with the debug switches that read or change what a draw sees on this
+// thread (snapshots, dumps, skin and vertex traces, the probe fill), the storyboard or the GPU profile, with render
+// pass objects, without the set cache, nor for shaders that store into buffers (their write-backs are this thread's).
+bool parallel_draw_ok(const ShaderInfo* vs, const ShaderInfo* fs) {
+    static const bool debug = [] {
+        for (const char* e : {"NX_SNAP_FS", "NX_SNAP_FS_BEFORE", "NX_SNAP_DRAWS", "NX_SNAP_FOLLOW", "NX_DUMP_ON_TARGET",
+                              "NX_DUMP_ON_FS", "NX_TRACE_SKIN", "NX_CHECK_VERTS", "NX_PROBE_FILL"})
+            if (std::getenv(e)) return true;
+        return false;
+    }();
+    if (debug || render_pass_objects() || !set_cache_on() || draw_slow(~0u) || diag_active() || gpu_profile_on())
+        return false;
+    return !written_storage_bindings(vs) && !(fs && written_storage_bindings(fs));
+}
+
+// A pass goes to the workers when its targets had NX_PARALLEL_MIN draws (24) or more the last time.
+bool parallel_wanted(const Targets& t) {
+    static const uint32_t min_draws = [] {
+        const char* e = std::getenv("NX_PARALLEL_MIN");
+        return e ? uint32_t(std::max(1, std::atoi(e))) : 24u;
+    }();
+    auto it = g_pass_history.find(targets_key(t));
+    return it != g_pass_history.end() && it->second >= min_draws;
+}
+
 void phase_log(uint64_t frames) {
     if (!g_phase_draws || !frames) return;
     const double f = double(frames) * 1e6;
@@ -310,6 +414,43 @@ void phase_log(uint64_t frames) {
         g_phase_ns[kPhInputs] / f, g_phase_ns[kPhPass] / f, g_phase_ns[kPhPipeline] / f, g_phase_ns[kPhCommands] / f);
     for (uint64_t& n : g_phase_ns) n = 0;
     g_phase_draws = 0;
+}
+
+// A draw of a parallel pass: its image descriptors here (what textures sample needs its uploads and layouts done
+// outside the pass, which gather_textures ended for them), the pass begun, the pipeline; the rest on a worker
+// (draw_job).
+bool draw_parallel(VkCommandBuffer cb, const Targets& t, const Targets& tt, uint32_t mode, bool indexed, const Cmd& c,
+                   const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout, const ShaderInfo* vs,
+                   const ShaderInfo* fs, bool may_defer, PhaseClock& clock) {
+    DrawJob& j = parallel_job();
+    sets_target(&j.d);
+    begin_sets(shaders, layout);
+    build_images(cb, shaders, layout);
+    sets_target(nullptr);
+    clock.mark(kPhSets);
+    clock.mark(kPhInputs);
+    if (!g_rendering) begin_rendering(cb, tt, true);
+    clock.mark(kPhPass);
+    VkPipeline pipeline = draw_pipeline(t, tt, mode, vs, fs, layout, may_defer);
+    clock.mark(kPhPipeline);
+    if (!pipeline) {  // the job is not pushed: the next one takes its place
+        g_stats.no_pipeline++;
+        if (diag_active()) diag_line("  skipped draw (no pipeline) vs " + vs->hash + " fs " + (fs ? fs->hash : "-"));
+        return false;
+    }
+    j.clear = false;
+    j.state = g_state;
+    j.shaders = &shaders, j.layout = &layout, j.vs = vs, j.pipeline = pipeline;
+    j.cmd = c, j.indexed = indexed;
+    draw_viewport(j.vp, j.sc);
+    parallel_push(j);
+    g_stats.done++, g_pass_draws++;
+    clock.mark(kPhCommands);
+    g_phase_draws++;
+    g_last_draw_fs = fs;
+    g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
+    trace_draw(t, mode, indexed, c, vs, fs, g_textures.bindings, g_textures.handles);
+    return true;
 }
 
 bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
@@ -409,6 +550,13 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     }
 
     probe_fill(t, fs);  // NX_PROBE_FILL (nvn_draw_trace.cpp)
+    // A big pass goes to the workers (nvn_parallel.cpp).
+    bool parallel = g_rendering ? g_pass_parallel : parallel_on() && parallel_wanted(tt);
+    if (parallel && (shaders == &swapped || !parallel_draw_ok(vs, fs))) {
+        if (g_rendering) draw_end_rendering(cb, 1);  // this one is recorded here, in a pass of its own
+        parallel = false;
+    }
+    if (parallel) return draw_parallel(cb, t, tt, mode, indexed, c, *shaders, layout, vs, fs, may_defer, clock);
     build_sets(cb, *shaders, layout);
     clock.mark(kPhSets);
     // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
@@ -433,29 +581,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     clock.mark(kPhPass);
 
     // Pipeline.
-    PipelineKey key;
-    std::memset(&key, 0, sizeof key);  // the key is compared byte for byte
-    key.vs = vs, key.fs = fs;
-    key.topology = mode;
-    key.attrib_count = uint32_t(std::min<size_t>(g_state.attribs.size(), 16));
-    std::copy_n(g_state.attribs.begin(), key.attrib_count, key.attribs);
-    key.stream_count = uint32_t(std::min<size_t>(g_state.streams.size(), 16));
-    std::copy_n(g_state.streams.begin(), key.stream_count, key.streams);
-    std::copy_n(g_state.blend, 8, key.blend);
-    key.color = g_state.color, key.mask = g_state.mask, key.depth = g_state.depth, key.polygon = g_state.polygon;
-    // NX_NO_DEPTH_TEST_FS=<hash>[,<hash>...]: those fragment shaders drawn without the depth test (bisecting).
-    static const char* no_depth_fs = std::getenv("NX_NO_DEPTH_TEST_FS");
-    if (no_depth_fs && fs && std::strstr(no_depth_fs, fs->hash.c_str())) key.depth.depth_test = 0;
-    key.color_count = t.color_count, key.depth_clamp = g_state.depth_clamp;
-    key.alpha_to_coverage = g_state.alpha_to_coverage;
-    for (uint32_t k = 0; k < t.color_count; k++) {
-        GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
-        key.color_formats[k] = img ? view_format(*img, t.views.format[k]) : unused_slot_format();
-        if (img && (img->nvn_format == 0x3f || t.views.format[k] == 0x3f)) key.ufloat_colors |= 1u << k;  // G4
-    }
-    GpuImage* dimg = tt.depth ? image_of(tt.depth) : nullptr;
-    key.depth_format = dimg && dimg->aspect != VK_IMAGE_ASPECT_COLOR_BIT ? dimg->format : VK_FORMAT_UNDEFINED;
-    VkPipeline pipeline = graphics_pipeline(key, layout, may_defer);
+    VkPipeline pipeline = draw_pipeline(t, tt, mode, vs, fs, layout, may_defer);
     clock.mark(kPhPipeline);
     if (!pipeline) {
         g_stats.no_pipeline++;
@@ -476,20 +602,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         if (in.used >> s & 1) bind_vertex(cb, s, in.vertex[s]);
     bind_vertex(cb, 15, zero_stream());
 
-    VkViewport vp{0, 0, float(g_pass_extent.width), float(g_pass_extent.height), 0, 1};
-    if (g_state.has_viewport)
-        vp = {float(g_state.viewport[0]), float(g_state.viewport[1]), float(g_state.viewport[2]),
-              float(g_state.viewport[3]), g_state.depth_near, g_state.depth_far};
-    // NVN's upper-left window origin (what Wonder sets) maps NDC +Y to the top of the render target, like D3D;
-    // Vulkan maps it to the bottom. A negative-height viewport gives NVN's mapping, and with it NVN's front faces.
-    // (Before this, the front face was inverted instead: triangles were culled right, but every render target was
-    // upside down, which the post chain undid in some scenes and not in others: the first course showed a
-    // mirrored sky.)
-    vp.y += vp.height, vp.height = -vp.height;
-    VkRect2D sc{{0, 0}, g_pass_extent};
-    if (g_state.has_scissor)
-        sc = {{std::max(0, g_state.scissor[0]), std::max(0, g_state.scissor[1])},
-              {uint32_t(std::max(0, g_state.scissor[2])), uint32_t(std::max(0, g_state.scissor[3]))}};
+    VkViewport vp;
+    VkRect2D sc;
+    draw_viewport(vp, sc);
     set_dynamic(cb, vp, sc);
 
     trace_skin(indexed, c, vs, fs);
@@ -510,7 +625,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         p_vkCmdDraw(cb, uint32_t(c.i[1]), uint32_t(std::max(1, c.i[3])), uint32_t(c.i[0]), uint32_t(c.i[2]));
         if (q) zero_draws_end(cb);
     }
-    g_stats.done++;
+    g_stats.done++, g_pass_draws++;
     clock.mark(kPhCommands);
     g_phase_draws++;
     if (diag_active()) g_diag_draws++, g_diag_fs = fs ? fs->hash : vs->hash;
@@ -589,10 +704,12 @@ void draw_log_stats() {
     written_log();
     sampled_ready_log();
     sets_log();
-    if (g_state_set + g_state_kept)
-        log("nvn: draw state: %llu binds and sets recorded, %llu already in place", (unsigned long long)g_state_set,
-            (unsigned long long)g_state_kept);
+    const uint64_t set = g_state_set + g_workers_set.exchange(0), kept = g_state_kept + g_workers_kept.exchange(0);
+    if (set + kept)
+        log("nvn: draw state: %llu binds and sets recorded, %llu already in place", (unsigned long long)set,
+            (unsigned long long)kept);
     g_state_set = g_state_kept = 0;
+    parallel_log();
     clears_log();
     log("nvn passes ended: %llu submit end, %llu draw, %llu dispatch, %llu clear of other targets, %llu clear larger than "
         "the pass, %llu copy, %llu snapshot, %llu SetRenderTargets", (unsigned long long)g_pass_ends[0],
@@ -611,11 +728,18 @@ void draw_log_stats() {
 void pass_end_only(VkCommandBuffer cb, int reason) {
     if (!g_rendering) return;
     g_pass_ends[reason & 7]++, trace_pass("end: reason", g_pass, uint32_t(reason), 0);
+    if (g_pass_parallel) {  // the workers' secondary command buffers, in order (nvn_parallel.cpp)
+        parallel_pass_end(cb);
+        g_pass_parallel = false;
+        g_bound = Bound{};  // after vkCmdExecuteCommands the primary's bound state is undefined
+    }
     if (g_render_pass)
         p_vkCmdEndRenderPass(cb);
     else
         p_vkCmdEndRendering(cb);
     g_rendering = false;
+    if (g_pass_history.size() > 4096) g_pass_history.clear();
+    g_pass_history[targets_key(g_pass)] = g_pass_draws;
     // What the pass wrote is read by what follows (sampled, copied, loaded by the next pass), and what it sampled may
     // be rendered over next. The images stay GENERAL, so transition() records no barrier. Metal (MoltenVK) and the
     // Intel driver ordered passes anyway; NVIDIA overlaps them, and later passes read half-written tiles: the course
@@ -663,6 +787,73 @@ void pass_begin(VkCommandBuffer cb, const Targets& t) { begin_rendering(cb, t); 
 // After a clear inside the pass (nvn_clears.cpp). A masked one is a fullscreen draw with its own pipeline, viewport
 // and scissor (nvn_mask_clear.cpp): the next draw sets everything again.
 void pass_mark_written(uint32_t bits) { g_pass_written |= bits, g_bound = Bound{}; }
+
+bool pass_parallel() { return g_rendering && g_pass_parallel; }
+
+void pass_clear_attachment(VkCommandBuffer cb, const VkClearAttachment& a, const VkClearRect& r) {
+    if (!pass_parallel()) {
+        p_vkCmdClearAttachments(cb, 1, &a, 1, &r);
+        return;
+    }
+    DrawJob& j = parallel_job();
+    j.clear = true, j.attachment = a, j.rect = r;
+    parallel_push(j);
+}
+
+void pass_inline(VkCommandBuffer cb) {
+    if (!pass_parallel()) return;
+    Targets t = g_pass;
+    pass_end_only(cb, 3);
+    begin_rendering(cb, t);  // loads what the workers drew
+}
+
+// A worker's part of a parallel pass's draw (draw_parallel made the job): its buffer descriptors and inputs copied
+// from guest memory, the sets bound, its state and the draw call, into the worker's secondary command buffer.
+void replay::draw_job(DrawJob& j, VkCommandBuffer cb) {
+    if (g_bound.cb != cb) g_bound = Bound{}, g_bound.cb = cb;
+    if (j.clear) {
+        p_vkCmdClearAttachments(cb, 1, &j.attachment, 1, &j.rect);
+        return;
+    }
+    t_state = &j.state;
+    sets_target(&j.d);
+    build_buffers(cb, *j.shaders, *j.layout);
+    DrawInputs in;
+    if (draw_inputs_shared(cb, j.vs, j.indexed, j.cmd, in)) {
+        if (g_bound.pipeline != j.pipeline) {
+            p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, j.pipeline);
+            g_bound.pipeline = j.pipeline, g_state_set++;
+        } else {
+            g_state_kept++;
+        }
+        bind_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, *j.layout);
+        for (uint32_t s = 0; s < 15; s++)
+            if (in.used >> s & 1) bind_vertex(cb, s, in.vertex[s]);
+        bind_vertex(cb, 15, zero_stream());
+        set_dynamic(cb, j.vp, j.sc);
+        const Cmd& c = j.cmd;
+        if (j.indexed) {
+            if (g_bound.has_index && g_bound.index.buffer == in.index.buffer && g_bound.index.offset == in.index.offset &&
+                g_bound.index_type == in.index_type) {
+                g_state_kept++;
+            } else {
+                p_vkCmdBindIndexBuffer(cb, in.index.buffer, in.index.offset, in.index_type);
+                g_bound.has_index = true, g_bound.index = in.index, g_bound.index_type = in.index_type, g_state_set++;
+            }
+            p_vkCmdDrawIndexed(cb, uint32_t(c.i[0]), uint32_t(std::max(1, c.i[3])), 0, c.i[1], uint32_t(c.i[2]));
+        } else {
+            p_vkCmdDraw(cb, uint32_t(c.i[1]), uint32_t(std::max(1, c.i[3])), uint32_t(c.i[0]), uint32_t(c.i[2]));
+        }
+    }
+    sets_target(nullptr);
+    g_workers_set.fetch_add(g_state_set, std::memory_order_relaxed);
+    g_workers_kept.fetch_add(g_state_kept, std::memory_order_relaxed);
+    g_state_set = g_state_kept = 0;
+}
+
+void replay::draw_thread_init() {
+    if (t_bound == &g_walk_bound) t_bound = new Bound;
+}
 
 bool replay::pass_wrote(const GpuImage* img) {
     if (!g_rendering || !img) return false;

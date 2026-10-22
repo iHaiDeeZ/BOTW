@@ -296,6 +296,17 @@ void dedup_reset();  // nvn_dedup.cpp
 bool written_separate();         // nvn_written.cpp (nvn_draw_state.h)
 uint64_t written_bind_count();   // nvn_written.cpp: written_bind calls so far (a dispatch bound storage it writes)
 void trace_nan_write_back(const uint8_t* from, const uint8_t* to, uint64_t size);  // nvn_draw_trace.cpp
+// nvn_parallel.cpp: the threads that record a big pass's draws next to the replay thread (NX_PARALLEL).
+constexpr int kMaxReplayWorkers = 6;
+int parallel_worker();  // this thread's worker number, -1 on every other thread
+// gpu_submit: whether this submit's passes may be recorded in parallel (no dispatches, no profile).
+void parallel_begin_submit(bool allowed);
 }
+
+// nvn_frames.cpp, for the replay workers: a secondary command buffer of the current submit's slot for `worker`, freed
+// with the slot (its own command pool there, as its descriptor pool and its stretches of the upload ring).
+VkCommandBuffer frame_secondary(int worker);
+// DispatchCompute commands in a submit's lists (the lists they call included).
+uint32_t submit_dispatches(const std::vector<std::shared_ptr<CmdList>>& lists);
 
 }  // namespace nx::nvn

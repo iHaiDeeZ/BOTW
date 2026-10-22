@@ -40,6 +40,9 @@ void game::after_init() {
     // fullscreen quad sits at z = (k / 255) * 2 - 1 and tests EQUAL. Wonder's EQUAL -> LEQUAL with a bias toward the
     // camera lets a light through on every material at or behind its own. TOTK's lighting works this way too.
     setenv("NX_EQUAL_EXACT", "1", 0);
+    // Big passes recorded by worker threads next to the replay thread (nvn_parallel.cpp): outdoors the replay thread
+    // alone took ~105 ms a frame for ~3,000 draws (9 fps) while most cores idled. NX_PARALLEL=0: one thread.
+    setenv("NX_PARALLEL", "1", 0);
 }
 void game::renderer_start() {}
 void game::first_frame() {}

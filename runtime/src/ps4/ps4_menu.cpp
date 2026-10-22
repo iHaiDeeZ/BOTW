@@ -86,6 +86,7 @@ struct Settings {
     bool fsr = true;
     float sharp = 0.2f;     // FSR stops: 0 sharpest, 2 none
     int cores = 0;          // kCores
+    bool parallel = true;   // NX_PARALLEL: big passes recorded by replay workers (nvn_parallel.cpp)
     int counter = 0;        // kCounter
     int map[kNxCount];      // kDs4 index per Switch button, -1 none
 };
@@ -151,7 +152,7 @@ void parse_map(const char* text, int map[kNxCount]) {
 // config.txt with the menu's keys replaced (other lines, comments included, stay as they are).
 void save() {
     static const char* const kOwned[] = {"NX_RENDER_RES", "NX_HANDHELD", "NX_FSR", "NX_FSR_SHARP", "NX_PS4_CORES",
-                                         "NX_PS4_MAP", "NX_PS4_FPS"};
+                                         "NX_PS4_MAP", "NX_PS4_FPS", "NX_PARALLEL"};
     std::vector<std::string> lines;
     if (FILE* f = std::fopen(kConfig, "r")) {
         char buf[512];
@@ -174,6 +175,7 @@ void save() {
     lines.push_back(std::string("NX_FSR=") + (g_set.fsr ? "1" : "0"));
     lines.push_back(std::string("NX_FSR_SHARP=") + sharp);
     lines.push_back(std::string("NX_PS4_CORES=") + kCores[g_set.cores]);
+    lines.push_back(std::string("NX_PARALLEL=") + (g_set.parallel ? "1" : "0"));
     lines.push_back("NX_PS4_FPS=" + std::to_string(g_set.counter));
     lines.push_back("NX_PS4_MAP=" + map_string(g_set.map));
     std::string tmp = std::string(kConfig) + ".tmp";
@@ -181,8 +183,8 @@ void save() {
         for (const std::string& l : lines) std::fprintf(f, "%s\n", l.c_str());
         if (std::fclose(f) == 0) std::rename(tmp.c_str(), kConfig);
     }
-    log("menu: settings saved (%s, FSR %s %.1f, cores %s, counter %d)", r.label, g_set.fsr ? "on" : "off",
-        double(g_set.sharp), kCores[g_set.cores], g_set.counter);
+    log("menu: settings saved (%s, FSR %s %.1f, cores %s, parallel draws %s, counter %d)", r.label,
+        g_set.fsr ? "on" : "off", double(g_set.sharp), kCores[g_set.cores], g_set.parallel ? "on" : "off", g_set.counter);
 }
 
 // ---- drawing --------------------------------------------------------------------------------------------------------
@@ -347,6 +349,7 @@ void menu_frame(MenuState& m, const Input& in, std::string& title, std::vector<R
                 {"FSR sharpness (0 = sharpest)", sharp},
                 {"Frame counter", kCounter[g_set.counter]},
                 {"CPU cores", kCores[g_set.cores], true},
+                {"Parallel draws", g_set.parallel ? "On" : "Off", true},
                 {"Controls", ">"},
                 {"Capture a diagnostics frame", ""},
                 {"Restart the game now", ""}};
@@ -366,9 +369,10 @@ void menu_frame(MenuState& m, const Input& in, std::string& title, std::vector<R
                 break;
             case 4: if (dx) g_set.counter = (g_set.counter + 3 + dx) % 3; break;
             case 5: if (dx) g_set.cores = (g_set.cores + 3 + dx) % 3; break;
-            case 6: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
-            case 7: if (ok) m.diag = m.done = true; break;
-            case 8: if (ok) m.restart = m.done = true; break;
+            case 6: if (dx) g_set.parallel = !g_set.parallel; break;
+            case 7: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
+            case 8: if (ok) m.diag = m.done = true; break;
+            case 9: if (ok) m.restart = m.done = true; break;
         }
         if (in.pressed & ORBIS_PAD_BUTTON_CIRCLE) m.done = true;
         const uint32_t both = ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3;
@@ -450,6 +454,8 @@ void settings_load(bool cross_confirms) {
         for (int k = 0; k < 3; k++)
             if (std::strcmp(kCores[k], c) == 0) g_set.cores = k;
     if (const char* c = std::getenv("NX_PS4_FPS")) g_set.counter = std::clamp(std::atoi(c), 0, 2);
+    const char* par = std::getenv("NX_PARALLEL");
+    g_set.parallel = par && par[0] == '1';
     if (const char* m = std::getenv("NX_PS4_MAP")) parse_map(m, g_set.map);
     publish();
 }
