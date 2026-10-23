@@ -807,6 +807,12 @@ void pass_inline(VkCommandBuffer cb) {
     begin_rendering(cb, t);  // loads what the workers drew
 }
 
+// A worker's secondary command buffer was just begun: nothing is bound in it. Its handle could not say so (draw_job's
+// check): the frame slot hands its command buffers out again, and a worker given the one it had recorded last left the
+// pipeline it had bound there unbound in the new recording (Tears of the Kingdom v00.66 crashed in RADV at the title
+// screen, a draw with no shaders: radv_get_user_sgpr_loc).
+void replay::draw_segment_begin(VkCommandBuffer cb) { g_bound = Bound{}, g_bound.cb = cb; }
+
 // A worker's part of a parallel pass's draw (draw_parallel made the job): its buffer descriptors and inputs copied
 // from guest memory, the sets bound, its state and the draw call, into the worker's secondary command buffer.
 void replay::draw_job(DrawJob& j, VkCommandBuffer cb) {

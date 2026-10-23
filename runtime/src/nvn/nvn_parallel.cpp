@@ -88,6 +88,7 @@ void worker_main(void* arg) {
             bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
             bi.pInheritanceInfo = &ii;
             if (p_vkBeginCommandBuffer(cb, &bi) == VK_SUCCESS) {
+                draw_segment_begin(cb);
                 for (DrawJob* j : s->jobs) draw_job(*j, cb);
                 p_vkEndCommandBuffer(cb);
             } else {

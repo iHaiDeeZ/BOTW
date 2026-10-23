@@ -235,6 +235,7 @@ struct DrawJob {
     VkRect2D sc{};
 };
 void draw_job(DrawJob& j, VkCommandBuffer cb);  // nvn_draw.cpp, on a worker
+void draw_segment_begin(VkCommandBuffer cb);      // nvn_draw.cpp, on a worker: `cb` begun, nothing bound in it
 
 // nvn_parallel.cpp. The open parallel pass's attachment formats (its secondary command buffers inherit them).
 struct PassFormats {
