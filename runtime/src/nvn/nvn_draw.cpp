@@ -80,6 +80,21 @@ constexpr int kPassKinds = 160;
 PassKind g_pass_kinds[kPassKinds];
 int g_npass_kinds = 0, g_pass_kind = -1;  // the open pass's kind (-1: none, or not counted)
 uint64_t g_pass_t0 = 0, g_kinds_frame = 0, g_kinds_dropped = 0;
+// Per log period: passes a draw ended, by gather_textures' reasons (kBreakStorage...), and those ended by new targets
+// that differ from the open pass's only in colour targets one of them leaves unbound (one pass with both sets could
+// serve both); the time begin_rendering and pass_end_only took.
+uint64_t g_breaks_why[4] = {}, g_breaks_targets = 0, g_breaks_colors_only = 0, g_begin_ns = 0, g_end_ns = 0;
+
+bool colors_only_differ(const Targets& a, const Targets& b) {
+    if (a.depth != b.depth || a.views.level[8] != b.views.level[8] || a.views.layer[8] != b.views.layer[8]) return false;
+    for (uint32_t k = 0; k < 8; k++) {
+        const uint64_t x = k < a.color_count ? a.colors[k] : 0, y = k < b.color_count ? b.colors[k] : 0;
+        if (x && y && (x != y || a.views.level[k] != b.views.level[k] || a.views.layer[k] != b.views.layer[k] ||
+                       a.views.format[k] != b.views.format[k]))
+            return false;
+    }
+    return true;
+}
 
 bool pass_stats_on() {
     static const bool on = [] {
@@ -243,6 +258,12 @@ void pass_stats_log() {
             (unsigned long long)frames, double(passes) / f, double(draws) / f, double(ns) / 1e6 / f, g_npass_kinds,
             (unsigned long long)g_kinds_dropped, double(g_throttled_draws) / f, double(g_throttled_clears) / f);
         g_throttled_draws = g_throttled_clears = 0;
+        log("nvn pass stats: per frame %.2f ms beginning passes, %.2f ms ending them; passes a draw ended: %.1f for a "
+            "storage image, %.1f for a texture to upload or transition, %.1f sampling what the pass drew, %.1f for a "
+            "pending clear, %.1f for new targets (%.1f of those only adding or dropping colour targets)",
+            double(g_begin_ns) / 1e6 / f, double(g_end_ns) / 1e6 / f, double(g_breaks_why[0]) / f,
+            double(g_breaks_why[1]) / f, double(g_breaks_why[2]) / f, double(g_breaks_why[3]) / f,
+            double(g_breaks_targets) / f, double(g_breaks_colors_only) / f);
         for (int r = 0; r < g_npass_kinds && r < 16; r++) {
             const PassKind& p = g_pass_kinds[order[r]];
             log("  %6.2f ms %7.1f draws %5.2f passes: %s", double(p.ns) / 1e6 / f, double(p.draws) / f,
@@ -250,6 +271,8 @@ void pass_stats_log() {
         }
     }
     g_npass_kinds = 0, g_pass_kind = -1, g_kinds_dropped = 0;  // a new table for the next period
+    for (uint64_t& n : g_breaks_why) n = 0;
+    g_breaks_targets = g_breaks_colors_only = g_begin_ns = g_end_ns = 0;
 }
 
 uint64_t targets_key(const Targets& t) {  // targets_same's fields (the struct has padding)
@@ -325,6 +348,7 @@ void set_dynamic(VkCommandBuffer cb, const VkViewport& vp, const VkRect2D& sc) {
 
 // parallel: the pass's draws are recorded by the workers into secondary command buffers (nvn_parallel.cpp).
 void begin_rendering(VkCommandBuffer cb, const Targets& t, bool parallel = false) {
+    const uint64_t begin_t0 = pass_stats_on() ? plat::monotonic_ns() : 0;
     if (clears_pending_other(t)) clears_flush(cb);  // other targets' clears first, in order
     // An image never written (layout UNDEFINED) has nothing to load: loadOp CLEAR to zero, not a LOAD of whatever
     // the memory held (G3, docs/nvn/DEBUG.md #50); a pending clear still wins (clears_apply). Env: bisecting.
@@ -425,6 +449,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t, bool parallel = false
     g_pass = t;
     g_pass_extent = extent;
     pass_stats_begin(t, dimg);
+    if (begin_t0) g_begin_ns += plat::monotonic_ns() - begin_t0;
 }
 
 uint64_t g_dump_draws = 0, g_dump_request = 0;
@@ -739,6 +764,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     bool targets_changed = !g_rendering || (bytes ? std::memcmp(&g_pass, &tt, sizeof tt) != 0 : !targets_same(g_pass, tt));
     if (g_rendering && (need_break || targets_changed)) {
         (targets_changed ? g_stats.breaks_targets : g_stats.breaks_textures)++;
+        if (pass_stats_on()) {
+            if (need_break)
+                for (int k = 0; k < 4; k++) g_breaks_why[k] += g_break_why >> k & 1;
+            if (targets_changed) g_breaks_targets++, g_breaks_colors_only += colors_only_differ(g_pass, tt);
+        }
         draw_end_rendering(cb, 1);
     }
 
@@ -921,6 +951,12 @@ void draw_log_stats() {
 
 void pass_end_only(VkCommandBuffer cb, int reason) {
     if (!g_rendering) return;
+    struct EndTimer {
+        uint64_t t0 = pass_stats_on() ? plat::monotonic_ns() : 0;
+        ~EndTimer() {
+            if (t0) g_end_ns += plat::monotonic_ns() - t0;
+        }
+    } end_timer;
     g_pass_ends[reason & 7]++, trace_pass("end: reason", g_pass, uint32_t(reason), 0);
     if (g_pass_parallel) {  // the workers' secondary command buffers, in order (nvn_parallel.cpp)
         parallel_pass_end(cb);

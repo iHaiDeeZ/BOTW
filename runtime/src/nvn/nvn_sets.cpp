@@ -703,10 +703,11 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may
     else
         t.bindings.clear();
     uint32_t out = 0;
+    g_break_why = 0;
     for (const ShaderInfo* s : shaders)
         for (const DescriptorBinding& b : s->refl.bindings) {
             if (b.set == 2) t.bindings.push_back({s, &b});
-            if (b.set == 3) out |= kNeedBreak;  // storage images change layout
+            if (b.set == 3) out |= kNeedBreak, g_break_why |= kBreakStorage;  // storage images change layout
         }
     t.handles.assign(t.bindings.size(), 0);
     t.resolved.assign(t.bindings.size(), ResolvedTexture{});
@@ -742,14 +743,14 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may
         }
         r.texture = texture;
         if (texture && astc_pending(texture, may_defer)) out |= kTexturesPending;
-        if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak;
+        if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak, g_break_why |= kBreakNotReady;
         if (!texture) continue;
         GpuImage* img = image_of(texture);
         // Sampling one of the open pass's targets (a depth buffer read back by the character lighting) needs what
         // was rendered stored first: a fresh pass. SetRenderTargets used to end every pass, which did this by chance
         // (docs/nvn/DEBUG.md #35). Only when a draw of this pass wrote it (pass_wrote, nvn_draw.cpp).
-        if (pass_wrote(img)) out |= kNeedBreak;
-        if (clears_pending_image(img)) out |= kNeedBreak | kSampledPending;
+        if (pass_wrote(img)) out |= kNeedBreak, g_break_why |= kBreakFeedback;
+        if (clears_pending_image(img)) out |= kNeedBreak | kSampledPending, g_break_why |= kBreakClear;
     }
     return out;
 }

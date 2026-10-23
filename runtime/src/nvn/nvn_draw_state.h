@@ -151,6 +151,11 @@ extern DrawTextures g_textures;  // filled by gather_textures, read by build_set
 // kTexturesPending: a texture is being decoded in the background (astc_pending): the draw is skipped this time.
 enum : uint32_t { kNeedBreak = 1, kSampledPending = 2, kTexturesPending = 4 };
 uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may_defer = false);
+// Why gather_textures last asked for kNeedBreak (the pass statistics count them): kBreakStorage a storage image in the
+// program, kBreakNotReady a texture to upload or transition, kBreakFeedback one the open pass wrote, kBreakClear one
+// with a pending clear.
+enum : uint32_t { kBreakStorage = 1, kBreakNotReady = 2, kBreakFeedback = 4, kBreakClear = 8 };
+inline uint32_t g_break_why = 0;
 
 // The sets being built for a draw: scratch kept from draw to draw, or a parallel pass's job's own.
 struct SetWrite {  // one write of a set, as the set cache compares it
