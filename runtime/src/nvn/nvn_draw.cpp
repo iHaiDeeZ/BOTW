@@ -66,7 +66,15 @@ uint64_t g_submit_ns = 0;  // when the submit being replayed started
 VkExtent2D g_pass_extent{};
 bool g_pass_parallel = false;  // the open pass is recorded by the workers (nvn_parallel.cpp)
 uint32_t g_pass_draws = 0;     // draws into the open pass so far
-std::unordered_map<uint64_t, uint32_t> g_pass_history;  // the draws of the last pass on these targets (targets_key)
+// The most draws a pass on these targets had in the last frame that rendered them (targets_key), and that frame.
+struct PassHistory {
+    uint32_t draws = 0;
+    uint64_t frame = 0;
+};
+std::unordered_map<uint64_t, PassHistory> g_pass_history;
+// Draws per log period: given to the workers; recorded here in a pass too small for them; in a big pass but not
+// for the workers (shaders storing into buffers, debug switches).
+uint64_t g_draws_parallel = 0, g_draws_small = 0, g_draws_unfit = 0;
 
 // ---- per-pass statistics (NX_PASS_STATS=0, or the quick menu: off) ---------------------------------------------------
 // Where the replay's time goes, per kind of pass (its targets: size, format, mip level, layer): the passes, their draws
@@ -275,12 +283,16 @@ void pass_stats_log() {
     g_breaks_targets = g_breaks_colors_only = g_begin_ns = g_end_ns = 0;
 }
 
-uint64_t targets_key(const Targets& t) {  // targets_same's fields (the struct has padding)
+// The images a pass renders to, with their levels, layers and view formats: what stays the same from frame to frame.
+// Breath of the Wild's agl renders through holder structs whose keys change every frame (a6ebcb1): keyed by the
+// targets themselves, no pass ever repeated, and none went to the workers (v00.19: 90 draws of ~2,900 a frame).
+uint64_t targets_key(const Targets& t) {
     uint64_t h = 14695981039346656037ull;
     auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-    mix(t.color_count), mix(t.depth);
+    mix(t.color_count);
     for (uint32_t k = 0; k < 9; k++) {
-        if (k < 8) mix(t.colors[k]);
+        const uint64_t tex = k < 8 ? (k < t.color_count ? t.colors[k] : 0) : t.depth;
+        mix(tex ? uint64_t(reinterpret_cast<uintptr_t>(image_of(tex))) : 0);
         mix(uint64_t(t.views.level[k]) | uint64_t(t.views.layer[k]) << 8 | uint64_t(t.views.format[k]) << 24);
     }
     return h;
@@ -612,7 +624,7 @@ bool parallel_wanted(const Targets& t) {
         return e ? uint32_t(std::max(1, std::atoi(e))) : 24u;
     }();
     auto it = g_pass_history.find(targets_key(t));
-    return it != g_pass_history.end() && it->second >= min_draws;
+    return it != g_pass_history.end() && it->second.draws >= min_draws;
 }
 
 void phase_log(uint64_t frames) {
@@ -778,8 +790,14 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     if (parallel && (shaders == &swapped || !parallel_draw_ok(vs, fs))) {
         if (g_rendering) draw_end_rendering(cb, 1);  // this one is recorded here, in a pass of its own
         parallel = false;
+        g_draws_unfit++;
+    } else if (!parallel) {
+        g_draws_small++;
     }
-    if (parallel) return draw_parallel(cb, t, tt, mode, indexed, c, *shaders, layout, vs, fs, may_defer, clock);
+    if (parallel) {
+        g_draws_parallel++;
+        return draw_parallel(cb, t, tt, mode, indexed, c, *shaders, layout, vs, fs, may_defer, clock);
+    }
     build_sets(cb, *shaders, layout);
     clock.mark(kPhSets);
     // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
@@ -932,6 +950,11 @@ void draw_log_stats() {
         log("nvn: draw state: %llu binds and sets recorded, %llu already in place", (unsigned long long)set,
             (unsigned long long)kept);
     g_state_set = g_state_kept = 0;
+    if (g_draws_parallel + g_draws_unfit)
+        log("nvn: draws to the replay workers %llu, here in small passes %llu, here in big passes (shaders storing into "
+            "buffers, debug switches) %llu", (unsigned long long)g_draws_parallel, (unsigned long long)g_draws_small,
+            (unsigned long long)g_draws_unfit);
+    g_draws_parallel = g_draws_small = g_draws_unfit = 0;
     parallel_log();
     pass_stats_log();
     clears_log();
@@ -970,7 +993,8 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     g_rendering = false;
     pass_stats_end();
     if (g_pass_history.size() > 4096) g_pass_history.clear();
-    g_pass_history[targets_key(g_pass)] = g_pass_draws;
+    PassHistory& h = g_pass_history[targets_key(g_pass)];  // the largest piece of this frame's (texture breaks split)
+    h.draws = h.frame == g_replay_frame ? std::max(h.draws, g_pass_draws) : g_pass_draws, h.frame = g_replay_frame;
     // What the pass wrote is read by what follows (sampled, copied, loaded by the next pass), and what it sampled may
     // be rendered over next. The images stay GENERAL, so transition() records no barrier. Metal (MoltenVK) and the
     // Intel driver ordered passes anyway; NVIDIA overlaps them, and later passes read half-written tiles: the course

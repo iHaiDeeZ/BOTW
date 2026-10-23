@@ -55,7 +55,7 @@ std::vector<VkCommandBuffer> g_execute;
 thread_local int t_worker = -1;
 
 // Per log period.
-uint64_t g_passes = 0, g_jobs_done = 0, g_segments_done = 0, g_flushes = 0, g_wait_ns = 0;
+uint64_t g_passes = 0, g_jobs_done = 0, g_segments_done = 0, g_flushes = 0, g_wait_ns = 0, g_submits = 0;
 std::atomic<uint64_t> g_worker_ns{0};
 
 void worker_main(void* arg) {
@@ -144,7 +144,7 @@ void wait_all() {
 
 int parallel_worker() { return t_worker; }
 
-void parallel_begin_submit(bool allowed) { g_submit_ok = allowed; }
+void parallel_begin_submit(bool allowed) { g_submit_ok = allowed, g_submits++; }
 
 bool parallel_on() {
     static const bool on = [] {
@@ -195,11 +195,16 @@ void parallel_pass_end(VkCommandBuffer cb) {
 }
 
 void parallel_log() {
-    if (!g_passes) return;
-    log("nvn: parallel passes: %llu passes, %llu draws in %llu segments, %llu flushes (uniform updates, counters); "
-        "workers busy %.1f ms, replay thread waiting %.1f ms in all",
-        (unsigned long long)g_passes, (unsigned long long)g_jobs_done, (unsigned long long)g_segments_done,
-        (unsigned long long)g_flushes, double(g_worker_ns.exchange(0)) / 1e6, double(g_wait_ns) / 1e6);
+    if (!g_passes) {
+        g_submits = 0;
+        return;
+    }
+    const double n = double(std::max<uint64_t>(g_submits, 1));  // per submit (a frame in Breath of the Wild)
+    log("nvn: parallel passes per submit over %llu: %.1f passes, %.0f draws in %.1f segments, %.1f flushes (uniform "
+        "updates); workers busy %.2f ms, replay thread waiting %.2f ms",
+        (unsigned long long)g_submits, double(g_passes) / n, double(g_jobs_done) / n, double(g_segments_done) / n,
+        double(g_flushes) / n, double(g_worker_ns.exchange(0)) / 1e6 / n, double(g_wait_ns) / 1e6 / n);
+    g_submits = 0;
     g_passes = g_jobs_done = g_segments_done = g_flushes = g_wait_ns = 0;
 }
 

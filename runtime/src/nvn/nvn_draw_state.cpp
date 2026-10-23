@@ -153,7 +153,8 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
         case Cmd::ReportCounter: {  // {value, timestamp}: the work before it is done when the replay gets here
             static uint64_t reports = 0, types_seen = 0;
             if (c.n < 64 && !(types_seen >> c.n & 1)) types_seen |= 1ull << c.n, log("nvn: first counter report of type %u", c.n);
-            if (pass_parallel()) parallel_flush();  // as for UpdateUniformBuffer
+            // No wait for the workers here (each wait drains them; TOTK waited ~38 times a frame): the report goes to
+            // memory that only the game and SetRenderEnableConditional read, both on this thread.
             if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0]))) {
                 // NX_FAKE_GPU_TIME=1: every report of a submit carries the submit's start (a GPU with no cost):
                 // the game picks its present interval from the timings it measures (bisecting its 30 fps mode).
