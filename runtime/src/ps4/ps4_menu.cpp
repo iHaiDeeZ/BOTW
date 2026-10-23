@@ -87,6 +87,7 @@ struct Settings {
     float sharp = 0.2f;     // FSR stops: 0 sharpest, 2 none
     int cores = 0;          // kCores
     bool parallel = true;   // NX_PARALLEL: big passes recorded by replay workers (nvn_parallel.cpp)
+    bool pass_stats = true;  // NX_PASS_STATS: the replay's time per kind of pass, in nx.log (nvn_draw.cpp)
     int counter = 0;        // kCounter
     int map[kNxCount];      // kDs4 index per Switch button, -1 none
 };
@@ -152,7 +153,7 @@ void parse_map(const char* text, int map[kNxCount]) {
 // config.txt with the menu's keys replaced (other lines, comments included, stay as they are).
 void save() {
     static const char* const kOwned[] = {"NX_RENDER_RES", "NX_HANDHELD", "NX_FSR", "NX_FSR_SHARP", "NX_PS4_CORES",
-                                         "NX_PS4_MAP", "NX_PS4_FPS", "NX_PARALLEL"};
+                                         "NX_PS4_MAP", "NX_PS4_FPS", "NX_PARALLEL", "NX_PASS_STATS"};
     std::vector<std::string> lines;
     if (FILE* f = std::fopen(kConfig, "r")) {
         char buf[512];
@@ -176,6 +177,7 @@ void save() {
     lines.push_back(std::string("NX_FSR_SHARP=") + sharp);
     lines.push_back(std::string("NX_PS4_CORES=") + kCores[g_set.cores]);
     lines.push_back(std::string("NX_PARALLEL=") + (g_set.parallel ? "1" : "0"));
+    lines.push_back(std::string("NX_PASS_STATS=") + (g_set.pass_stats ? "1" : "0"));
     lines.push_back("NX_PS4_FPS=" + std::to_string(g_set.counter));
     lines.push_back("NX_PS4_MAP=" + map_string(g_set.map));
     std::string tmp = std::string(kConfig) + ".tmp";
@@ -350,6 +352,7 @@ void menu_frame(MenuState& m, const Input& in, std::string& title, std::vector<R
                 {"Frame counter", kCounter[g_set.counter]},
                 {"CPU cores", kCores[g_set.cores], true},
                 {"Parallel draws", g_set.parallel ? "On" : "Off", true},
+                {"Pass statistics (nx.log)", g_set.pass_stats ? "On" : "Off", true},
                 {"Controls", ">"},
                 {"Capture a diagnostics frame", ""},
                 {"Restart the game now", ""}};
@@ -370,9 +373,10 @@ void menu_frame(MenuState& m, const Input& in, std::string& title, std::vector<R
             case 4: if (dx) g_set.counter = (g_set.counter + 3 + dx) % 3; break;
             case 5: if (dx) g_set.cores = (g_set.cores + 3 + dx) % 3; break;
             case 6: if (dx) g_set.parallel = !g_set.parallel; break;
-            case 7: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
-            case 8: if (ok) m.diag = m.done = true; break;
-            case 9: if (ok) m.restart = m.done = true; break;
+            case 7: if (dx) g_set.pass_stats = !g_set.pass_stats; break;
+            case 8: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
+            case 9: if (ok) m.diag = m.done = true; break;
+            case 10: if (ok) m.restart = m.done = true; break;
         }
         if (in.pressed & ORBIS_PAD_BUTTON_CIRCLE) m.done = true;
         const uint32_t both = ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3;
@@ -456,6 +460,8 @@ void settings_load(bool cross_confirms) {
     if (const char* c = std::getenv("NX_PS4_FPS")) g_set.counter = std::clamp(std::atoi(c), 0, 2);
     const char* par = std::getenv("NX_PARALLEL");
     g_set.parallel = par && par[0] == '1';
+    const char* ps = std::getenv("NX_PASS_STATS");
+    g_set.pass_stats = !(ps && ps[0] == '0');
     if (const char* m = std::getenv("NX_PS4_MAP")) parse_map(m, g_set.map);
     publish();
 }

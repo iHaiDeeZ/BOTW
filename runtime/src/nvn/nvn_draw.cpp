@@ -68,6 +68,107 @@ bool g_pass_parallel = false;  // the open pass is recorded by the workers (nvn_
 uint32_t g_pass_draws = 0;     // draws into the open pass so far
 std::unordered_map<uint64_t, uint32_t> g_pass_history;  // the draws of the last pass on these targets (targets_key)
 
+// ---- per-pass statistics (NX_PASS_STATS=0, or the quick menu: off) ---------------------------------------------------
+// Where the replay's time goes, per kind of pass (its targets: size, format, mip level, layer): the passes, their draws
+// and the replay thread's time from each pass's start to its end, logged with the other draw statistics (every 300
+// frames), the costliest first. For Tears of the Kingdom's performance mode: which passes to draw less often, or not.
+struct PassKind {
+    uint64_t key = 0, passes = 0, draws = 0, ns = 0;
+    char what[200] = {};
+};
+constexpr int kPassKinds = 160;
+PassKind g_pass_kinds[kPassKinds];
+int g_npass_kinds = 0, g_pass_kind = -1;  // the open pass's kind (-1: none, or not counted)
+uint64_t g_pass_t0 = 0, g_kinds_frame = 0, g_kinds_dropped = 0;
+
+bool pass_stats_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("NX_PASS_STATS");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+
+void pass_stats_begin(const Targets& t, const GpuImage* dimg) {
+    g_pass_kind = -1;
+    if (!pass_stats_on()) return;
+    g_pass_t0 = plat::monotonic_ns();
+    auto target = [&](uint32_t k) -> const GpuImage* {
+        return k < 8 ? (k < t.color_count ? g_pass_images[k] : nullptr) : dimg;
+    };
+    uint64_t h = 14695981039346656037ull;
+    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    for (uint32_t k = 0; k < 9; k++)
+        if (const GpuImage* img = target(k))
+            mix(k), mix(img->width), mix(img->height), mix(uint64_t(img->format)), mix(img->layers),
+                mix(t.views.level[k]), mix(t.views.layer[k]);
+    for (int i = 0; i < g_npass_kinds; i++)
+        if (g_pass_kinds[i].key == h) {
+            g_pass_kind = i;
+            return;
+        }
+    if (g_npass_kinds == kPassKinds) {
+        g_kinds_dropped++;
+        return;
+    }
+    PassKind& p = g_pass_kinds[g_npass_kinds];
+    p = PassKind{};
+    p.key = h;
+    size_t n = 0;
+    for (uint32_t k = 0; k < 9 && n < sizeof p.what; k++) {
+        const GpuImage* img = target(k);
+        if (!img) continue;
+        const uint32_t level = std::min<uint32_t>(t.views.level[k], img->levels ? img->levels - 1 : 0);
+        char one[64];
+        int m = std::snprintf(one, sizeof one, "%s%c%u %ux%u vk%d", n ? ", " : "", k < 8 ? 'c' : 'd', k < 8 ? k : 0u,
+                              std::max(1u, img->width >> level), std::max(1u, img->height >> level), int(img->format));
+        if (level && m > 0 && m < int(sizeof one)) m += std::snprintf(one + m, sizeof one - size_t(m), " mip %u", level);
+        if (img->layers > 1 && m > 0 && m < int(sizeof one))
+            m += std::snprintf(one + m, sizeof one - size_t(m), " layer %u/%u", t.views.layer[k], img->layers);
+        if (m <= 0) continue;
+        const size_t add = std::min(size_t(m), sizeof one - 1);
+        if (n + add >= sizeof p.what) break;
+        std::memcpy(p.what + n, one, add);
+        n += add;
+        p.what[n] = 0;
+    }
+    if (!n) std::snprintf(p.what, sizeof p.what, "no targets");
+    g_pass_kind = g_npass_kinds++;
+}
+
+void pass_stats_end() {
+    if (g_pass_kind < 0) return;
+    PassKind& p = g_pass_kinds[g_pass_kind];
+    p.passes++, p.draws += g_pass_draws, p.ns += plat::monotonic_ns() - g_pass_t0;
+    g_pass_kind = -1;
+}
+
+void pass_stats_log() {
+    if (!pass_stats_on()) return;
+    const uint64_t now_frame = g_frame.load(std::memory_order_relaxed), frames = now_frame - g_kinds_frame;
+    g_kinds_frame = now_frame;
+    if (frames && g_npass_kinds) {
+        int order[kPassKinds];
+        uint64_t ns = 0, draws = 0, passes = 0;
+        for (int i = 0; i < g_npass_kinds; i++) {
+            order[i] = i;
+            ns += g_pass_kinds[i].ns, draws += g_pass_kinds[i].draws, passes += g_pass_kinds[i].passes;
+        }
+        std::sort(order, order + g_npass_kinds, [](int a, int b) { return g_pass_kinds[a].ns > g_pass_kinds[b].ns; });
+        const double f = double(frames);
+        log("nvn pass stats over %llu frames, per frame: %.1f passes, %.0f draws, %.1f ms of the replay inside passes; "
+            "%d kinds of pass (%llu passes of more kinds not counted); the costliest:",
+            (unsigned long long)frames, double(passes) / f, double(draws) / f, double(ns) / 1e6 / f, g_npass_kinds,
+            (unsigned long long)g_kinds_dropped);
+        for (int r = 0; r < g_npass_kinds && r < 16; r++) {
+            const PassKind& p = g_pass_kinds[order[r]];
+            log("  %6.2f ms %7.1f draws %5.2f passes: %s", double(p.ns) / 1e6 / f, double(p.draws) / f,
+                double(p.passes) / f, p.what);
+        }
+    }
+    g_npass_kinds = 0, g_pass_kind = -1, g_kinds_dropped = 0;  // a new table for the next period
+}
+
 uint64_t targets_key(const Targets& t) {  // targets_same's fields (the struct has padding)
     uint64_t h = 14695981039346656037ull;
     auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
@@ -240,6 +341,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t, bool parallel = false
     trace_pass("begin: cleared, fresh", t, cleared, fresh);
     g_pass = t;
     g_pass_extent = extent;
+    pass_stats_begin(t, dimg);
 }
 
 uint64_t g_dump_draws = 0, g_dump_request = 0;
@@ -710,6 +812,7 @@ void draw_log_stats() {
             (unsigned long long)kept);
     g_state_set = g_state_kept = 0;
     parallel_log();
+    pass_stats_log();
     clears_log();
     log("nvn passes ended: %llu submit end, %llu draw, %llu dispatch, %llu clear of other targets, %llu clear larger than "
         "the pass, %llu copy, %llu snapshot, %llu SetRenderTargets", (unsigned long long)g_pass_ends[0],
@@ -738,6 +841,7 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
     else
         p_vkCmdEndRendering(cb);
     g_rendering = false;
+    pass_stats_end();
     if (g_pass_history.size() > 4096) g_pass_history.clear();
     g_pass_history[targets_key(g_pass)] = g_pass_draws;
     // What the pass wrote is read by what follows (sampled, copied, loaded by the next pass), and what it sampled may
