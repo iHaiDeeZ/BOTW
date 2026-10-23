@@ -160,6 +160,7 @@ struct PassRule {
     uint32_t every = 0, offset = 0;
 };
 uint64_t g_replay_frame = 0;  // presents replayed (draw_frame_presented)
+uint64_t targets_key(const Targets& t);  // below
 uint64_t g_throttled_draws = 0, g_throttled_clears = 0;  // per log period
 
 const std::vector<PassRule>& pass_rules() {
