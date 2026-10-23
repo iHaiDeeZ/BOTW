@@ -162,6 +162,19 @@ Each item was one package version. Logs are in `logs/vXX.YY`.
     wakes waiters this way, and clearing it lost wake-ups for good.
   - Lazy guest memory is zeroed before it is mapped in place (TOTK `640b099`). A write another thread made while
     the memset ran was lost.
+- **v00.19 on the console: 9.5 fps, no change.** Only ~90 draws per log period went to the workers. The walk still
+  spent ~30 ms a frame on descriptor sets, and the replay thread was on a CPU 96% of the time. The cause: a pass went
+  to the workers when its targets had had 24 draws, but the targets are agl's holder keys, which change every frame
+  (`a6ebcb1`), so no pass ever repeated. v00.20 (recomp `15ce4f6`):
+  - Passes are keyed by the images they render to, keeping the largest piece of each frame.
+  - Counter reports no longer wait for the workers.
+  - nx.log counts draws by path: to the workers, here in small passes, here in big passes.
+  - From TOTK (cherry-picked):
+    - `293143b`: a worker forgets its bound state at each secondary command buffer. Slots hand the same ones out
+      again, and TOTK crashed in RADV on a draw with no pipeline.
+    - `11ce082` and `b1081f8`: per-pass statistics.
+    - `d80a234`: `NX_SKIP_DRAWS=1`, a test that measures the game's own frame rate.
+    - `518a72e`: `NX_PASS_EVERY`, a pass throttle.
 - **Diagnosis on the console only** (the user's call, 2026-10-21: no PC diagnosis). v00.12: `NX_DIAG_KEEP=1` keeps
   each storyboard in `diag/<frame>/`, so `NX_DIAG_EVERY=450` collects the title menu, a loading screen and
   gameplay in one run; storyboards list skipped draws with the reason, and each draw's scissor, viewport origin,

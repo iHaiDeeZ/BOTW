@@ -2379,7 +2379,7 @@ index 7f11ab5..10033ea 100644
          p_vkGetPhysicalDeviceMemoryProperties(vk_physical(), &mp);
          for (uint32_t k = 0; k < mp.memoryTypeCount; k++)
 diff --git a/runtime/src/nvn/nvn_clears.cpp b/runtime/src/nvn/nvn_clears.cpp
-index f7fb931..88c23f7 100644
+index f7fb931..eebde3b 100644
 --- a/runtime/src/nvn/nvn_clears.cpp
 +++ b/runtime/src/nvn/nvn_clears.cpp
 @@ -152,6 +152,7 @@ bool clears_transfer(VkCommandBuffer cb, const Targets& t) {
@@ -2390,7 +2390,7 @@ index f7fb931..88c23f7 100644
          uint32_t level = std::min<uint32_t>(t.views.level[k], img->levels - 1);
          uint32_t layer = std::min<uint32_t>(t.views.layer[k], img->layers - 1);
          if (k < 8) {
-@@ -199,6 +200,12 @@ void clears_log() {
+@@ -199,6 +200,13 @@ void clears_log() {
  // clears honour the call's masks.
  void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
      bool color = c.op == Cmd::ClearColor;
@@ -2398,12 +2398,13 @@ index f7fb931..88c23f7 100644
 +    // next draw) are skipped (bisecting what a clear wipes).
 +    // Rendering off (SetRenderEnable(false) or a false condition): clears are skipped too, as on the GPU.
 +    if (!g_state.render_enable) return;
++    if (pass_throttled(t, true)) return;  // NX_PASS_EVERY: the targets keep what they held (nvn_draw.cpp)
 +    static const char* skip_after = std::getenv("NX_SKIP_CLEARS_AFTER_FS");
 +    if (skip_after && replay::g_last_draw_fs && std::strstr(skip_after, replay::g_last_draw_fs->hash.c_str())) return;
      uint64_t guest = color ? (c.n < 8 ? t.colors[c.n] : 0) : t.depth;
      GpuImage* img = guest ? image_of(guest) : nullptr;
      if (!img || color != (img->aspect == VK_IMAGE_ASPECT_COLOR_BIT)) return;
-@@ -207,11 +214,25 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+@@ -207,11 +215,25 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
      if (color) {
          a.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, a.colorAttachment = c.n;
          std::memcpy(a.clearValue.color.float32, c.f, 16);
@@ -2429,7 +2430,7 @@ index f7fb931..88c23f7 100644
      }
      uint32_t level = color ? t.views.level[c.n] : t.views.level[8];
      VkExtent2D full{std::max(1u, img->width >> level), std::max(1u, img->height >> level)};
-@@ -223,8 +244,8 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+@@ -223,8 +245,8 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
      static const bool no_mask = std::getenv("NX_CLEARS_NO_MASK") != nullptr;
      // The part of the target the clear covers: the scissor (pass coordinates, as the draws') within the target.
      VkRect2D rect{{0, 0}, full};
@@ -2440,7 +2441,7 @@ index f7fb931..88c23f7 100644
          int64_t x0 = std::max(0, s[0]), y0 = std::max(0, s[1]);
          int64_t x1 = std::min<int64_t>(int64_t(s[0]) + std::max(0, s[2]), full.width);
          int64_t y1 = std::min<int64_t>(int64_t(s[1]) + std::max(0, s[3]), full.height);
-@@ -274,6 +295,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+@@ -274,6 +296,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
              p_vkCmdClearDepthStencilImage(cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &a.clearValue.depthStencil, 1, &r);
          return;
      }
@@ -2448,7 +2449,7 @@ index f7fb931..88c23f7 100644
      if (masked && mask_clear(cb, t, c.n, c.mask & 0xF, c.f, rect)) {
          pass_mark_written(1u << c.n);
          return;
-@@ -281,9 +303,100 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
+@@ -281,9 +304,100 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
      g_mask_fallback += masked;
      VkClearRect r{rect, 0, 1};  // unscissored: all of the target, which is the pass's area
      replay::trace_pass("clear in pass: slot, mask | bound channel mask << 8", t, color ? c.n : 8,
@@ -3558,7 +3559,7 @@ index 564fd74..aabbd23 100644
  
  }  // namespace
 diff --git a/runtime/src/nvn/nvn_draw.cpp b/runtime/src/nvn/nvn_draw.cpp
-index ff8d46a..b0d5504 100644
+index ff8d46a..d175f16 100644
 --- a/runtime/src/nvn/nvn_draw.cpp
 +++ b/runtime/src/nvn/nvn_draw.cpp
 @@ -5,11 +5,13 @@
@@ -3592,7 +3593,7 @@ index ff8d46a..b0d5504 100644
  }  // namespace replay
  
  using namespace replay;
-@@ -54,11 +57,27 @@ bool narrow_pass_barrier() {
+@@ -54,11 +57,246 @@ bool narrow_pass_barrier() {
  // inside) and the writes so far are made visible to the vertex stages.
  void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs);  // the open pass is a render pass object (nvn_renderpass.cpp), not dynamic rendering
  Targets g_pass;           // what the open pass renders to
@@ -3605,14 +3606,233 @@ index ff8d46a..b0d5504 100644
  VkExtent2D g_pass_extent{};
 +bool g_pass_parallel = false;  // the open pass is recorded by the workers (nvn_parallel.cpp)
 +uint32_t g_pass_draws = 0;     // draws into the open pass so far
-+std::unordered_map<uint64_t, uint32_t> g_pass_history;  // the draws of the last pass on these targets (targets_key)
++// The most draws a pass on these targets had in the last frame that rendered them (targets_key), and that frame.
++struct PassHistory {
++    uint32_t draws = 0;
++    uint64_t frame = 0;
++};
++std::unordered_map<uint64_t, PassHistory> g_pass_history;
++// Draws per log period: given to the workers; recorded here in a pass too small for them; in a big pass but not
++// for the workers (shaders storing into buffers, debug switches).
++uint64_t g_draws_parallel = 0, g_draws_small = 0, g_draws_unfit = 0;
 +
-+uint64_t targets_key(const Targets& t) {  // targets_same's fields (the struct has padding)
++// ---- per-pass statistics (NX_PASS_STATS=0, or the quick menu: off) ---------------------------------------------------
++// Where the replay's time goes, per kind of pass (its targets: size, format, mip level, layer): the passes, their draws
++// and the replay thread's time from each pass's start to its end, logged with the other draw statistics (every 300
++// frames), the costliest first. For Tears of the Kingdom's performance mode: which passes to draw less often, or not.
++struct PassKind {
++    uint64_t key = 0, passes = 0, draws = 0, ns = 0;
++    char what[200] = {};
++};
++constexpr int kPassKinds = 160;
++PassKind g_pass_kinds[kPassKinds];
++int g_npass_kinds = 0, g_pass_kind = -1;  // the open pass's kind (-1: none, or not counted)
++uint64_t g_pass_t0 = 0, g_kinds_frame = 0, g_kinds_dropped = 0;
++// Per log period: passes a draw ended, by gather_textures' reasons (kBreakStorage...), and those ended by new targets
++// that differ from the open pass's only in colour targets one of them leaves unbound (one pass with both sets could
++// serve both); the time begin_rendering and pass_end_only took.
++uint64_t g_breaks_why[4] = {}, g_breaks_targets = 0, g_breaks_colors_only = 0, g_begin_ns = 0, g_end_ns = 0;
++
++bool colors_only_differ(const Targets& a, const Targets& b) {
++    if (a.depth != b.depth || a.views.level[8] != b.views.level[8] || a.views.layer[8] != b.views.layer[8]) return false;
++    for (uint32_t k = 0; k < 8; k++) {
++        const uint64_t x = k < a.color_count ? a.colors[k] : 0, y = k < b.color_count ? b.colors[k] : 0;
++        if (x && y && (x != y || a.views.level[k] != b.views.level[k] || a.views.layer[k] != b.views.layer[k] ||
++                       a.views.format[k] != b.views.format[k]))
++            return false;
++    }
++    return true;
++}
++
++bool pass_stats_on() {
++    static const bool on = [] {
++        const char* e = std::getenv("NX_PASS_STATS");
++        return !(e && e[0] == '0');
++    }();
++    return on;
++}
++
++// A kind of pass: its targets' images (0-7 colour, 8 depth; null: none) with their sizes, formats, mip levels and
++// layers, as a key and as the text the statistics print ("c0 1280x720 vk97, d 1280x720 vk129", "d 2048x2048 vk126
++// layer 1/4"), which NX_PASS_EVERY's patterns are matched against.
++uint64_t kind_key(const Targets& t, const GpuImage* const img[9]) {
 +    uint64_t h = 14695981039346656037ull;
 +    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-+    mix(t.color_count), mix(t.depth);
++    for (uint32_t k = 0; k < 9; k++)
++        if (img[k])
++            mix(k), mix(img[k]->width), mix(img[k]->height), mix(uint64_t(img[k]->format)), mix(img[k]->layers),
++                mix(t.views.level[k]), mix(t.views.layer[k]);
++    return h;
++}
++
++void kind_text(const Targets& t, const GpuImage* const img[9], char* out, size_t cap) {
++    size_t n = 0;
++    out[0] = 0;
 +    for (uint32_t k = 0; k < 9; k++) {
-+        if (k < 8) mix(t.colors[k]);
++        if (!img[k]) continue;
++        const uint32_t level = std::min<uint32_t>(t.views.level[k], img[k]->levels ? img[k]->levels - 1 : 0);
++        char one[64];
++        int m = std::snprintf(one, sizeof one, "%s%c%u %ux%u vk%d", n ? ", " : "", k < 8 ? 'c' : 'd', k < 8 ? k : 0u,
++                              std::max(1u, img[k]->width >> level), std::max(1u, img[k]->height >> level),
++                              int(img[k]->format));
++        if (level && m > 0 && m < int(sizeof one)) m += std::snprintf(one + m, sizeof one - size_t(m), " mip %u", level);
++        if (img[k]->layers > 1 && m > 0 && m < int(sizeof one))
++            m += std::snprintf(one + m, sizeof one - size_t(m), " layer %u/%u", t.views.layer[k], img[k]->layers);
++        if (m <= 0) continue;
++        const size_t add = std::min(size_t(m), sizeof one - 1);
++        if (n + add >= cap) break;
++        std::memcpy(out + n, one, add);
++        n += add;
++        out[n] = 0;
++    }
++    if (!n) std::snprintf(out, cap, "no targets");
++}
++
++void pass_stats_begin(const Targets& t, const GpuImage* dimg) {
++    g_pass_kind = -1;
++    if (!pass_stats_on()) return;
++    g_pass_t0 = plat::monotonic_ns();
++    const GpuImage* img[9] = {};
++    for (uint32_t k = 0; k < t.color_count && k < 8; k++) img[k] = g_pass_images[k];
++    img[8] = dimg;
++    const uint64_t h = kind_key(t, img);
++    for (int i = 0; i < g_npass_kinds; i++)
++        if (g_pass_kinds[i].key == h) {
++            g_pass_kind = i;
++            return;
++        }
++    if (g_npass_kinds == kPassKinds) {
++        g_kinds_dropped++;
++        return;
++    }
++    PassKind& p = g_pass_kinds[g_npass_kinds];
++    p = PassKind{};
++    p.key = h;
++    kind_text(t, img, p.what, sizeof p.what);
++    g_pass_kind = g_npass_kinds++;
++}
++
++// ---- passes drawn less often (NX_PASS_EVERY) ------------------------------------------------------------------------
++// The performance mode's first cut. NX_PASS_EVERY=<pattern>=<n>[@<offset>];...: the passes whose kind (as the pass
++// statistics print it) contains <pattern> are drawn only in every n-th frame (the frames where (frame + offset) % n
++// is 0); in the others their draws and clears are skipped, so their targets keep what they last held (a shadow map a
++// frame or more old). n = 0: never drawn, but still cleared (a shadow map cleared to "far": no shadows). The first
++// rule a kind matches applies. The frames are the replay's presents.
++struct PassRule {
++    std::string pattern;
++    uint32_t every = 0, offset = 0;
++};
++uint64_t g_replay_frame = 0;  // presents replayed (draw_frame_presented)
++uint64_t targets_key(const Targets& t);  // below
++uint64_t g_throttled_draws = 0, g_throttled_clears = 0;  // per log period
++
++const std::vector<PassRule>& pass_rules() {
++    static const std::vector<PassRule> rules = [] {
++        std::vector<PassRule> r;
++        const char* e = std::getenv("NX_PASS_EVERY");
++        std::string all = e ? e : "";
++        size_t at = 0;
++        while (at < all.size()) {
++            size_t end = all.find(';', at);
++            if (end == std::string::npos) end = all.size();
++            std::string item = all.substr(at, end - at);
++            at = end + 1;
++            const size_t eq = item.rfind('=');
++            if (eq == std::string::npos || eq == 0) continue;
++            PassRule rule;
++            rule.pattern = item.substr(0, eq);
++            const std::string n = item.substr(eq + 1);
++            rule.every = uint32_t(std::strtoul(n.c_str(), nullptr, 10));
++            if (const size_t off = n.find('@'); off != std::string::npos)
++                rule.offset = uint32_t(std::strtoul(n.c_str() + off + 1, nullptr, 10));
++            if (rule.every == 1) continue;  // every frame: as without the rule
++            log("nvn: passes like \"%s\" drawn %s (NX_PASS_EVERY)", rule.pattern.c_str(),
++                rule.every ? ("every " + std::to_string(rule.every) + " frames, offset " + std::to_string(rule.offset)).c_str()
++                           : "never (cleared only)");
++            r.push_back(std::move(rule));
++        }
++        return r;
++    }();
++    return rules;
++}
++
++// The rule for these targets this frame (-1: none), worked out once per targets and frame.
++int pass_rule(const Targets& t) {
++    const std::vector<PassRule>& rules = pass_rules();
++    if (rules.empty()) return -1;
++    struct Seen {
++        uint64_t targets = 0, frame = UINT64_MAX;
++        int rule = -1;
++    };
++    static Seen seen[64];
++    const uint64_t key = targets_key(t);
++    Seen& s = seen[key % 64];
++    if (s.targets == key && s.frame == g_replay_frame) return s.rule;
++    const GpuImage* img[9] = {};
++    for (uint32_t k = 0; k < t.color_count && k < 8; k++) img[k] = t.colors[k] ? image_of(t.colors[k]) : nullptr;
++    if (GpuImage* d = t.depth ? image_of(t.depth) : nullptr; d && d->aspect != VK_IMAGE_ASPECT_COLOR_BIT) img[8] = d;
++    char text[200];
++    kind_text(t, img, text, sizeof text);
++    int rule = -1;
++    for (size_t i = 0; i < rules.size() && rule < 0; i++)
++        if (std::strstr(text, rules[i].pattern.c_str())) rule = int(i);
++    s = {key, g_replay_frame, rule};
++    return rule;
++}
++
++void pass_stats_end() {
++    if (g_pass_kind < 0) return;
++    PassKind& p = g_pass_kinds[g_pass_kind];
++    p.passes++, p.draws += g_pass_draws, p.ns += plat::monotonic_ns() - g_pass_t0;
++    g_pass_kind = -1;
++}
++
++void pass_stats_log() {
++    if (!pass_stats_on()) return;
++    const uint64_t now_frame = g_frame.load(std::memory_order_relaxed), frames = now_frame - g_kinds_frame;
++    g_kinds_frame = now_frame;
++    if (frames && g_npass_kinds) {
++        int order[kPassKinds];
++        uint64_t ns = 0, draws = 0, passes = 0;
++        for (int i = 0; i < g_npass_kinds; i++) {
++            order[i] = i;
++            ns += g_pass_kinds[i].ns, draws += g_pass_kinds[i].draws, passes += g_pass_kinds[i].passes;
++        }
++        std::sort(order, order + g_npass_kinds, [](int a, int b) { return g_pass_kinds[a].ns > g_pass_kinds[b].ns; });
++        const double f = double(frames);
++        log("nvn pass stats over %llu frames, per frame: %.1f passes, %.0f draws, %.1f ms of the replay inside passes; "
++            "%d kinds of pass (%llu passes of more kinds not counted); %.0f draws and %.1f clears left out "
++            "(NX_PASS_EVERY); the costliest:",
++            (unsigned long long)frames, double(passes) / f, double(draws) / f, double(ns) / 1e6 / f, g_npass_kinds,
++            (unsigned long long)g_kinds_dropped, double(g_throttled_draws) / f, double(g_throttled_clears) / f);
++        g_throttled_draws = g_throttled_clears = 0;
++        log("nvn pass stats: per frame %.2f ms beginning passes, %.2f ms ending them; passes a draw ended: %.1f for a "
++            "storage image, %.1f for a texture to upload or transition, %.1f sampling what the pass drew, %.1f for a "
++            "pending clear, %.1f for new targets (%.1f of those only adding or dropping colour targets)",
++            double(g_begin_ns) / 1e6 / f, double(g_end_ns) / 1e6 / f, double(g_breaks_why[0]) / f,
++            double(g_breaks_why[1]) / f, double(g_breaks_why[2]) / f, double(g_breaks_why[3]) / f,
++            double(g_breaks_targets) / f, double(g_breaks_colors_only) / f);
++        for (int r = 0; r < g_npass_kinds && r < 16; r++) {
++            const PassKind& p = g_pass_kinds[order[r]];
++            log("  %6.2f ms %7.1f draws %5.2f passes: %s", double(p.ns) / 1e6 / f, double(p.draws) / f,
++                double(p.passes) / f, p.what);
++        }
++    }
++    g_npass_kinds = 0, g_pass_kind = -1, g_kinds_dropped = 0;  // a new table for the next period
++    for (uint64_t& n : g_breaks_why) n = 0;
++    g_breaks_targets = g_breaks_colors_only = g_begin_ns = g_end_ns = 0;
++}
++
++// The images a pass renders to, with their levels, layers and view formats: what stays the same from frame to frame.
++// Breath of the Wild's agl renders through holder structs whose keys change every frame (a6ebcb1): keyed by the
++// targets themselves, no pass ever repeated, and none went to the workers (v00.19: 90 draws of ~2,900 a frame).
++uint64_t targets_key(const Targets& t) {
++    uint64_t h = 14695981039346656037ull;
++    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
++    mix(t.color_count);
++    for (uint32_t k = 0; k < 9; k++) {
++        const uint64_t tex = k < 8 ? (k < t.color_count ? t.colors[k] : 0) : t.depth;
++        mix(tex ? uint64_t(reinterpret_cast<uintptr_t>(image_of(tex))) : 0);
 +        mix(uint64_t(t.views.level[k]) | uint64_t(t.views.layer[k]) << 8 | uint64_t(t.views.format[k]) << 24);
 +    }
 +    return h;
@@ -3620,7 +3840,7 @@ index ff8d46a..b0d5504 100644
  
  // What this submit's command buffer already has bound and set. Vulkan keeps the pipeline, vertex and index buffers
  // and dynamic state of a command buffer across its dynamic-rendering passes, and most draws repeated what the draw
-@@ -77,8 +96,13 @@ struct Bound {
+@@ -77,8 +315,13 @@ struct Bound {
      VkRect2D scissor{};
      float blend[4] = {};
      uint32_t raster[10] = {};  // raster_dynamic's inputs: stencil reference and masks per face, the depth bias
@@ -3636,17 +3856,18 @@ index ff8d46a..b0d5504 100644
  
  template <typename T>
  bool same_bytes(const T& a, const T& b) { return std::memcmp(&a, &b, sizeof(T)) == 0; }
-@@ -115,7 +139,8 @@ void set_dynamic(VkCommandBuffer cb, const VkViewport& vp, const VkRect2D& sc) {
+@@ -115,7 +358,9 @@ void set_dynamic(VkCommandBuffer cb, const VkViewport& vp, const VkRect2D& sc) {
          raster_dynamic(cb, slack), std::memcpy(b.raster, raster, sizeof raster);  // (nvn_raster.cpp)
  }
  
 -void begin_rendering(VkCommandBuffer cb, const Targets& t) {
 +// parallel: the pass's draws are recorded by the workers into secondary command buffers (nvn_parallel.cpp).
 +void begin_rendering(VkCommandBuffer cb, const Targets& t, bool parallel = false) {
++    const uint64_t begin_t0 = pass_stats_on() ? plat::monotonic_ns() : 0;
      if (clears_pending_other(t)) clears_flush(cb);  // other targets' clears first, in order
      // An image never written (layout UNDEFINED) has nothing to load: loadOp CLEAR to zero, not a LOAD of whatever
      // the memory held (G3, docs/nvn/DEBUG.md #50); a pending clear still wins (clears_apply). Env: bisecting.
-@@ -130,11 +155,23 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+@@ -130,11 +375,23 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
          GpuImage* img = t.colors[k] ? image_of(t.colors[k]) : nullptr;
          g_pass_images[k] = img;
          if (!img) continue;
@@ -3670,7 +3891,7 @@ index ff8d46a..b0d5504 100644
          colors[k].imageView = attachment_view(*img, level, t.views.layer[k], formats[k]);
          // NX_TRACE_CUBES=<first frame>: writes into cube images from that frame on. With 400 from the start, the log
          // ran out at the first 3D scene (frame ~171) and never reached a course load.
-@@ -173,6 +210,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+@@ -173,6 +430,7 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
      VkRenderingAttachmentInfo stencil = depth;  // same view, its own loadOp
      uint32_t cleared = clears_apply(t, colors, depth, stencil);  // pending clears of these targets: loadOp CLEAR
      VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -3678,7 +3899,7 @@ index ff8d46a..b0d5504 100644
      ri.renderArea = {{0, 0}, extent};
      ri.layerCount = 1;
      ri.colorAttachmentCount = t.color_count;
-@@ -188,6 +226,16 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
+@@ -188,10 +446,22 @@ void begin_rendering(VkCommandBuffer cb, const Targets& t) {
      else
          p_vkCmdBeginRendering(cb, &ri);
      g_rendering = true;
@@ -3695,7 +3916,13 @@ index ff8d46a..b0d5504 100644
      g_pass_written = cleared | fresh;  // as a clear inside the pass: sampling it needs it stored first
      trace_pass("begin: cleared, fresh", t, cleared, fresh);
      g_pass = t;
-@@ -222,6 +270,22 @@ void dispatch(VkCommandBuffer cb, const Cmd& c) {
+     g_pass_extent = extent;
++    pass_stats_begin(t, dimg);
++    if (begin_t0) g_begin_ns += plat::monotonic_ns() - begin_t0;
+ }
+ 
+ uint64_t g_dump_draws = 0, g_dump_request = 0;
+@@ -222,6 +492,22 @@ void dispatch(VkCommandBuffer cb, const Cmd& c) {
      if (!pipeline) return;
      draw_end_rendering(cb, 2);
      gather_textures(stages);
@@ -3718,7 +3945,7 @@ index ff8d46a..b0d5504 100644
      build_sets(cb, stages, layout);
      p_vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
      bind_sets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout);
-@@ -254,13 +318,158 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
+@@ -254,13 +540,166 @@ void vertex_read_barrier(VkCommandBuffer cb, const ShaderInfo* vs) {
      g_vertex_pending = false, g_vertex_barriers++, g_vertex_visible_at = g_pass_serial;
  }
  
@@ -3806,7 +4033,7 @@ index ff8d46a..b0d5504 100644
 +        return e ? uint32_t(std::max(1, std::atoi(e))) : 24u;
 +    }();
 +    auto it = g_pass_history.find(targets_key(t));
-+    return it != g_pass_history.end() && it->second >= min_draws;
++    return it != g_pass_history.end() && it->second.draws >= min_draws;
 +}
 +
 +void phase_log(uint64_t frames) {
@@ -3871,6 +4098,14 @@ index ff8d46a..b0d5504 100644
 +    };
 +    if (g_state.rasterizer_discard || !g_state.render_enable)  // nothing reaches the targets
 +        return skipped(g_state.rasterizer_discard ? "rasterizer discard" : "rendering disabled", nullptr, nullptr);
++    // NX_SKIP_DRAWS=1, a test and not a way to play: no draw is replayed (clears, copies and dispatches still are), so
++    // the frame rate shows how fast the game itself runs with a renderer that costs next to nothing.
++    static const bool skip_all = [] {
++        const char* e = std::getenv("NX_SKIP_DRAWS");
++        return e && e[0] == '1';
++    }();
++    if (skip_all) return false;
++    if (pass_throttled(t, false)) return false;  // NX_PASS_EVERY: not this pass's frame
      const auto* shaders = program_shaders(g_state.program);
      if (!shaders || shaders->empty()) {
          g_stats.no_program++;
@@ -3879,7 +4114,7 @@ index ff8d46a..b0d5504 100644
      }
      const ShaderInfo* vs = nullptr;
      const ShaderInfo* fs = nullptr;
-@@ -270,7 +479,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -270,7 +709,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
      }
      if (!vs) {
          g_stats.no_vertex++;
@@ -3888,7 +4123,7 @@ index ff8d46a..b0d5504 100644
      }
      std::vector<const ShaderInfo*> swapped;  // NX_SWAP_FS / NX_SKIP_FS (nvn_draw_trace.cpp)
      if (!debug_shader_overrides(shaders, fs, swapped)) return false;
-@@ -293,7 +502,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -293,7 +732,22 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
              }
      }
      // Textures first: an upload or a layout change cannot happen inside the render pass.
@@ -3912,7 +4147,15 @@ index ff8d46a..b0d5504 100644
      // A pass that neither tests nor writes depth but keeps its depth image bound while sampling that same image (the
      // world map's depth-to-colour linearization, fs 0aa56d1b): on Metal the image is then attached and read in one
      // encoder, which is undefined, and the copy came out 0 everywhere; the composite then took the player for
-@@ -325,15 +549,25 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -322,18 +776,39 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+     bool targets_changed = !g_rendering || (bytes ? std::memcmp(&g_pass, &tt, sizeof tt) != 0 : !targets_same(g_pass, tt));
+     if (g_rendering && (need_break || targets_changed)) {
+         (targets_changed ? g_stats.breaks_targets : g_stats.breaks_textures)++;
++        if (pass_stats_on()) {
++            if (need_break)
++                for (int k = 0; k < 4; k++) g_breaks_why[k] += g_break_why >> k & 1;
++            if (targets_changed) g_breaks_targets++, g_breaks_colors_only += colors_only_differ(g_pass, tt);
++        }
          draw_end_rendering(cb, 1);
      }
  
@@ -3922,8 +4165,14 @@ index ff8d46a..b0d5504 100644
 +    if (parallel && (shaders == &swapped || !parallel_draw_ok(vs, fs))) {
 +        if (g_rendering) draw_end_rendering(cb, 1);  // this one is recorded here, in a pass of its own
 +        parallel = false;
++        g_draws_unfit++;
++    } else if (!parallel) {
++        g_draws_small++;
 +    }
-+    if (parallel) return draw_parallel(cb, t, tt, mode, indexed, c, *shaders, layout, vs, fs, may_defer, clock);
++    if (parallel) {
++        g_draws_parallel++;
++        return draw_parallel(cb, t, tt, mode, indexed, c, *shaders, layout, vs, fs, may_defer, clock);
++    }
      build_sets(cb, *shaders, layout);
 +    clock.mark(kPhSets);
      // Vertex and index data before the pass begins: a range a dispatch of this submit wrote may need a GPU copy
@@ -3939,7 +4188,7 @@ index ff8d46a..b0d5504 100644
      if (!g_rendering) {
          if (gpu_profile_on()) {
              GpuImage* img = t.color_count && t.colors[0] ? image_of(t.colors[0]) : nullptr;
-@@ -344,31 +578,14 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -344,31 +819,14 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          }
          begin_rendering(cb, tt);
      }
@@ -3975,7 +4224,7 @@ index ff8d46a..b0d5504 100644
      }
  
      if (g_bound.cb != cb || draw_slow(kSlowState)) g_bound = Bound{}, g_bound.cb = cb;
-@@ -385,20 +602,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -385,20 +843,9 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          if (in.used >> s & 1) bind_vertex(cb, s, in.vertex[s]);
      bind_vertex(cb, 15, zero_stream());
  
@@ -3999,7 +4248,7 @@ index ff8d46a..b0d5504 100644
      set_dynamic(cb, vp, sc);
  
      trace_skin(indexed, c, vs, fs);
-@@ -419,7 +625,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
+@@ -419,7 +866,11 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
          p_vkCmdDraw(cb, uint32_t(c.i[1]), uint32_t(std::max(1, c.i[3])), uint32_t(c.i[0]), uint32_t(c.i[2]));
          if (q) zero_draws_end(cb);
      }
@@ -4012,7 +4261,7 @@ index ff8d46a..b0d5504 100644
      g_pass_written |= ((1u << t.color_count) - 1) | (g_state.depth.depth_write || g_state.depth.stencil_test ? 1u << 8 : 0);
      // NX_SNAP_FS=<hash>,<hash>[@<first draw>]: also snapshot after draws with those fragment shaders (8 at most, or
      // NX_SNAP_FS_MAX).
-@@ -478,6 +688,7 @@ void draw_begin_submit() {
+@@ -478,6 +929,7 @@ void draw_begin_submit() {
      sets_begin_submit();
      clears_begin_submit();
      g_submit_ns = plat::monotonic_ns();
@@ -4020,7 +4269,7 @@ index ff8d46a..b0d5504 100644
      dedup_reset();
      written_reset();
      pipeline_begin_submit();
-@@ -488,14 +699,17 @@ uint64_t recorded_draws();
+@@ -488,14 +940,23 @@ uint64_t recorded_draws();
  void draw_log_stats() {
      if (g_vertex_barriers) log("nvn passes: %llu vertex-read barriers (G4)", (unsigned long long)g_vertex_barriers);
      dedup_log();
@@ -4037,13 +4286,26 @@ index ff8d46a..b0d5504 100644
 +        log("nvn: draw state: %llu binds and sets recorded, %llu already in place", (unsigned long long)set,
 +            (unsigned long long)kept);
      g_state_set = g_state_kept = 0;
++    if (g_draws_parallel + g_draws_unfit)
++        log("nvn: draws to the replay workers %llu, here in small passes %llu, here in big passes (shaders storing into "
++            "buffers, debug switches) %llu", (unsigned long long)g_draws_parallel, (unsigned long long)g_draws_small,
++            (unsigned long long)g_draws_unfit);
++    g_draws_parallel = g_draws_small = g_draws_unfit = 0;
 +    parallel_log();
++    pass_stats_log();
      clears_log();
      log("nvn passes ended: %llu submit end, %llu draw, %llu dispatch, %llu clear of other targets, %llu clear larger than "
          "the pass, %llu copy, %llu snapshot, %llu SetRenderTargets", (unsigned long long)g_pass_ends[0],
-@@ -514,11 +728,18 @@ void draw_log_stats() {
+@@ -513,12 +974,27 @@ void draw_log_stats() {
+ 
  void pass_end_only(VkCommandBuffer cb, int reason) {
      if (!g_rendering) return;
++    struct EndTimer {
++        uint64_t t0 = pass_stats_on() ? plat::monotonic_ns() : 0;
++        ~EndTimer() {
++            if (t0) g_end_ns += plat::monotonic_ns() - t0;
++        }
++    } end_timer;
      g_pass_ends[reason & 7]++, trace_pass("end: reason", g_pass, uint32_t(reason), 0);
 +    if (g_pass_parallel) {  // the workers' secondary command buffers, in order (nvn_parallel.cpp)
 +        parallel_pass_end(cb);
@@ -4055,12 +4317,14 @@ index ff8d46a..b0d5504 100644
      else
          p_vkCmdEndRendering(cb);
      g_rendering = false;
++    pass_stats_end();
 +    if (g_pass_history.size() > 4096) g_pass_history.clear();
-+    g_pass_history[targets_key(g_pass)] = g_pass_draws;
++    PassHistory& h = g_pass_history[targets_key(g_pass)];  // the largest piece of this frame's (texture breaks split)
++    h.draws = h.frame == g_replay_frame ? std::max(h.draws, g_pass_draws) : g_pass_draws, h.frame = g_replay_frame;
      // What the pass wrote is read by what follows (sampled, copied, loaded by the next pass), and what it sampled may
      // be rendered over next. The images stay GENERAL, so transition() records no barrier. Metal (MoltenVK) and the
      // Intel driver ordered passes anyway; NVIDIA overlaps them, and later passes read half-written tiles: the course
-@@ -541,10 +762,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
+@@ -541,10 +1017,18 @@ void pass_end_only(VkCommandBuffer cb, int reason) {
          p_vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
          g_vertex_pending |= narrow_pass_barrier();
      }
@@ -4080,7 +4344,7 @@ index ff8d46a..b0d5504 100644
      gpu_profile_mark(cb, "outside passes (clears, uploads, copies)");
  }
  void draw_end_rendering(VkCommandBuffer cb, int reason) {  // and the pending clears (nvn_clears.cpp)
-@@ -559,6 +788,73 @@ void pass_begin(VkCommandBuffer cb, const Targets& t) { begin_rendering(cb, t);
+@@ -559,6 +1043,79 @@ void pass_begin(VkCommandBuffer cb, const Targets& t) { begin_rendering(cb, t);
  // and scissor (nvn_mask_clear.cpp): the next draw sets everything again.
  void pass_mark_written(uint32_t bits) { g_pass_written |= bits, g_bound = Bound{}; }
  
@@ -4102,6 +4366,12 @@ index ff8d46a..b0d5504 100644
 +    pass_end_only(cb, 3);
 +    begin_rendering(cb, t);  // loads what the workers drew
 +}
++
++// A worker's secondary command buffer was just begun: nothing is bound in it. Its handle could not say so (draw_job's
++// check): the frame slot hands its command buffers out again, and a worker given the one it had recorded last left the
++// pipeline it had bound there unbound in the new recording (Tears of the Kingdom v00.66 crashed in RADV at the title
++// screen, a draw with no shaders: radv_get_user_sgpr_loc).
++void replay::draw_segment_begin(VkCommandBuffer cb) { g_bound = Bound{}, g_bound.cb = cb; }
 +
 +// A worker's part of a parallel pass's draw (draw_parallel made the job): its buffer descriptors and inputs copied
 +// from guest memory, the sets bound, its state and the draw call, into the worker's secondary command buffer.
@@ -4154,7 +4424,30 @@ index ff8d46a..b0d5504 100644
  bool replay::pass_wrote(const GpuImage* img) {
      if (!g_rendering || !img) return false;
      uint32_t hit = g_pass.depth && g_pass_images[8] == img ? 1u << 8 : 0;
-@@ -581,4 +877,8 @@ uint64_t draw_take_dump_request() {
+@@ -573,6 +1130,22 @@ uint64_t submit_start_ns() { return g_submit_ns; }
+ bool draw_call(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
+     return draw(cb, t, mode, indexed, c);
+ }
++
++bool pass_throttled(const Targets& t, bool clear) {
++    const int r = pass_rule(t);
++    if (r < 0) return false;
++    const PassRule& rule = pass_rules()[size_t(r)];
++    if (rule.every == 0) {  // never drawn; its clears still run
++        if (clear) return false;
++        g_throttled_draws++;
++        return true;
++    }
++    if ((g_replay_frame + rule.offset) % rule.every == 0) return false;  // its frame
++    (clear ? g_throttled_clears : g_throttled_draws)++;
++    return true;
++}
++
++void draw_frame_presented() { g_replay_frame++; }
+ void dispatch_call(VkCommandBuffer cb, const Cmd& c) { dispatch(cb, c); }
+ 
+ uint64_t draw_take_dump_request() {
+@@ -581,4 +1154,8 @@ uint64_t draw_take_dump_request() {
      return r;
  }
  
@@ -4164,7 +4457,7 @@ index ff8d46a..b0d5504 100644
 +
  }  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_draw_state.cpp b/runtime/src/nvn/nvn_draw_state.cpp
-index 7ae207c..5aa6dd1 100644
+index 7ae207c..6338c7e 100644
 --- a/runtime/src/nvn/nvn_draw_state.cpp
 +++ b/runtime/src/nvn/nvn_draw_state.cpp
 @@ -3,6 +3,7 @@
@@ -4222,11 +4515,12 @@ index 7ae207c..5aa6dd1 100644
              if (c.blob < list.blobs.size())
                  if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0] + off))) {
                      std::memcpy(p, list.blobs[c.blob].data(), list.blobs[c.blob].size());
-@@ -121,11 +153,19 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
+@@ -121,11 +153,20 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
          case Cmd::ReportCounter: {  // {value, timestamp}: the work before it is done when the replay gets here
              static uint64_t reports = 0, types_seen = 0;
              if (c.n < 64 && !(types_seen >> c.n & 1)) types_seen |= 1ull << c.n, log("nvn: first counter report of type %u", c.n);
-+            if (pass_parallel()) parallel_flush();  // as for UpdateUniformBuffer
++            // No wait for the workers here (each wait drains them; TOTK waited ~38 times a frame): the report goes to
++            // memory that only the game and SetRenderEnableConditional read, both on this thread.
              if (uint8_t* p = const_cast<uint8_t*>(guest_bytes(c.a[0]))) {
                  // NX_FAKE_GPU_TIME=1: every report of a submit carries the submit's start (a GPU with no cost):
                  // the game picks its present interval from the timings it measures (bisecting its 30 fps mode).
@@ -4244,7 +4538,7 @@ index 7ae207c..5aa6dd1 100644
                  dedup_invalidate(p, sizeof v);
                  written_cpu_write(p, sizeof v);
 diff --git a/runtime/src/nvn/nvn_draw_state.h b/runtime/src/nvn/nvn_draw_state.h
-index 9dded7d..7dad023 100644
+index 9dded7d..278b40a 100644
 --- a/runtime/src/nvn/nvn_draw_state.h
 +++ b/runtime/src/nvn/nvn_draw_state.h
 @@ -47,7 +47,13 @@ struct Stats {
@@ -4296,7 +4590,7 @@ index 9dded7d..7dad023 100644
  bool written_overlaps(const uint8_t* p, uint64_t size);
  // A draw's storage binding over a written region (it may write the copy): counted as written_bind calls are, so a
  // pipelined split (nvn_frames.cpp) does not copy the region back before that draw ran.
-@@ -124,9 +146,43 @@ struct DrawTextures {
+@@ -124,9 +146,48 @@ struct DrawTextures {
      std::vector<uint64_t> handles;
      std::vector<ResolvedTexture> resolved;
  };
@@ -4307,6 +4601,11 @@ index 9dded7d..7dad023 100644
 +// kTexturesPending: a texture is being decoded in the background (astc_pending): the draw is skipped this time.
 +enum : uint32_t { kNeedBreak = 1, kSampledPending = 2, kTexturesPending = 4 };
 +uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders, bool may_defer = false);
++// Why gather_textures last asked for kNeedBreak (the pass statistics count them): kBreakStorage a storage image in the
++// program, kBreakNotReady a texture to upload or transition, kBreakFeedback one the open pass wrote, kBreakClear one
++// with a pending clear.
++enum : uint32_t { kBreakStorage = 1, kBreakNotReady = 2, kBreakFeedback = 4, kBreakClear = 8 };
++inline uint32_t g_break_why = 0;
 +
 +// The sets being built for a draw: scratch kept from draw to draw, or a parallel pass's job's own.
 +struct SetWrite {  // one write of a set, as the set cache compares it
@@ -4342,7 +4641,7 @@ index 9dded7d..7dad023 100644
  void build_sets(VkCommandBuffer cb, const std::vector<const ShaderInfo*>& shaders, const ProgramLayout& layout);
  // vkUpdateDescriptorSets for what build_sets made, then the sets bound at `point`.
  void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayout& layout);
-@@ -152,9 +208,56 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
+@@ -152,9 +213,57 @@ bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, cons
  bool raster_command(const Cmd& c);
  void raster_dynamic(VkCommandBuffer cb, bool slack);  // slack: equal_slack_pass (nvn.h)
  
@@ -4373,6 +4672,7 @@ index 9dded7d..7dad023 100644
 +    VkRect2D sc{};
 +};
 +void draw_job(DrawJob& j, VkCommandBuffer cb);  // nvn_draw.cpp, on a worker
++void draw_segment_begin(VkCommandBuffer cb);      // nvn_draw.cpp, on a worker: `cb` begun, nothing bound in it
 +
 +// nvn_parallel.cpp. The open parallel pass's attachment formats (its secondary command buffers inherit them).
 +struct PassFormats {
@@ -5864,10 +6164,10 @@ index a2a7dd0..b67f553 100644
  NX_HLE("nvnSamplerPoolFinalize", DescriptorPoolFinalize);
 diff --git a/runtime/src/nvn/nvn_parallel.cpp b/runtime/src/nvn/nvn_parallel.cpp
 new file mode 100644
-index 0000000..091d6bd
+index 0000000..df8ff63
 --- /dev/null
 +++ b/runtime/src/nvn/nvn_parallel.cpp
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,211 @@
 +// Parallel passes (NX_PARALLEL=1). The replay thread walks a submit's commands as before, but the draws of a big pass
 +// (one whose targets had NX_PARALLEL_MIN draws or more the last time they were rendered, nvn_draw.cpp) are only
 +// resolved there: their textures with any upload or layout change, their image descriptors, the pipeline. Each is
@@ -5925,7 +6225,7 @@ index 0000000..091d6bd
 +thread_local int t_worker = -1;
 +
 +// Per log period.
-+uint64_t g_passes = 0, g_jobs_done = 0, g_segments_done = 0, g_flushes = 0, g_wait_ns = 0;
++uint64_t g_passes = 0, g_jobs_done = 0, g_segments_done = 0, g_flushes = 0, g_wait_ns = 0, g_submits = 0;
 +std::atomic<uint64_t> g_worker_ns{0};
 +
 +void worker_main(void* arg) {
@@ -5958,6 +6258,7 @@ index 0000000..091d6bd
 +            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
 +            bi.pInheritanceInfo = &ii;
 +            if (p_vkBeginCommandBuffer(cb, &bi) == VK_SUCCESS) {
++                draw_segment_begin(cb);
 +                for (DrawJob* j : s->jobs) draw_job(*j, cb);
 +                p_vkEndCommandBuffer(cb);
 +            } else {
@@ -6013,7 +6314,7 @@ index 0000000..091d6bd
 +
 +int parallel_worker() { return t_worker; }
 +
-+void parallel_begin_submit(bool allowed) { g_submit_ok = allowed; }
++void parallel_begin_submit(bool allowed) { g_submit_ok = allowed, g_submits++; }
 +
 +bool parallel_on() {
 +    static const bool on = [] {
@@ -6064,11 +6365,16 @@ index 0000000..091d6bd
 +}
 +
 +void parallel_log() {
-+    if (!g_passes) return;
-+    log("nvn: parallel passes: %llu passes, %llu draws in %llu segments, %llu flushes (uniform updates, counters); "
-+        "workers busy %.1f ms, replay thread waiting %.1f ms in all",
-+        (unsigned long long)g_passes, (unsigned long long)g_jobs_done, (unsigned long long)g_segments_done,
-+        (unsigned long long)g_flushes, double(g_worker_ns.exchange(0)) / 1e6, double(g_wait_ns) / 1e6);
++    if (!g_passes) {
++        g_submits = 0;
++        return;
++    }
++    const double n = double(std::max<uint64_t>(g_submits, 1));  // per submit (a frame in Breath of the Wild)
++    log("nvn: parallel passes per submit over %llu: %.1f passes, %.0f draws in %.1f segments, %.1f flushes (uniform "
++        "updates); workers busy %.2f ms, replay thread waiting %.2f ms",
++        (unsigned long long)g_submits, double(g_passes) / n, double(g_jobs_done) / n, double(g_segments_done) / n,
++        double(g_flushes) / n, double(g_worker_ns.exchange(0)) / 1e6 / n, double(g_wait_ns) / 1e6 / n);
++    g_submits = 0;
 +    g_passes = g_jobs_done = g_segments_done = g_flushes = g_wait_ns = 0;
 +}
 +
@@ -6796,7 +7102,7 @@ index b0748f7..817cef5 100644
  NX_HLE("nvnSamplerPoolRegisterSamplerBuilder", RegisterSamplerBuilder);
  NX_HLE("nvnSamplerGetMinMagFilter", GetMinMagFilter);
 diff --git a/runtime/src/nvn/nvn_sets.cpp b/runtime/src/nvn/nvn_sets.cpp
-index a114065..36963a1 100644
+index a114065..eb5fa98 100644
 --- a/runtime/src/nvn/nvn_sets.cpp
 +++ b/runtime/src/nvn/nvn_sets.cpp
 @@ -3,10 +3,13 @@
@@ -7197,7 +7503,7 @@ index a114065..36963a1 100644
              continue;
          }
          uint32_t n = 1;
-@@ -572,7 +696,7 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
+@@ -572,17 +696,18 @@ void bind_sets(VkCommandBuffer cb, VkPipelineBindPoint point, const ProgramLayou
  
  // Texture bindings of a program's stages and their handles, into g_textures. kNeedBreak: one needs a transfer or a
  // layout change (so no render pass may be open while the sets are built); kSampledPending: one has a pending clear.
@@ -7206,15 +7512,38 @@ index a114065..36963a1 100644
      DrawTextures& t = g_textures;
      if (draw_slow(kSlowScratch))
          t = DrawTextures{};
-@@ -617,6 +741,7 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
+     else
+         t.bindings.clear();
+     uint32_t out = 0;
++    g_break_why = 0;
+     for (const ShaderInfo* s : shaders)
+         for (const DescriptorBinding& b : s->refl.bindings) {
+             if (b.set == 2) t.bindings.push_back({s, &b});
+-            if (b.set == 3) out |= kNeedBreak;  // storage images change layout
++            if (b.set == 3) out |= kNeedBreak, g_break_why |= kBreakStorage;  // storage images change layout
+         }
+     t.handles.assign(t.bindings.size(), 0);
+     t.resolved.assign(t.bindings.size(), ResolvedTexture{});
+@@ -617,14 +742,15 @@ uint32_t gather_textures(const std::vector<const ShaderInfo*>& shaders) {
                  texture = 0;
          }
          r.texture = texture;
+-        if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak;
 +        if (texture && astc_pending(texture, may_defer)) out |= kTexturesPending;
-         if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak;
++        if (texture ? !sampled_ready(texture) : !dummy_ready(b->image)) out |= kNeedBreak, g_break_why |= kBreakNotReady;
          if (!texture) continue;
          GpuImage* img = image_of(texture);
-@@ -650,24 +775,43 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed,
+         // Sampling one of the open pass's targets (a depth buffer read back by the character lighting) needs what
+         // was rendered stored first: a fresh pass. SetRenderTargets used to end every pass, which did this by chance
+         // (docs/nvn/DEBUG.md #35). Only when a draw of this pass wrote it (pass_wrote, nvn_draw.cpp).
+-        if (pass_wrote(img)) out |= kNeedBreak;
+-        if (clears_pending_image(img)) out |= kNeedBreak | kSampledPending;
++        if (pass_wrote(img)) out |= kNeedBreak, g_break_why |= kBreakFeedback;
++        if (clears_pending_image(img)) out |= kNeedBreak | kSampledPending, g_break_why |= kBreakClear;
+     }
+     return out;
+ }
+@@ -650,24 +776,43 @@ bool draw_inputs_shared(VkCommandBuffer cb, const ShaderInfo* vs, bool indexed,
      if (!p) return false;
      in.index_type = vk_index_type(c.mask);
      uint64_t bytes = uint64_t(uint32_t(c.i[0])) * index_size(c.mask);
@@ -8908,7 +9237,7 @@ index 0000000..33319d6
 +
 +}  // namespace nx::nvn
 diff --git a/runtime/src/nvn/nvn_vk.cpp b/runtime/src/nvn/nvn_vk.cpp
-index fac2914..983c217 100644
+index fac2914..1ba05f6 100644
 --- a/runtime/src/nvn/nvn_vk.cpp
 +++ b/runtime/src/nvn/nvn_vk.cpp
 @@ -237,7 +237,11 @@ bool init() {
@@ -8943,7 +9272,23 @@ index fac2914..983c217 100644
      uint64_t t0 = plat::monotonic_ns();
      const FrameTimes f0 = frame_times();
      Targets st;
-@@ -695,6 +702,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
+@@ -585,6 +592,7 @@ void present_headless(uint64_t texture) {
+     GpuImage* src = image_of(texture);  // made here if new, as before (the targets rendered into it share it, #44)
+     static uint64_t presents = 0;
+     presents++;
++    draw_frame_presented();
+     if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
+     if (presents % 60 == 0) log_timing(60), gpu_profile_log(60);
+     if (presents % 300 == 0) zero_draws_log();
+@@ -672,6 +680,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
+     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+     static uint64_t presents = 0;
+     presents++;
++    draw_frame_presented();
+     if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
+     if (presents % 60 == 0) log_timing(60), gpu_profile_log(60);
+     if (presents % 300 == 0) zero_draws_log();
+@@ -695,6 +704,11 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
      pi.pImageIndices = &index;
      r = p_vkQueuePresentKHR(g_queue, &pi);
      plat::frame_presented();  // cores, CPU time, present intervals (frame_stats.cpp)
@@ -8956,7 +9301,7 @@ index fac2914..983c217 100644
      // the swapchain's transform is not the display's (a Galaxy S23 did for Hades), a rebuild per frame.
      bool remake = r == VK_ERROR_OUT_OF_DATE_KHR;
 diff --git a/runtime/src/nvn/nvn_vk.h b/runtime/src/nvn/nvn_vk.h
-index b899dbd..46f64a3 100644
+index b899dbd..6a94aa2 100644
 --- a/runtime/src/nvn/nvn_vk.h
 +++ b/runtime/src/nvn/nvn_vk.h
 @@ -32,6 +32,14 @@ struct GpuImage {
@@ -9012,7 +9357,16 @@ index b899dbd..46f64a3 100644
  
  // nvn_debug.cpp: NX_DUMP_FRAMES, the presented texture read back (recorded into the present's command buffer, written
  // after its fence).
-@@ -189,6 +214,7 @@ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const T
+@@ -183,12 +208,16 @@ inline bool targets_same(const Targets& a, const Targets& b) {
+ void draw_begin_submit();
+ void draw_end_submit();  // after the GPU finished the submit
+ void draw_log_stats();
++// NX_PASS_EVERY (nvn_draw.cpp): whether this frame leaves out the draws (clear false) or clears (true) into targets t.
++bool pass_throttled(const Targets& t, bool clear);
++void draw_frame_presented();  // the replay presented a frame (the throttle's frame count)
+ void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const Targets& targets);
+ // reason (counted in the `nvn passes ended` log): 0 submit end, 1 draw, 2 dispatch, 3 clear of other targets,
+ // 4 clear larger than the pass, 5 copy, 6 snapshot, 7 SetRenderTargets (NX_TARGETS_BREAK).
  void draw_end_rendering(VkCommandBuffer cb, int reason = 0);  // before transfers (clears, copies, present) and at the end
  // ClearColor / ClearDepthStencil inside the render pass of the current targets (nvn_draw.cpp).
  void draw_clear(VkCommandBuffer cb, const Targets& targets, const Cmd& c);  // nvn_clears.cpp
@@ -9020,7 +9374,7 @@ index b899dbd..46f64a3 100644
  // nvn_clears.cpp: clears pending as the next pass's loadOps; nvn_draw.cpp: the open pass, for it.
  bool clears_pending_image(const GpuImage* img);
  bool clears_pending_other(const Targets& t);
-@@ -219,10 +245,11 @@ bool mask_clear(VkCommandBuffer cb, const Targets& t, uint32_t slot, uint32_t ma
+@@ -219,10 +248,11 @@ bool mask_clear(VkCommandBuffer cb, const Targets& t, uint32_t slot, uint32_t ma
                  const VkRect2D& rect);
  // nvn_replay.cpp: a command list into `cb` (`depth`: CallList nesting).
  void replay_list(VkCommandBuffer cb, Targets& st, const CmdList& list, int depth);
@@ -9033,7 +9387,7 @@ index b899dbd..46f64a3 100644
  void forget_image_views(const GpuImage& img);
  // nvn_debug.cpp: NX_SNAP_DRAWS mid-frame snapshots of colour target 0.
  bool debug_snap_wanted(uint64_t draw);
-@@ -235,7 +262,17 @@ void zero_draws_collect();
+@@ -235,7 +265,17 @@ void zero_draws_collect();
  void zero_draws_log();
  void frame_sig_flush(uint64_t presents);  // NX_FRAME_SIG=1: the frame's draw signature, logged (nvn_draw_trace.cpp)
  void debug_snapshot(VkCommandBuffer cb, GpuImage& img, uint64_t draw);
@@ -9052,7 +9406,7 @@ index b899dbd..46f64a3 100644
  
  // nvn_debug.cpp: GPU time per render pass (NX_GPU_PROFILE=1).
  bool gpu_profile_on();  // NX_GPU_PROFILE=1: per-pass labels, every submit waited for (nvn_debug.cpp)
-@@ -259,6 +296,17 @@ void dedup_reset();  // nvn_dedup.cpp
+@@ -259,6 +299,17 @@ void dedup_reset();  // nvn_dedup.cpp
  bool written_separate();         // nvn_written.cpp (nvn_draw_state.h)
  uint64_t written_bind_count();   // nvn_written.cpp: written_bind calls so far (a dispatch bound storage it writes)
  void trace_nan_write_back(const uint8_t* from, const uint8_t* to, uint64_t size);  // nvn_draw_trace.cpp
@@ -11600,10 +11954,10 @@ index 0000000..3959be4
 +}  // namespace nx::plat::ps4
 diff --git a/runtime/src/ps4/ps4_menu.cpp b/runtime/src/ps4/ps4_menu.cpp
 new file mode 100644
-index 0000000..4bb8ecc
+index 0000000..2191f34
 --- /dev/null
 +++ b/runtime/src/ps4/ps4_menu.cpp
-@@ -0,0 +1,581 @@
+@@ -0,0 +1,587 @@
 +// PS4 quick menu: see ps4_menu.h. Drawn by the CPU into the boot screen's write-combined VideoOut buffers: each gets
 +// the dimmed frame once, then only the panel is composed (in a host buffer, since write-combined memory is slow to
 +// read) and copied out. Text: /app0/boot/menu_font.bin (plain glyphs, coloured here, with a drop shadow); the title
@@ -11693,6 +12047,7 @@ index 0000000..4bb8ecc
 +    float sharp = 0.2f;     // FSR stops: 0 sharpest, 2 none
 +    int cores = 0;          // kCores
 +    bool parallel = true;   // NX_PARALLEL: big passes recorded by replay workers (nvn_parallel.cpp)
++    bool pass_stats = true;  // NX_PASS_STATS: the replay's time per kind of pass, in nx.log (nvn_draw.cpp)
 +    int counter = 0;        // kCounter
 +    int map[kNxCount];      // kDs4 index per Switch button, -1 none
 +};
@@ -11758,7 +12113,7 @@ index 0000000..4bb8ecc
 +// config.txt with the menu's keys replaced (other lines, comments included, stay as they are).
 +void save() {
 +    static const char* const kOwned[] = {"NX_RENDER_RES", "NX_HANDHELD", "NX_FSR", "NX_FSR_SHARP", "NX_PS4_CORES",
-+                                         "NX_PS4_MAP", "NX_PS4_FPS", "NX_PARALLEL"};
++                                         "NX_PS4_MAP", "NX_PS4_FPS", "NX_PARALLEL", "NX_PASS_STATS"};
 +    std::vector<std::string> lines;
 +    if (FILE* f = std::fopen(kConfig, "r")) {
 +        char buf[512];
@@ -11782,6 +12137,7 @@ index 0000000..4bb8ecc
 +    lines.push_back(std::string("NX_FSR_SHARP=") + sharp);
 +    lines.push_back(std::string("NX_PS4_CORES=") + kCores[g_set.cores]);
 +    lines.push_back(std::string("NX_PARALLEL=") + (g_set.parallel ? "1" : "0"));
++    lines.push_back(std::string("NX_PASS_STATS=") + (g_set.pass_stats ? "1" : "0"));
 +    lines.push_back("NX_PS4_FPS=" + std::to_string(g_set.counter));
 +    lines.push_back("NX_PS4_MAP=" + map_string(g_set.map));
 +    std::string tmp = std::string(kConfig) + ".tmp";
@@ -11956,6 +12312,7 @@ index 0000000..4bb8ecc
 +                {"Frame counter", kCounter[g_set.counter]},
 +                {"CPU cores", kCores[g_set.cores], true},
 +                {"Parallel draws", g_set.parallel ? "On" : "Off", true},
++                {"Pass statistics (nx.log)", g_set.pass_stats ? "On" : "Off", true},
 +                {"Controls", ">"},
 +                {"Capture a diagnostics frame", ""},
 +                {"Restart the game now", ""}};
@@ -11976,9 +12333,10 @@ index 0000000..4bb8ecc
 +            case 4: if (dx) g_set.counter = (g_set.counter + 3 + dx) % 3; break;
 +            case 5: if (dx) g_set.cores = (g_set.cores + 3 + dx) % 3; break;
 +            case 6: if (dx) g_set.parallel = !g_set.parallel; break;
-+            case 7: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
-+            case 8: if (ok) m.diag = m.done = true; break;
-+            case 9: if (ok) m.restart = m.done = true; break;
++            case 7: if (dx) g_set.pass_stats = !g_set.pass_stats; break;
++            case 8: if (ok || dx > 0) m.page = Page::Controls, m.ctl_sel = 0; break;
++            case 9: if (ok) m.diag = m.done = true; break;
++            case 10: if (ok) m.restart = m.done = true; break;
 +        }
 +        if (in.pressed & ORBIS_PAD_BUTTON_CIRCLE) m.done = true;
 +        const uint32_t both = ORBIS_PAD_BUTTON_L3 | ORBIS_PAD_BUTTON_R3;
@@ -12062,6 +12420,8 @@ index 0000000..4bb8ecc
 +    if (const char* c = std::getenv("NX_PS4_FPS")) g_set.counter = std::clamp(std::atoi(c), 0, 2);
 +    const char* par = std::getenv("NX_PARALLEL");
 +    g_set.parallel = par && par[0] == '1';
++    const char* ps = std::getenv("NX_PASS_STATS");
++    g_set.pass_stats = !(ps && ps[0] == '0');
 +    if (const char* m = std::getenv("NX_PS4_MAP")) parse_map(m, g_set.map);
 +    publish();
 +}
