@@ -89,19 +89,50 @@ bool pass_stats_on() {
     return on;
 }
 
+// A kind of pass: its targets' images (0-7 colour, 8 depth; null: none) with their sizes, formats, mip levels and
+// layers, as a key and as the text the statistics print ("c0 1280x720 vk97, d 1280x720 vk129", "d 2048x2048 vk126
+// layer 1/4"), which NX_PASS_EVERY's patterns are matched against.
+uint64_t kind_key(const Targets& t, const GpuImage* const img[9]) {
+    uint64_t h = 14695981039346656037ull;
+    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    for (uint32_t k = 0; k < 9; k++)
+        if (img[k])
+            mix(k), mix(img[k]->width), mix(img[k]->height), mix(uint64_t(img[k]->format)), mix(img[k]->layers),
+                mix(t.views.level[k]), mix(t.views.layer[k]);
+    return h;
+}
+
+void kind_text(const Targets& t, const GpuImage* const img[9], char* out, size_t cap) {
+    size_t n = 0;
+    out[0] = 0;
+    for (uint32_t k = 0; k < 9; k++) {
+        if (!img[k]) continue;
+        const uint32_t level = std::min<uint32_t>(t.views.level[k], img[k]->levels ? img[k]->levels - 1 : 0);
+        char one[64];
+        int m = std::snprintf(one, sizeof one, "%s%c%u %ux%u vk%d", n ? ", " : "", k < 8 ? 'c' : 'd', k < 8 ? k : 0u,
+                              std::max(1u, img[k]->width >> level), std::max(1u, img[k]->height >> level),
+                              int(img[k]->format));
+        if (level && m > 0 && m < int(sizeof one)) m += std::snprintf(one + m, sizeof one - size_t(m), " mip %u", level);
+        if (img[k]->layers > 1 && m > 0 && m < int(sizeof one))
+            m += std::snprintf(one + m, sizeof one - size_t(m), " layer %u/%u", t.views.layer[k], img[k]->layers);
+        if (m <= 0) continue;
+        const size_t add = std::min(size_t(m), sizeof one - 1);
+        if (n + add >= cap) break;
+        std::memcpy(out + n, one, add);
+        n += add;
+        out[n] = 0;
+    }
+    if (!n) std::snprintf(out, cap, "no targets");
+}
+
 void pass_stats_begin(const Targets& t, const GpuImage* dimg) {
     g_pass_kind = -1;
     if (!pass_stats_on()) return;
     g_pass_t0 = plat::monotonic_ns();
-    auto target = [&](uint32_t k) -> const GpuImage* {
-        return k < 8 ? (k < t.color_count ? g_pass_images[k] : nullptr) : dimg;
-    };
-    uint64_t h = 14695981039346656037ull;
-    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-    for (uint32_t k = 0; k < 9; k++)
-        if (const GpuImage* img = target(k))
-            mix(k), mix(img->width), mix(img->height), mix(uint64_t(img->format)), mix(img->layers),
-                mix(t.views.level[k]), mix(t.views.layer[k]);
+    const GpuImage* img[9] = {};
+    for (uint32_t k = 0; k < t.color_count && k < 8; k++) img[k] = g_pass_images[k];
+    img[8] = dimg;
+    const uint64_t h = kind_key(t, img);
     for (int i = 0; i < g_npass_kinds; i++)
         if (g_pass_kinds[i].key == h) {
             g_pass_kind = i;
@@ -114,26 +145,75 @@ void pass_stats_begin(const Targets& t, const GpuImage* dimg) {
     PassKind& p = g_pass_kinds[g_npass_kinds];
     p = PassKind{};
     p.key = h;
-    size_t n = 0;
-    for (uint32_t k = 0; k < 9 && n < sizeof p.what; k++) {
-        const GpuImage* img = target(k);
-        if (!img) continue;
-        const uint32_t level = std::min<uint32_t>(t.views.level[k], img->levels ? img->levels - 1 : 0);
-        char one[64];
-        int m = std::snprintf(one, sizeof one, "%s%c%u %ux%u vk%d", n ? ", " : "", k < 8 ? 'c' : 'd', k < 8 ? k : 0u,
-                              std::max(1u, img->width >> level), std::max(1u, img->height >> level), int(img->format));
-        if (level && m > 0 && m < int(sizeof one)) m += std::snprintf(one + m, sizeof one - size_t(m), " mip %u", level);
-        if (img->layers > 1 && m > 0 && m < int(sizeof one))
-            m += std::snprintf(one + m, sizeof one - size_t(m), " layer %u/%u", t.views.layer[k], img->layers);
-        if (m <= 0) continue;
-        const size_t add = std::min(size_t(m), sizeof one - 1);
-        if (n + add >= sizeof p.what) break;
-        std::memcpy(p.what + n, one, add);
-        n += add;
-        p.what[n] = 0;
-    }
-    if (!n) std::snprintf(p.what, sizeof p.what, "no targets");
+    kind_text(t, img, p.what, sizeof p.what);
     g_pass_kind = g_npass_kinds++;
+}
+
+// ---- passes drawn less often (NX_PASS_EVERY) ------------------------------------------------------------------------
+// The performance mode's first cut. NX_PASS_EVERY=<pattern>=<n>[@<offset>];...: the passes whose kind (as the pass
+// statistics print it) contains <pattern> are drawn only in every n-th frame (the frames where (frame + offset) % n
+// is 0); in the others their draws and clears are skipped, so their targets keep what they last held (a shadow map a
+// frame or more old). n = 0: never drawn, but still cleared (a shadow map cleared to "far": no shadows). The first
+// rule a kind matches applies. The frames are the replay's presents.
+struct PassRule {
+    std::string pattern;
+    uint32_t every = 0, offset = 0;
+};
+uint64_t g_replay_frame = 0;  // presents replayed (draw_frame_presented)
+uint64_t g_throttled_draws = 0, g_throttled_clears = 0;  // per log period
+
+const std::vector<PassRule>& pass_rules() {
+    static const std::vector<PassRule> rules = [] {
+        std::vector<PassRule> r;
+        const char* e = std::getenv("NX_PASS_EVERY");
+        std::string all = e ? e : "";
+        size_t at = 0;
+        while (at < all.size()) {
+            size_t end = all.find(';', at);
+            if (end == std::string::npos) end = all.size();
+            std::string item = all.substr(at, end - at);
+            at = end + 1;
+            const size_t eq = item.rfind('=');
+            if (eq == std::string::npos || eq == 0) continue;
+            PassRule rule;
+            rule.pattern = item.substr(0, eq);
+            const std::string n = item.substr(eq + 1);
+            rule.every = uint32_t(std::strtoul(n.c_str(), nullptr, 10));
+            if (const size_t off = n.find('@'); off != std::string::npos)
+                rule.offset = uint32_t(std::strtoul(n.c_str() + off + 1, nullptr, 10));
+            if (rule.every == 1) continue;  // every frame: as without the rule
+            log("nvn: passes like \"%s\" drawn %s (NX_PASS_EVERY)", rule.pattern.c_str(),
+                rule.every ? ("every " + std::to_string(rule.every) + " frames, offset " + std::to_string(rule.offset)).c_str()
+                           : "never (cleared only)");
+            r.push_back(std::move(rule));
+        }
+        return r;
+    }();
+    return rules;
+}
+
+// The rule for these targets this frame (-1: none), worked out once per targets and frame.
+int pass_rule(const Targets& t) {
+    const std::vector<PassRule>& rules = pass_rules();
+    if (rules.empty()) return -1;
+    struct Seen {
+        uint64_t targets = 0, frame = UINT64_MAX;
+        int rule = -1;
+    };
+    static Seen seen[64];
+    const uint64_t key = targets_key(t);
+    Seen& s = seen[key % 64];
+    if (s.targets == key && s.frame == g_replay_frame) return s.rule;
+    const GpuImage* img[9] = {};
+    for (uint32_t k = 0; k < t.color_count && k < 8; k++) img[k] = t.colors[k] ? image_of(t.colors[k]) : nullptr;
+    if (GpuImage* d = t.depth ? image_of(t.depth) : nullptr; d && d->aspect != VK_IMAGE_ASPECT_COLOR_BIT) img[8] = d;
+    char text[200];
+    kind_text(t, img, text, sizeof text);
+    int rule = -1;
+    for (size_t i = 0; i < rules.size() && rule < 0; i++)
+        if (std::strstr(text, rules[i].pattern.c_str())) rule = int(i);
+    s = {key, g_replay_frame, rule};
+    return rule;
 }
 
 void pass_stats_end() {
@@ -157,9 +237,11 @@ void pass_stats_log() {
         std::sort(order, order + g_npass_kinds, [](int a, int b) { return g_pass_kinds[a].ns > g_pass_kinds[b].ns; });
         const double f = double(frames);
         log("nvn pass stats over %llu frames, per frame: %.1f passes, %.0f draws, %.1f ms of the replay inside passes; "
-            "%d kinds of pass (%llu passes of more kinds not counted); the costliest:",
+            "%d kinds of pass (%llu passes of more kinds not counted); %.0f draws and %.1f clears left out "
+            "(NX_PASS_EVERY); the costliest:",
             (unsigned long long)frames, double(passes) / f, double(draws) / f, double(ns) / 1e6 / f, g_npass_kinds,
-            (unsigned long long)g_kinds_dropped);
+            (unsigned long long)g_kinds_dropped, double(g_throttled_draws) / f, double(g_throttled_clears) / f);
+        g_throttled_draws = g_throttled_clears = 0;
         for (int r = 0; r < g_npass_kinds && r < 16; r++) {
             const PassKind& p = g_pass_kinds[order[r]];
             log("  %6.2f ms %7.1f draws %5.2f passes: %s", double(p.ns) / 1e6 / f, double(p.draws) / f,
@@ -575,6 +657,7 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
         return e && e[0] == '1';
     }();
     if (skip_all) return false;
+    if (pass_throttled(t, false)) return false;  // NX_PASS_EVERY: not this pass's frame
     const auto* shaders = program_shaders(g_state.program);
     if (!shaders || shaders->empty()) {
         g_stats.no_program++;
@@ -986,6 +1069,22 @@ uint64_t submit_start_ns() { return g_submit_ns; }
 bool draw_call(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, const Cmd& c) {
     return draw(cb, t, mode, indexed, c);
 }
+
+bool pass_throttled(const Targets& t, bool clear) {
+    const int r = pass_rule(t);
+    if (r < 0) return false;
+    const PassRule& rule = pass_rules()[size_t(r)];
+    if (rule.every == 0) {  // never drawn; its clears still run
+        if (clear) return false;
+        g_throttled_draws++;
+        return true;
+    }
+    if ((g_replay_frame + rule.offset) % rule.every == 0) return false;  // its frame
+    (clear ? g_throttled_clears : g_throttled_draws)++;
+    return true;
+}
+
+void draw_frame_presented() { g_replay_frame++; }
 void dispatch_call(VkCommandBuffer cb, const Cmd& c) { dispatch(cb, c); }
 
 uint64_t draw_take_dump_request() {

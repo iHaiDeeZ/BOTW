@@ -592,6 +592,7 @@ void present_headless(uint64_t texture) {
     GpuImage* src = image_of(texture);  // made here if new, as before (the targets rendered into it share it, #44)
     static uint64_t presents = 0;
     presents++;
+    draw_frame_presented();
     if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
     if (presents % 60 == 0) log_timing(60), gpu_profile_log(60);
     if (presents % 300 == 0) zero_draws_log();
@@ -679,6 +680,7 @@ void gpu_present(uint64_t texture, const int32_t* crop) {
     if (!drawn) transition(g_cb, dst, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     static uint64_t presents = 0;
     presents++;
+    draw_frame_presented();
     if (presents % (presents < 300 ? 60 : 300) == 0) draw_log_stats();
     if (presents % 60 == 0) log_timing(60), gpu_profile_log(60);
     if (presents % 300 == 0) zero_draws_log();

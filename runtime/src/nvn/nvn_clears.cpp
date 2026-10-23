@@ -204,6 +204,7 @@ void draw_clear(VkCommandBuffer cb, const Targets& t, const Cmd& c) {
     // next draw) are skipped (bisecting what a clear wipes).
     // Rendering off (SetRenderEnable(false) or a false condition): clears are skipped too, as on the GPU.
     if (!g_state.render_enable) return;
+    if (pass_throttled(t, true)) return;  // NX_PASS_EVERY: the targets keep what they held (nvn_draw.cpp)
     static const char* skip_after = std::getenv("NX_SKIP_CLEARS_AFTER_FS");
     if (skip_after && replay::g_last_draw_fs && std::strstr(skip_after, replay::g_last_draw_fs->hash.c_str())) return;
     uint64_t guest = color ? (c.n < 8 ? t.colors[c.n] : 0) : t.depth;

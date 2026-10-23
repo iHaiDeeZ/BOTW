@@ -208,6 +208,9 @@ inline bool targets_same(const Targets& a, const Targets& b) {
 void draw_begin_submit();
 void draw_end_submit();  // after the GPU finished the submit
 void draw_log_stats();
+// NX_PASS_EVERY (nvn_draw.cpp): whether this frame leaves out the draws (clear false) or clears (true) into targets t.
+bool pass_throttled(const Targets& t, bool clear);
+void draw_frame_presented();  // the replay presented a frame (the throttle's frame count)
 void draw_command(VkCommandBuffer cb, const Cmd& c, const CmdList& list, const Targets& targets);
 // reason (counted in the `nvn passes ended` log): 0 submit end, 1 draw, 2 dispatch, 3 clear of other targets,
 // 4 clear larger than the pass, 5 copy, 6 snapshot, 7 SetRenderTargets (NX_TARGETS_BREAK).
