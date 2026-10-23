@@ -568,6 +568,13 @@ bool draw(VkCommandBuffer cb, const Targets& t, uint32_t mode, bool indexed, con
     };
     if (g_state.rasterizer_discard || !g_state.render_enable)  // nothing reaches the targets
         return skipped(g_state.rasterizer_discard ? "rasterizer discard" : "rendering disabled", nullptr, nullptr);
+    // NX_SKIP_DRAWS=1, a test and not a way to play: no draw is replayed (clears, copies and dispatches still are), so
+    // the frame rate shows how fast the game itself runs with a renderer that costs next to nothing.
+    static const bool skip_all = [] {
+        const char* e = std::getenv("NX_SKIP_DRAWS");
+        return e && e[0] == '1';
+    }();
+    if (skip_all) return false;
     const auto* shaders = program_shaders(g_state.program);
     if (!shaders || shaders->empty()) {
         g_stats.no_program++;
