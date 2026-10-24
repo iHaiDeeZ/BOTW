@@ -1,7 +1,8 @@
 # Building BOTW
 
-BOTW is BelmanteGu's Switch static recompiler and runtime ([SuperMarioWonderRecomp](https://github.com/BelmanteGu/SuperMarioWonderRecomp)),
-with SMW's PS4 port and a `games/botw` target. The package is built from **your own dump**: its `eboot.bin` is
+BOTW is BelmanteGu's Switch static recompiler and runtime (SuperMarioWonderRecomp, MIT; its repository is gone from
+GitHub since 2026-10-24, and its history with this port is this repository's `recomp` branch), with SMW's PS4 port
+and a `games/botw` target. The package is built from **your own dump**: its `eboot.bin` is
 mostly the game's code, recompiled to x86-64, so it can't be downloaded and must never be shared.
 
 ## Layout
@@ -18,9 +19,10 @@ mostly the game's code, recompiled to x86-64, so it can't be downloaded and must
 
 1. **Build tree**: `scripts/seed-build-tree.sh` copies the sysroot, Mesa, Vulkan-Headers 1.4.357, the fixed PkgTool
    and the .NET SDK from `~/smw-build` (SMW must have been set up once).
-2. **Recompiler**: `scripts/clone-recomp.sh`. After changes there: `scripts/save-patch.sh "message"`.
-3. **Your game**: put `prod.keys` (and `title.keys`) in one folder with the BOTW base game (XCI or NSP) and the
-   **1.5.0 update** NSP, then `scripts/prepare-game.sh <folder>` (steps `import recompile shaders`, or any of
+2. **Recompiler**: `scripts/clone-recomp.sh` (this repository's `recomp` branch). After changes there:
+   `scripts/save-patch.sh "message"` refreshes `patches/botw-ps4.patch`.
+3. **Your game**: put `prod.keys` (and `title.keys`) in one folder with the BOTW base game (XCI or NSP) and an update
+   NSP (1.6.0 was tested; a 1.5.0 one also gets the decomp's symbols), then `scripts/prepare-game.sh <folder>` (steps `import recompile shaders`, or any of
    them).
    - The importer takes the base program and one update. The update's ExeFS replaces the base's, and its RomFS is
      patched over the base's.

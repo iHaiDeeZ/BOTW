@@ -4,11 +4,11 @@ BOTW is a port. Nearly everything that will make the game run is other people's 
 
 ## The game's recompilation
 
-- **[Super Mario Bros. Wonder Recomp](https://github.com/BelmanteGu/SuperMarioWonderRecomp)** by **BelmanteGu**
-  (MIT): the static recompiler, the runtime (Horizon services, NVN on Vulkan, audio), the importer and the shader
-  tools. BOTW applies `patches/botw-ps4.patch` (SMW's PS4 port plus the BOTW changes) to it and builds it at the
-  commit in `patches/BASE.txt`. Upstream's
-  own third-party components (listed in its README) keep their licenses.
+- **Super Mario Bros. Wonder Recomp** by **BelmanteGu** (MIT; its GitHub repository is gone since 2026-10-24): the
+  static recompiler, the runtime (Horizon services, NVN on Vulkan, audio), the importer and the shader tools. Its
+  history, with SMW's PS4 port and the BOTW changes on top, is this repository's `recomp` branch (BelmanteGu's
+  LICENSE included); `patches/botw-ps4.patch` is the same port as one diff against the commit in
+  `patches/BASE.txt`. Upstream's own third-party components (listed in its README) keep their licenses.
 - **[Ryujinx](https://ryujinx.app)** and its continuation **[Ryubing](https://codeberg.org/Software_arch/Ryubing)**
   (MIT): the Maxwell shader translator upstream's tools use to make SPIR-V. Downloaded by
   `scripts/prepare-game.sh`, not included here.

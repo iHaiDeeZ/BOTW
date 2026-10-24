@@ -45,7 +45,7 @@ See [docs/BUILDING.md](docs/BUILDING.md). In short (WSL Ubuntu, the SMW build tr
 
 ```sh
 bash scripts/seed-build-tree.sh                        # ~/botw-build from ~/smw-build, ~/botw -> this repo
-bash scripts/clone-recomp.sh                           # the recompiler at patches/BASE.txt + patches/botw-ps4.patch
+bash scripts/clone-recomp.sh                           # the recompiler with this port: this repo's `recomp` branch
 bash scripts/prepare-game.sh <folder with keys + dump> # import, recompile, shaders -> private/botw
 bash scripts/rebuild-botw.sh                           # eboot
 BOTW_VERSION=00.01 bash scripts/package-botw.sh        # out/BOTW-v00.01.pkg
